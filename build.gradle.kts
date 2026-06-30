@@ -1,5 +1,14 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
+val currentOs = System.getProperty("os.name").lowercase()
+val nativePackageFormats = when {
+    currentOs.contains("mac") -> arrayOf(TargetFormat.Dmg)
+    currentOs.contains("linux") -> arrayOf(TargetFormat.Deb, TargetFormat.AppImage)
+    currentOs.contains("windows") -> arrayOf(TargetFormat.Msi)
+    else -> emptyArray()
+}
+val nativePackageVersion = if (currentOs.contains("mac")) "1.0.0" else "0.1.0"
+
 plugins {
     kotlin("jvm") version "2.1.0"
     kotlin("plugin.serialization") version "2.1.0"
@@ -36,6 +45,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
+
+    testImplementation(kotlin("test"))
 }
 
 compose.desktop {
@@ -43,9 +54,9 @@ compose.desktop {
         mainClass = "dev.nk.jellybridge.MainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.Deb, TargetFormat.AppImage)
+            targetFormats(*nativePackageFormats)
             packageName = "jellybridge"
-            packageVersion = "0.1.0"
+            packageVersion = nativePackageVersion
             description = "Jellyfin bridge client powered by MPV"
             vendor = "nk"
 

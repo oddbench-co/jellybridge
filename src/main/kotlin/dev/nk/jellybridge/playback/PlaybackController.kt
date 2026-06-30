@@ -1,13 +1,20 @@
 package dev.nk.jellybridge.playback
 
 import dev.nk.jellybridge.api.JellyfinClient
+import dev.nk.jellybridge.api.models.MediaStream
 import dev.nk.jellybridge.api.models.PlaybackProgressReport
 import dev.nk.jellybridge.api.models.PlaybackStopReport
 import dev.nk.jellybridge.mpv.MpvIpcClient
+import dev.nk.jellybridge.mpv.MpvTrack
 import dev.nk.jellybridge.mpv.MpvProcessManager
 import kotlinx.coroutines.*
 
 private const val PROGRESS_INTERVAL_MS = 10_000L // report to Jellyfin every 10 seconds
+
+private data class SubtitleFile(
+    val stream: MediaStream,
+    val url: String
+)
 
 class PlaybackController(
     private val client: JellyfinClient,
@@ -20,6 +27,11 @@ class PlaybackController(
     private var progressJob: Job? = null
     private var currentItemId: String = ""
     private var currentPlaySessionId: String = ""
+    private var currentPreferenceKey: String? = null
+    private var currentMediaStreams: List<MediaStream> = emptyList()
+    private var currentSubtitleFiles: List<SubtitleFile> = emptyList()
+    private var currentAudioStreamIndex: Int? = null
+    private var currentSubtitleStreamIndex: Int? = null
     // Tracks the last successfully read position so we don't report 0 when
     // MPV closes before the first periodic report fires (e.g. brief accidental open).
     private var lastKnownPositionSeconds: Double = 0.0
@@ -35,40 +47,58 @@ class PlaybackController(
      * 7. Start progress polling loop
      * 8. Await MPV exit → report stop
      */
-    suspend fun play(itemId: String) {
+    suspend fun play(itemId: String, override: PlaybackStreamOverride? = null) {
+        val item = runCatching { client.getItem(itemId) }.getOrNull()
         val playbackInfo = client.getPlaybackInfo(itemId)
         val mediaSource = playbackInfo.MediaSources.firstOrNull()
             ?: error("No media source found for item $itemId")
 
         currentItemId = itemId
         currentPlaySessionId = playbackInfo.PlaySessionId
+        currentPreferenceKey = PlaybackStreamPreferences.preferenceKey(item, itemId)
+        currentMediaStreams = mediaSource.MediaStreams
+        currentSubtitleFiles = subtitleManager
+            .parseSubtitleStreams(mediaSource.MediaStreams)
+            .filter { it.IsTextSubtitleStream }
+            .mapNotNull { stream ->
+                subtitleManager.resolveSubtitleUrl(itemId, stream)?.let { url ->
+                    SubtitleFile(stream, url)
+                }
+            }
+
+        val preferenceKey = currentPreferenceKey
+        val storedPreference = preferenceKey?.let { PlaybackStreamPreferences.storedPreference(it) }
+        val streamSelection = PlaybackStreamPreferences.resolve(mediaSource, storedPreference, override)
+        currentAudioStreamIndex = streamSelection.audioStream?.Index
+        currentSubtitleStreamIndex = streamSelection.subtitleStreamIndex
+        if (override != null && preferenceKey != null) {
+            PlaybackStreamPreferences.savePreference(
+                key = preferenceKey,
+                mediaStreams = currentMediaStreams,
+                audioStreamIndex = currentAudioStreamIndex,
+                subtitleStreamIndex = currentSubtitleStreamIndex
+            )
+        }
 
         val resumeSeconds = resumeManager.getResumePosition(itemId)
         lastKnownPositionSeconds = resumeSeconds
-
-        val subtitleUrls = subtitleManager
-            .parseSubtitleStreams(mediaSource.MediaStreams)
-            .filter { it.IsTextSubtitleStream && it.IsDefault }
-            .mapNotNull { subtitleManager.resolveSubtitleUrl(itemId, it) }
 
         val streamUrl = client.directPlayUrl(itemId, mediaSource.Id)
 
         processManager.launch(
             streamUrl = streamUrl,
             startPositionSeconds = resumeSeconds,
-            subtitleUrls = subtitleUrls
+            subtitleUrls = currentSubtitleFiles.map { it.url }
         )
 
         ipc.connect()
+        applyPlaybackSelection(streamSelection)
+        syncSelectedStreamsFromMpv(savePreference = false)
 
         client.reportPlaybackStart(
-            PlaybackProgressReport(
-                ItemId = itemId,
-                PlaySessionId = currentPlaySessionId,
-                PositionTicks = resumeManager.secondsToTicks(resumeSeconds),
-                IsPaused = false
-            )
+            progressReport(positionSeconds = resumeSeconds, isPaused = false)
         )
+        runCatching { client.reportProgress(progressReport(positionSeconds = resumeSeconds, isPaused = false)) }
 
         startProgressReporting()
 
@@ -92,15 +122,9 @@ class PlaybackController(
         val position = ipc.getCurrentPosition() ?: return
         lastKnownPositionSeconds = position
         val isPaused = ipc.isPaused()
+        syncSelectedStreamsFromMpv(savePreference = true)
 
-        client.reportProgress(
-            PlaybackProgressReport(
-                ItemId = currentItemId,
-                PlaySessionId = currentPlaySessionId,
-                PositionTicks = resumeManager.secondsToTicks(position),
-                IsPaused = isPaused
-            )
-        )
+        client.reportProgress(progressReport(positionSeconds = position, isPaused = isPaused))
     }
 
     private suspend fun onPlaybackEnded() {
@@ -110,6 +134,15 @@ class PlaybackController(
         // the resume position at start, so a brief accidental open never resets to 0).
         val finalPosition = runCatching { ipc.getCurrentPosition() }.getOrNull()
             ?: lastKnownPositionSeconds
+        runCatching { syncSelectedStreamsFromMpv(savePreference = true) }
+        runCatching {
+            client.reportProgress(
+                progressReport(
+                    positionSeconds = finalPosition,
+                    isPaused = runCatching { ipc.isPaused() }.getOrDefault(false)
+                )
+            )
+        }
         ipc.disconnect()
 
         client.reportPlaybackStopped(
@@ -125,5 +158,129 @@ class PlaybackController(
         progressJob?.cancel()
         processManager.kill()
         ipc.disconnect()
+    }
+
+    private fun progressReport(positionSeconds: Double, isPaused: Boolean): PlaybackProgressReport =
+        PlaybackProgressReport(
+            ItemId = currentItemId,
+            PlaySessionId = currentPlaySessionId,
+            PositionTicks = resumeManager.secondsToTicks(positionSeconds),
+            IsPaused = isPaused,
+            AudioStreamIndex = currentAudioStreamIndex,
+            SubtitleStreamIndex = currentSubtitleStreamIndex
+        )
+
+    private suspend fun applyPlaybackSelection(selection: PlaybackStreamSelection) {
+        val tracks = waitForMpvTracks()
+        selection.audioStream
+            ?.let { findMpvTrackForStream(it, tracks) }
+            ?.let { ipc.setAudioTrack(it.id) }
+
+        when {
+            selection.subtitlesDisabled -> ipc.disableSubtitles()
+            selection.subtitleStream != null -> {
+                val track = findMpvTrackForStream(selection.subtitleStream, tracks)
+                if (track != null) {
+                    ipc.setSubtitleTrack(track.id)
+                } else if (!selection.subtitleStream.IsTextSubtitleStream) {
+                    ipc.setSubtitleTrack(selection.subtitleStream.Index)
+                }
+            }
+            else -> ipc.disableSubtitles()
+        }
+    }
+
+    private suspend fun waitForMpvTracks(): List<MpvTrack> {
+        repeat(10) {
+            val tracks = ipc.getTrackList()
+            if (tracks.isNotEmpty()) return tracks
+            delay(200)
+        }
+        return emptyList()
+    }
+
+    private suspend fun syncSelectedStreamsFromMpv(savePreference: Boolean) {
+        val tracks = ipc.getTrackList()
+        if (tracks.isEmpty()) return
+
+        val selectedAudioStream = tracks
+            .firstOrNull { it.selected && it.type == "audio" }
+            ?.let { findMediaStreamForMpvTrack(it, "Audio") }
+        val selectedSubtitleTrack = tracks.firstOrNull { it.selected && it.type == "sub" }
+        val selectedSubtitleStream = selectedSubtitleTrack?.let { findMediaStreamForMpvTrack(it, "Subtitle") }
+
+        val nextAudioIndex = selectedAudioStream?.Index ?: currentAudioStreamIndex
+        val nextSubtitleIndex = when {
+            selectedSubtitleTrack == null -> -1
+            selectedSubtitleStream != null -> selectedSubtitleStream.Index
+            else -> currentSubtitleStreamIndex
+        }
+
+        val changed = nextAudioIndex != currentAudioStreamIndex ||
+            nextSubtitleIndex != currentSubtitleStreamIndex
+
+        currentAudioStreamIndex = nextAudioIndex
+        currentSubtitleStreamIndex = nextSubtitleIndex
+
+        if (changed && savePreference) {
+            saveCurrentPlaybackPreference()
+        }
+    }
+
+    private fun saveCurrentPlaybackPreference() {
+        val key = currentPreferenceKey ?: return
+        PlaybackStreamPreferences.savePreference(
+            key = key,
+            mediaStreams = currentMediaStreams,
+            audioStreamIndex = currentAudioStreamIndex,
+            subtitleStreamIndex = currentSubtitleStreamIndex
+        )
+    }
+
+    private fun findMpvTrackForStream(stream: MediaStream, tracks: List<MpvTrack>): MpvTrack? {
+        val type = if (stream.Type == "Audio") "audio" else "sub"
+        val candidates = tracks.filter { it.type == type }
+
+        if (stream.Type == "Subtitle") {
+            val subtitleUrl = currentSubtitleFiles.firstOrNull { it.stream.Index == stream.Index }?.url
+            if (subtitleUrl != null) {
+                candidates.firstOrNull { it.externalFilename == subtitleUrl }?.let { return it }
+            }
+        }
+
+        return candidates.firstOrNull { it.ffIndex == stream.Index }
+            ?: candidates.firstOrNull { it.id == stream.Index }
+            ?: candidates
+                .map { it to it.preferenceMatchScore(stream.Language, stream.DisplayTitle) }
+                .filter { it.second > 0 }
+                .maxByOrNull { it.second }
+                ?.first
+    }
+
+    private fun findMediaStreamForMpvTrack(track: MpvTrack, type: String): MediaStream? {
+        if (type == "Subtitle" && track.externalFilename != null) {
+            currentSubtitleFiles
+                .firstOrNull { it.url == track.externalFilename }
+                ?.stream
+                ?.let { return it }
+        }
+
+        val candidates = currentMediaStreams.filter { it.Type == type }
+        return candidates.firstOrNull { track.ffIndex == it.Index }
+            ?: candidates.firstOrNull { track.id == it.Index }
+            ?: candidates
+                .map { it to track.preferenceMatchScore(it.Language, it.DisplayTitle) }
+                .filter { it.second > 0 }
+                .maxByOrNull { it.second }
+                ?.first
+    }
+
+    private fun MpvTrack.preferenceMatchScore(language: String?, title: String?): Int {
+        val normalizedLanguage = language.normalizePreference()
+        val normalizedTitle = title.normalizePreference()
+        var score = 0
+        if (normalizedLanguage != null && this.language.normalizePreference() == normalizedLanguage) score += 4
+        if (normalizedTitle != null && this.title.normalizePreference() == normalizedTitle) score += 2
+        return score
     }
 }

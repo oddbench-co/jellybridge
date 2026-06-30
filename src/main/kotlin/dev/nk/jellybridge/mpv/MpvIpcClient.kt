@@ -10,6 +10,17 @@ import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.SocketChannel
 
+data class MpvTrack(
+    val id: Int,
+    val type: String,
+    val language: String? = null,
+    val title: String? = null,
+    val external: Boolean = false,
+    val externalFilename: String? = null,
+    val ffIndex: Int? = null,
+    val selected: Boolean = false
+)
+
 /**
  * JSON-RPC client over MPV's Unix domain socket.
  *
@@ -56,7 +67,18 @@ class MpvIpcClient(private val socketPath: String = MPV_IPC_SOCKET) {
         val id = ++requestId
 
         val payload = buildJsonObject {
-            putJsonArray("command") { args.forEach { add(JsonPrimitive(it.toString())) } }
+            putJsonArray("command") {
+                args.forEach { arg ->
+                    add(
+                        when (arg) {
+                            is JsonElement -> arg
+                            is Number -> JsonPrimitive(arg)
+                            is Boolean -> JsonPrimitive(arg)
+                            else -> JsonPrimitive(arg.toString())
+                        }
+                    )
+                }
+            }
             put("request_id", id)
         }.toString() + "\n"
 
@@ -67,20 +89,26 @@ class MpvIpcClient(private val socketPath: String = MPV_IPC_SOCKET) {
         // Read response — MPV writes one JSON line per response
         val buf = ByteBuffer.allocate(4096)
         val sb = StringBuilder()
+        var responseLine: String? = null
         var timeout = 50 // ~2.5s at 50ms each
-        while (timeout-- > 0) {
+        while (timeout-- > 0 && responseLine == null) {
             buf.clear()
             val n = runCatching { ch.read(buf) }.getOrElse { return@withContext null }
             if (n > 0) {
                 sb.append(String(buf.array(), 0, n))
-                if (sb.contains('\n')) break
+                responseLine = sb
+                    .lines()
+                    .firstOrNull {
+                        it.contains("\"request_id\":$id") ||
+                            it.contains("\"request_id\": $id")
+                    }
             } else {
                 delay(50)
             }
         }
 
         runCatching {
-            val line = sb.lines().firstOrNull { it.contains("request_id") } ?: return@withContext null
+            val line = responseLine ?: return@withContext null
             val obj = Json.parseToJsonElement(line).jsonObject
             if (obj["error"]?.jsonPrimitive?.content == "success") obj["data"] else null
         }.getOrNull()
@@ -97,14 +125,43 @@ class MpvIpcClient(private val socketPath: String = MPV_IPC_SOCKET) {
     suspend fun getDuration(): Double? =
         sendCommand("get_property", "duration")?.jsonPrimitive?.doubleOrNull
 
+    suspend fun getTrackList(): List<MpvTrack> {
+        return sendCommand("get_property", "track-list")
+            ?.jsonArray
+            ?.mapNotNull { element ->
+                val track = element.jsonObject
+                val id = track["id"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+                val type = track["type"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                MpvTrack(
+                    id = id,
+                    type = type,
+                    language = track["lang"]?.jsonPrimitive?.contentOrNull,
+                    title = track["title"]?.jsonPrimitive?.contentOrNull,
+                    external = track["external"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    externalFilename = track["external-filename"]?.jsonPrimitive?.contentOrNull,
+                    ffIndex = track["ff-index"]?.jsonPrimitive?.intOrNull,
+                    selected = track["selected"]?.jsonPrimitive?.booleanOrNull ?: false
+                )
+            }
+            ?: emptyList()
+    }
+
+    suspend fun setAudioTrack(trackId: Int) {
+        sendCommand("set_property", "aid", trackId)
+    }
+
     // Load and immediately select an external subtitle file
     suspend fun addSubtitle(url: String) {
         sendCommand("sub-add", url, "select")
     }
 
-    // Switch to a subtitle track by stream index (for embedded subs)
+    // Switch to a subtitle track by MPV track id.
     suspend fun setSubtitleTrack(index: Int) {
         sendCommand("set_property", "sid", index)
+    }
+
+    suspend fun disableSubtitles() {
+        sendCommand("set_property", "sid", "no")
     }
 
     suspend fun pause() = sendCommand("set_property", "pause", "yes")

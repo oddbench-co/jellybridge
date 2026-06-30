@@ -17,7 +17,9 @@ data class MediaSource(
     val RunTimeTicks: Long? = null,
     val Bitrate: Long? = null,
     val SupportsDirectPlay: Boolean = false,
-    val SupportsDirectStream: Boolean = false
+    val SupportsDirectStream: Boolean = false,
+    val DefaultAudioStreamIndex: Int? = null,
+    val DefaultSubtitleStreamIndex: Int? = null
 )
 
 @Serializable

@@ -15,6 +15,11 @@ private const val CLIENT_NAME = "JellyBridge"
 private const val CLIENT_VERSION = "0.1.0"
 private const val DEVICE_NAME = "Desktop"
 private const val DEVICE_ID = "jellybridge-desktop"
+private const val ITEM_CARD_FIELDS =
+    "ParentId,SeriesId,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ImageTags,UserData,Overview,RunTimeTicks,MediaStreams,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio"
+private const val ITEM_DETAIL_FIELDS =
+    "ParentId,SeriesId,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio"
+private const val DASHBOARD_ITEM_TYPES = "Movie,Episode,Series"
 
 class JellyfinClient(
     val serverUrl: String,
@@ -31,6 +36,19 @@ class JellyfinClient(
     private fun authHeader(): String {
         val base = """MediaBrowser Client="$CLIENT_NAME", Device="$DEVICE_NAME", DeviceId="$DEVICE_ID", Version="$CLIENT_VERSION""""
         return if (token.isNotBlank()) "$base, Token=\"$token\"" else base
+    }
+
+    private fun HttpRequestBuilder.applyItemCardParameters(
+        limit: Int? = null,
+        imageTypes: String = "Primary"
+    ) {
+        header("X-Emby-Authorization", authHeader())
+        parameter("Fields", ITEM_CARD_FIELDS)
+        parameter("EnableUserData", true)
+        parameter("EnableImages", true)
+        parameter("ImageTypeLimit", 1)
+        parameter("EnableImageTypes", imageTypes)
+        if (limit != null) parameter("Limit", limit)
     }
 
     // ── Auth ─────────────────────────────────────────────────────────────────
@@ -52,29 +70,205 @@ class JellyfinClient(
     // Top-level libraries (Movies, TV Shows, Music, etc.)
     suspend fun getLibraries(): List<LibraryItem> {
         return http.get("$serverUrl/Users/$userId/Items") {
-            header("X-Emby-Authorization", authHeader())
+            applyItemCardParameters()
             parameter("Recursive", false)
-            parameter("Fields", "ImageTags,UserData,RunTimeTicks,MediaStreams")
         }.body<ItemsResponse>().Items
     }
 
     suspend fun getItems(parentId: String, searchTerm: String? = null): List<LibraryItem> {
         return http.get("$serverUrl/Users/$userId/Items") {
-            header("X-Emby-Authorization", authHeader())
+            applyItemCardParameters()
             parameter("ParentId", parentId)
             parameter("Recursive", false)
-            parameter("Fields", "ImageTags,UserData,Overview,RunTimeTicks,MediaStreams")
             parameter("SortBy", "SortName")
             parameter("SortOrder", "Ascending")
             if (searchTerm != null) parameter("SearchTerm", searchTerm)
         }.body<ItemsResponse>().Items
     }
 
+    suspend fun getItemsPage(
+        parentId: String,
+        startIndex: Int,
+        limit: Int,
+        sortBy: String,
+        sortOrder: String
+    ): LibraryItemsPage {
+        val response = http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(limit)
+            parameter("ParentId", parentId)
+            parameter("Recursive", false)
+            parameter("StartIndex", startIndex)
+            parameter("EnableTotalRecordCount", true)
+            parameter("SortBy", sortBy)
+            parameter("SortOrder", sortOrder)
+        }.body<ItemsResponse>()
+
+        return response.toLibraryItemsPage(defaultStartIndex = startIndex)
+    }
+
+    suspend fun getFilteredItems(
+        parentId: String? = null,
+        searchTerm: String? = null,
+        recursive: Boolean = true,
+        includeItemTypes: String? = DASHBOARD_ITEM_TYPES,
+        isPlayed: Boolean? = null,
+        isFavorite: Boolean? = null,
+        limit: Int? = null
+    ): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(limit)
+            if (!parentId.isNullOrBlank()) parameter("ParentId", parentId)
+            parameter("Recursive", recursive)
+            parameter("SortBy", "SortName")
+            parameter("SortOrder", "Ascending")
+            if (!includeItemTypes.isNullOrBlank()) parameter("IncludeItemTypes", includeItemTypes)
+            if (!searchTerm.isNullOrBlank()) parameter("SearchTerm", searchTerm)
+            if (isPlayed != null) parameter("IsPlayed", isPlayed)
+            if (isFavorite != null) parameter("IsFavorite", isFavorite)
+        }.body<ItemsResponse>().Items
+    }
+
+    suspend fun getFilteredItemsPage(
+        parentId: String? = null,
+        searchTerm: String? = null,
+        recursive: Boolean = true,
+        includeItemTypes: String? = DASHBOARD_ITEM_TYPES,
+        isPlayed: Boolean? = null,
+        isFavorite: Boolean? = null,
+        startIndex: Int,
+        limit: Int,
+        sortBy: String,
+        sortOrder: String
+    ): LibraryItemsPage {
+        val response = http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(limit)
+            if (!parentId.isNullOrBlank()) parameter("ParentId", parentId)
+            parameter("Recursive", recursive)
+            parameter("StartIndex", startIndex)
+            parameter("EnableTotalRecordCount", true)
+            parameter("SortBy", sortBy)
+            parameter("SortOrder", sortOrder)
+            if (!includeItemTypes.isNullOrBlank()) parameter("IncludeItemTypes", includeItemTypes)
+            if (!searchTerm.isNullOrBlank()) parameter("SearchTerm", searchTerm)
+            if (isPlayed != null) parameter("IsPlayed", isPlayed)
+            if (isFavorite != null) parameter("IsFavorite", isFavorite)
+        }.body<ItemsResponse>()
+
+        return response.toLibraryItemsPage(defaultStartIndex = startIndex)
+    }
+
+    suspend fun getSeasonEpisodes(seasonId: String): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(imageTypes = "Primary,Thumb")
+            parameter("ParentId", seasonId)
+            parameter("Recursive", false)
+            parameter("IncludeItemTypes", "Episode")
+            parameter("SortBy", "ParentIndexNumber,IndexNumber,SortName")
+            parameter("SortOrder", "Ascending")
+        }.body<ItemsResponse>().Items
+            .sortedWith(
+                compareBy<LibraryItem> { it.ParentIndexNumber ?: Int.MAX_VALUE }
+                    .thenBy { it.IndexNumber ?: Int.MAX_VALUE }
+                    .thenBy { it.Name.lowercase() }
+            )
+    }
+
+    suspend fun getSeriesSeasons(seriesId: String): List<LibraryItem> {
+        return http.get("$serverUrl/Shows/$seriesId/Seasons") {
+            header("X-Emby-Authorization", authHeader())
+            parameter("UserId", userId)
+            parameter("Fields", ITEM_CARD_FIELDS)
+            parameter("EnableUserData", true)
+            parameter("EnableImages", true)
+            parameter("ImageTypeLimit", 1)
+            parameter("EnableImageTypes", "Primary")
+        }.body<ItemsResponse>().Items
+            .sortedWith(
+                compareBy<LibraryItem> { it.IndexNumber ?: Int.MAX_VALUE }
+                    .thenBy { it.Name.lowercase() }
+            )
+    }
+
+    suspend fun getContinueWatching(limit: Int = 20): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items/Resume") {
+            applyItemCardParameters(limit)
+            parameter("StartIndex", 0)
+            parameter("MediaTypes", "Video")
+            parameter("IncludeItemTypes", "Movie,Episode")
+        }.body<ItemsResponse>().Items
+    }
+
+    suspend fun getNextUp(limit: Int = 20): List<LibraryItem> {
+        return http.get("$serverUrl/Shows/NextUp") {
+            applyItemCardParameters(limit)
+            parameter("UserId", userId)
+            parameter("StartIndex", 0)
+            parameter("EnableTotalRecordCount", false)
+        }.body<ItemsResponse>().Items
+    }
+
+    suspend fun getLatestMedia(limit: Int = 20): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items/Latest") {
+            applyItemCardParameters(limit)
+            parameter("IncludeItemTypes", DASHBOARD_ITEM_TYPES)
+            parameter("GroupItems", false)
+        }.body()
+    }
+
+    suspend fun getFavoriteItems(limit: Int = 20): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(limit)
+            parameter("Recursive", true)
+            parameter("IncludeItemTypes", DASHBOARD_ITEM_TYPES)
+            parameter("IsFavorite", true)
+            parameter("SortBy", "SortName")
+            parameter("SortOrder", "Ascending")
+        }.body<ItemsResponse>().Items
+    }
+
+    suspend fun getRecentlyAdded(limit: Int = 20): List<LibraryItem> {
+        return http.get("$serverUrl/Users/$userId/Items") {
+            applyItemCardParameters(limit)
+            parameter("Recursive", true)
+            parameter("IncludeItemTypes", DASHBOARD_ITEM_TYPES)
+            parameter("SortBy", "DateCreated")
+            parameter("SortOrder", "Descending")
+        }.body<ItemsResponse>().Items
+    }
+
     suspend fun getItem(itemId: String): LibraryItem {
         return http.get("$serverUrl/Users/$userId/Items/$itemId") {
             header("X-Emby-Authorization", authHeader())
-            parameter("Fields", "ImageTags,UserData,RunTimeTicks,MediaStreams")
+            parameter("Fields", ITEM_CARD_FIELDS)
         }.body()
+    }
+
+    suspend fun getItemDetails(itemId: String): LibraryItem {
+        return http.get("$serverUrl/Users/$userId/Items/$itemId") {
+            header("X-Emby-Authorization", authHeader())
+            parameter("Fields", ITEM_DETAIL_FIELDS)
+            parameter("EnableUserData", true)
+            parameter("EnableImages", true)
+            parameter("ImageTypeLimit", 1)
+            parameter("EnableImageTypes", "Primary,Backdrop,Logo,Thumb")
+        }.body()
+    }
+
+    suspend fun setPlayedState(itemId: String, played: Boolean) {
+        val response = if (played) {
+            http.post("$serverUrl/UserPlayedItems/$itemId") {
+                header("X-Emby-Authorization", authHeader())
+                parameter("userId", userId)
+            }
+        } else {
+            http.delete("$serverUrl/UserPlayedItems/$itemId") {
+                header("X-Emby-Authorization", authHeader())
+                parameter("userId", userId)
+            }
+        }
+        if (response.status.value !in 200..299) {
+            throw IllegalStateException("Failed to update watched state (${response.status.value})")
+        }
     }
 
     // ── Playback info (needed for subtitle stream metadata) ───────────────────
@@ -124,8 +318,27 @@ class JellyfinClient(
 
     // ── Image URL helper ──────────────────────────────────────────────────────
 
+    fun imageUrl(itemId: String, imageType: String, maxWidth: Int = 400): String =
+        "$serverUrl/Items/$itemId/Images/$imageType?maxWidth=$maxWidth&api_key=$token"
+
     fun posterUrl(itemId: String, maxWidth: Int = 400): String =
-        "$serverUrl/Items/$itemId/Images/Primary?maxWidth=$maxWidth&api_key=$token"
+        imageUrl(itemId, "Primary", maxWidth)
+
+    fun backdropUrl(itemId: String, maxWidth: Int = 1400): String =
+        imageUrl(itemId, "Backdrop", maxWidth)
+
+    fun thumbUrl(itemId: String, maxWidth: Int = 700): String =
+        imageUrl(itemId, "Thumb", maxWidth)
+
+    fun logoUrl(itemId: String, maxWidth: Int = 600): String =
+        imageUrl(itemId, "Logo", maxWidth)
 
     fun close() = http.close()
 }
+
+private fun ItemsResponse.toLibraryItemsPage(defaultStartIndex: Int): LibraryItemsPage =
+    LibraryItemsPage(
+        items = Items,
+        totalRecordCount = TotalRecordCount,
+        startIndex = StartIndex?.takeIf { it >= 0 } ?: defaultStartIndex
+    )

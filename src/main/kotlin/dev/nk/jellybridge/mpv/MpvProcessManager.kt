@@ -1,8 +1,17 @@
 package dev.nk.jellybridge.mpv
 
 import kotlinx.coroutines.delay
+import java.io.File
 
 const val MPV_IPC_SOCKET = "/tmp/mpv-jellyfin.sock"
+
+private const val MPV_PATH_ENV = "JELLYBRIDGE_MPV_PATH"
+
+private val DEFAULT_MPV_PATHS = listOf(
+    "/opt/homebrew/bin/mpv",
+    "/usr/local/bin/mpv",
+    "/opt/local/bin/mpv"
+)
 
 class MpvProcessManager {
     private var process: Process? = null
@@ -25,8 +34,9 @@ class MpvProcessManager {
     ) {
         require(!isRunning()) { "MPV is already running" }
 
+        val mpvExecutable = resolveMpvExecutable()
         val args = buildList {
-            add("mpv")
+            add(mpvExecutable)
             add("--input-ipc-server=$MPV_IPC_SOCKET")
             add("--no-terminal")
             add("--force-window=yes")
@@ -56,5 +66,34 @@ class MpvProcessManager {
         val code = p.exitValue()
         process = null
         return code
+    }
+
+    private fun resolveMpvExecutable(): String {
+        val configuredPath = System.getenv(MPV_PATH_ENV)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+
+        if (configuredPath != null) {
+            val configuredFile = File(configuredPath)
+            if (configuredFile.canExecute()) return configuredFile.absolutePath
+            error("$MPV_PATH_ENV points to a non-executable file: $configuredPath")
+        }
+
+        DEFAULT_MPV_PATHS
+            .map(::File)
+            .firstOrNull { it.canExecute() }
+            ?.let { return it.absolutePath }
+
+        System.getenv("PATH")
+            .orEmpty()
+            .split(File.pathSeparatorChar)
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .map { File(it, "mpv") }
+            .firstOrNull { it.canExecute() }
+            ?.let { return it.absolutePath }
+
+        return "mpv"
     }
 }
