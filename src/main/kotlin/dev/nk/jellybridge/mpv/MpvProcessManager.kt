@@ -25,12 +25,13 @@ class MpvProcessManager {
      *   --input-ipc-server  — opens a Unix socket we connect to for JSON-RPC control
      *   --no-terminal       — don't steal our terminal
      *   --start             — seek to resume position on open
-     *   --sub-file          — load external subtitle files (one per flag)
+     *
+     * External subtitles are loaded after launch via IPC sub-add (not --sub-file)
+     * so we can give each track a readable title instead of its URL.
      */
     fun launch(
         streamUrl: String,
-        startPositionSeconds: Double = 0.0,
-        subtitleUrls: List<String> = emptyList()
+        startPositionSeconds: Double = 0.0
     ) {
         require(!isRunning()) { "MPV is already running" }
 
@@ -42,7 +43,6 @@ class MpvProcessManager {
             add("--force-window=yes")
             add("--keep-open=yes") // don't close window when playback ends
             if (startPositionSeconds > 0) add("--start=$startPositionSeconds")
-            subtitleUrls.forEach { add("--sub-file=$it") }
             add(streamUrl)
         }
 

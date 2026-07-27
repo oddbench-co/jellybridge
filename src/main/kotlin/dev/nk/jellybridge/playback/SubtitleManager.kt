@@ -21,12 +21,21 @@ class SubtitleManager(
      * Pass this to MpvProcessManager.launch(subtitleUrls) for preloaded subs,
      * or to MpvIpcClient.addSubtitle() for mid-playback switching.
      */
-    fun resolveSubtitleUrl(itemId: String, stream: MediaStream): String? {
-        if (!stream.IsTextSubtitleStream) return null
+    fun resolveSubtitleUrl(itemId: String, mediaSourceId: String, stream: MediaStream): String? {
+        // Only external / text subtitles can be side-loaded as files. Image subs
+        // (PGS, DVD) stay embedded and are selected by index in MPV instead.
+        if (!stream.IsTextSubtitleStream && !stream.IsExternal && stream.DeliveryMethod != "External") {
+            return null
+        }
 
-        // Prefer Jellyfin's pre-computed delivery URL, fall back to constructing it
-        return stream.DeliveryUrl?.let { "${client.serverUrl}$it?api_key=${client.token}" }
-            ?: client.subtitleUrl(itemId, stream.Index, subtitleFormat(stream.Codec))
+        // Prefer Jellyfin's pre-computed delivery URL, fall back to constructing it.
+        // DeliveryUrl may already carry a query string, so pick the right separator.
+        return stream.DeliveryUrl
+            ?.let { path ->
+                val separator = if (path.contains('?')) '&' else '?'
+                "${client.serverUrl}$path${separator}api_key=${client.token}"
+            }
+            ?: client.subtitleUrl(itemId, mediaSourceId, stream.Index, subtitleFormat(stream.Codec))
     }
 
     /**
@@ -34,9 +43,9 @@ class SubtitleManager(
      * For text subs: loads the external file via IPC.
      * For image subs: tells MPV to select the embedded track by index.
      */
-    suspend fun switchSubtitle(itemId: String, stream: MediaStream) {
+    suspend fun switchSubtitle(itemId: String, mediaSourceId: String, stream: MediaStream) {
         if (stream.IsTextSubtitleStream) {
-            val url = resolveSubtitleUrl(itemId, stream) ?: return
+            val url = resolveSubtitleUrl(itemId, mediaSourceId, stream) ?: return
             ipc.addSubtitle(url)
         } else {
             ipc.setSubtitleTrack(stream.Index)

@@ -150,9 +150,23 @@ class MpvIpcClient(private val socketPath: String = MPV_IPC_SOCKET) {
         sendCommand("set_property", "aid", trackId)
     }
 
-    // Load and immediately select an external subtitle file
-    suspend fun addSubtitle(url: String) {
-        sendCommand("sub-add", url, "select")
+    /**
+     * Loads an external subtitle file.
+     *
+     * MPV's sub-add takes positional args: <url> <flags> <title> <lang>.
+     * Passing a title makes MPV's subtitle menu show a readable name instead of
+     * deriving one from the URL. Use select=false to preload without stealing
+     * selection (track picking is handled separately).
+     */
+    suspend fun addSubtitle(url: String, title: String? = null, lang: String? = null, select: Boolean = true) {
+        val flags = if (select) "select" else "auto"
+        // sub-add is positional, so a lang requires a (possibly empty) title before it.
+        val effectiveTitle = title ?: if (lang != null) "" else null
+        when {
+            effectiveTitle != null && lang != null -> sendCommand("sub-add", url, flags, effectiveTitle, lang)
+            effectiveTitle != null -> sendCommand("sub-add", url, flags, effectiveTitle)
+            else -> sendCommand("sub-add", url, flags)
+        }
     }
 
     // Switch to a subtitle track by MPV track id.

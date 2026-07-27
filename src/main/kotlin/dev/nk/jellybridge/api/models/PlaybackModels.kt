@@ -8,6 +8,35 @@ data class PlaybackInfoResponse(
     val PlaySessionId: String
 )
 
+// Sent as the POST body to /Items/{id}/PlaybackInfo. The DeviceProfile tells
+// Jellyfin what the client can play directly and how it wants subtitles
+// delivered — without it, external subtitle streams come back with no
+// DeliveryUrl and can't be side-loaded into MPV.
+@Serializable
+data class PlaybackInfoRequest(
+    val DeviceProfile: DeviceProfile
+)
+
+@Serializable
+data class DeviceProfile(
+    val Name: String,
+    val MaxStreamingBitrate: Long = 120_000_000,
+    val DirectPlayProfiles: List<DirectPlayProfile> = emptyList(),
+    val SubtitleProfiles: List<SubtitleProfile> = emptyList()
+)
+
+@Serializable
+data class DirectPlayProfile(
+    val Type: String,                       // "Video" | "Audio"
+    val Container: String? = null           // null / empty = any container
+)
+
+@Serializable
+data class SubtitleProfile(
+    val Format: String,                     // "srt", "ass", "vtt", ...
+    val Method: String                      // "External" | "Embed" | "Encode"
+)
+
 @Serializable
 data class MediaSource(
     val Id: String,

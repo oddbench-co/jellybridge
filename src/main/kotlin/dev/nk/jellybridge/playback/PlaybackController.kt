@@ -59,9 +59,12 @@ class PlaybackController(
         currentMediaStreams = mediaSource.MediaStreams
         currentSubtitleFiles = subtitleManager
             .parseSubtitleStreams(mediaSource.MediaStreams)
-            .filter { it.IsTextSubtitleStream }
+            // Side-load anything deliverable as an external file. Don't gate on
+            // IsTextSubtitleStream alone — external .srt files sitting next to the
+            // movie must reach MPV via --sub-file or they never appear as tracks.
+            .filter { it.IsTextSubtitleStream || it.IsExternal || it.DeliveryMethod == "External" }
             .mapNotNull { stream ->
-                subtitleManager.resolveSubtitleUrl(itemId, stream)?.let { url ->
+                subtitleManager.resolveSubtitleUrl(itemId, mediaSource.Id, stream)?.let { url ->
                     SubtitleFile(stream, url)
                 }
             }
@@ -87,11 +90,11 @@ class PlaybackController(
 
         processManager.launch(
             streamUrl = streamUrl,
-            startPositionSeconds = resumeSeconds,
-            subtitleUrls = currentSubtitleFiles.map { it.url }
+            startPositionSeconds = resumeSeconds
         )
 
         ipc.connect()
+        loadExternalSubtitles()
         applyPlaybackSelection(streamSelection)
         syncSelectedStreamsFromMpv(savePreference = false)
 
@@ -169,6 +172,21 @@ class PlaybackController(
             AudioStreamIndex = currentAudioStreamIndex,
             SubtitleStreamIndex = currentSubtitleStreamIndex
         )
+
+    // Preload external subtitle files via IPC so each gets a readable title in
+    // MPV's subtitle menu. select=false: track selection happens afterwards.
+    private suspend fun loadExternalSubtitles() {
+        currentSubtitleFiles.forEach { sub ->
+            val title = sub.stream.DisplayTitle?.takeIf { it.isNotBlank() }
+                ?: PlaybackStreamPreferences.streamLabel(sub.stream, "Subtitle")
+            ipc.addSubtitle(
+                url = sub.url,
+                title = title,
+                lang = sub.stream.Language?.takeIf { it.isNotBlank() },
+                select = false
+            )
+        }
+    }
 
     private suspend fun applyPlaybackSelection(selection: PlaybackStreamSelection) {
         val tracks = waitForMpvTracks()

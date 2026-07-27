@@ -274,11 +274,27 @@ class JellyfinClient(
     // ── Playback info (needed for subtitle stream metadata) ───────────────────
 
     suspend fun getPlaybackInfo(itemId: String): PlaybackInfoResponse {
-        return http.get("$serverUrl/Items/$itemId/PlaybackInfo") {
+        return http.post("$serverUrl/Items/$itemId/PlaybackInfo") {
             header("X-Emby-Authorization", authHeader())
             parameter("UserId", userId)
+            contentType(ContentType.Application.Json)
+            setBody(PlaybackInfoRequest(DeviceProfile = defaultDeviceProfile()))
         }.body()
     }
+
+    // Minimal profile: allow direct play of any video/audio, and declare that we
+    // can consume common text subtitle formats as external side-loaded files.
+    // This makes Jellyfin populate DeliveryMethod="External" + DeliveryUrl for
+    // external subtitle tracks so MPV can load them via --sub-file.
+    private fun defaultDeviceProfile(): DeviceProfile = DeviceProfile(
+        Name = CLIENT_NAME,
+        DirectPlayProfiles = listOf(
+            DirectPlayProfile(Type = "Video"),
+            DirectPlayProfile(Type = "Audio")
+        ),
+        SubtitleProfiles = listOf("srt", "subrip", "ass", "ssa", "vtt", "webvtt")
+            .map { SubtitleProfile(Format = it, Method = "External") }
+    )
 
     // ── Direct play URL ───────────────────────────────────────────────────────
 
@@ -286,9 +302,10 @@ class JellyfinClient(
     fun directPlayUrl(itemId: String, mediaSourceId: String): String =
         "$serverUrl/Videos/$itemId/stream?static=true&mediaSourceId=$mediaSourceId&api_key=$token"
 
-    // Subtitle file URL for a given stream index
-    fun subtitleUrl(itemId: String, streamIndex: Int, format: String = "srt"): String =
-        "$serverUrl/Videos/$itemId/Subtitles/$streamIndex/0/Stream.$format?api_key=$token"
+    // Subtitle file URL for a given stream index. Jellyfin's subtitle route
+    // requires the mediaSourceId segment, otherwise it 404s.
+    fun subtitleUrl(itemId: String, mediaSourceId: String, streamIndex: Int, format: String = "srt"): String =
+        "$serverUrl/Videos/$itemId/$mediaSourceId/Subtitles/$streamIndex/0/Stream.$format?api_key=$token"
 
     // ── Session reporting ─────────────────────────────────────────────────────
 
