@@ -206,6 +206,20 @@ Local preferences are saved under:
 
 ## Packaging And Installation
 
+For a self-contained personal macOS arm64 build of the Rust application, with
+the complete installed Homebrew mpv/FFmpeg codec graph embedded:
+
+```bash
+brew install mpv dylibbundler
+scripts/package-rust-app-personal.sh
+```
+
+The script creates `target/release/JellyBridge.app` and a compressed
+`JellyBridge_<version>_aarch64_self-contained.dmg`. It verifies code signatures,
+dependency paths, embedded-library completeness, and the final DMG checksum.
+This personal package is ad-hoc signed, not notarized, and includes GPL-enabled
+Homebrew components; do not use it as the public release artifact.
+
 Compose Desktop can create native packages for the current OS:
 
 ```bash

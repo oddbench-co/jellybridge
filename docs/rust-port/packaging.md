@@ -3,6 +3,22 @@
 Release packaging is fail-closed. The local Homebrew/system mpv graph may run
 the feasibility binary, but it cannot enter a package.
 
+## Personal full-codec macOS package
+
+The repository also provides a separate, explicitly personal-use workflow for
+macOS arm64:
+
+```bash
+brew install mpv dylibbundler
+scripts/package-rust-app-personal.sh
+```
+
+It embeds the complete installed Homebrew mpv dependency graph, rewrites every
+dependency to the app's `Contents/Frameworks` directory, applies an ad-hoc
+signature, audits for missing or build-machine-linked libraries, and creates a
+self-contained DMG. This graph includes GPL-enabled FFmpeg components and is
+not the audited public-release path described below.
+
 ## Native bundle contract
 
 Set `JELLYBRIDGE_RELEASE_NATIVE_BUNDLE` to an absolute or relative directory
