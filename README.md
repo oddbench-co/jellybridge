@@ -5,6 +5,11 @@ MPV for video playback. It is built as a lightweight desktop alternative to
 browser or Electron-based Jellyfin clients, with a strong preference for direct
 play instead of server-side transcoding.
 
+An isolated Rust/Slint/libmpv feasibility slice is under active development.
+It is not yet the production client and remains blocked on physical playback,
+packaging, and licensing certification. See the
+[Rust port gate](docs/rust-port/README.md) for its exact status and commands.
+
 The app handles Jellyfin login, library browsing, metadata display, MPV launch
 and control, resume reporting, watched-state updates, and audio/subtitle stream
 selection.
@@ -130,6 +135,14 @@ Available filters:
 Browse/search grids support sort and page-size controls. Page navigation is
 shown at the bottom of the grid.
 
+The Rust client presents Home as horizontally scrollable Jellyfin-style media
+shelves and library, folder, and search results as adaptive 2:3 poster grids.
+Its search updates after a 300 ms typing pause and stays scoped to the current
+folder. Sort choices cover name, date added, release date, and rating; Compact,
+Normal, and Large density settings use 220, 260, and 320 px target card widths
+and persist in the existing `settings.json`. Rust search results are currently
+capped at 120 items and show the server total when more results exist.
+
 ### Detail Pages
 
 Movies, episodes, series, and seasons open detail pages. Detail pages include
@@ -150,6 +163,15 @@ socket:
 
 Playback progress is periodically reported to Jellyfin so resume positions stay
 in sync.
+
+Player hotkeys:
+
+- `Space`, `K`, or `P`: play/pause.
+- `Left`/`Right`: seek 5 seconds; hold `Shift` to seek 30 seconds.
+- `Up`/`Down`: change volume by 5; `9`/`0` use mpv's 2-point steps.
+- `M`: mute, `F`: toggle fullscreen, `Esc`: leave fullscreen.
+- `A`: cycle audio tracks, `J`: cycle subtitles.
+- `Home`/`End`: jump to the start/end; `Q`: stop playback and return.
 
 ### Audio And Subtitle Tracks
 

@@ -1,0 +1,75 @@
+[package]
+name = "jellybridge-vertical-slice"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+[features]
+default = ["renderer-femtovg"]
+renderer-femtovg = ["slint/renderer-femtovg"]
+renderer-skia-opengl = ["slint/renderer-skia-opengl"]
+
+[dependencies]
+futures-util = "=0.3.31"
+getrandom = { version = "=0.3.4", features = ["std"] }
+glow = "=0.18.0"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+libmpv2 = "=6.0.0"
+libmpv2-sys = "=4.0.1"
+libloading = "=0.8.9"
+libc = "=0.2.189"
+raw-window-handle = "=0.6.2"
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "json", "query", "stream"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.145"
+slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "raw-window-handle-06", "accessibility", "compat-1-2"] }
+thiserror = "=2.0.17"
+tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "io-util", "signal"] }
+tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
+tracing = "=0.1.41"
+tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "env-filter"] }
+url = "=2.5.7"
+
+[build-dependencies]
+slint-build = "=1.17.1"
+
+[package.metadata.packager]
+product-name = "JellyBridge Player Slice"
+identifier = "dev.nk.jellybridge.player-slice"
+category = "Video"
+before-packaging-command = "../../scripts/prepare-slice-package.sh"
+icons = [
+    "../../src/main/resources/icon.png",
+    "../../src/main/resources/icon.icns",
+]
+resources = [
+    { src = "../../target/package-native/lib/*", target = "lib" },
+    { src = "../../target/package-native/SBOM.spdx.json", target = "compliance/SBOM.spdx.json" },
+    { src = "../../target/package-native/build-manifest.json", target = "compliance/build-manifest.json" },
+    { src = "../../target/package-native/corresponding-source.txt", target = "compliance/corresponding-source.txt" },
+]
+formats = ["app", "dmg", "deb", "appimage"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
+
+[package.metadata.packager.deb]
+depends = ["libc6 (>= 2.35)", "libfontconfig1"]
+
+[package.metadata.packager.appimage]
+excluded-libraries = [
+    "libGL.so*",
+    "libEGL.so*",
+    "libvulkan.so*",
+    "libva.so*",
+    "libvdpau.so*",
+]
+
+[[bin]]
+name = "jellybridge-player-slice"
+path = "src/main.rs"

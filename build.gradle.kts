@@ -60,6 +60,10 @@ compose.desktop {
             description = "Jellyfin bridge client powered by MPV"
             vendor = "nk"
 
+            macOS {
+                iconFile.set(project.file("src/main/resources/icon.icns"))
+            }
+
             linux {
                 iconFile.set(project.file("src/main/resources/icon.png"))
             }

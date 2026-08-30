@@ -1,0 +1,2471 @@
+import { Button, ComboBox, LineEdit, ListView, ScrollView, Slider } from "std-widgets.slint";
+
+export struct CatalogSection {
+    id: string,
+    title: string,
+    start-index: int,
+    count: int,
+}
+
+export struct CatalogItem {
+    id: string,
+    title: string,
+    subtitle: string,
+    kind: string,
+    kind-label: string,
+    placeholder: string,
+    artwork: image,
+    watched: bool,
+    progress: float,
+    is-container: bool,
+    playable: bool,
+}
+
+export struct DetailCard {
+    id: string,
+    title: string,
+    subtitle: string,
+    overview: string,
+    kind: string,
+    artwork: image,
+    watched: bool,
+    favorite: bool,
+    progress: float,
+    unplayed-count: int,
+}
+
+export struct DetailPerson {
+    id: string,
+    name: string,
+    role: string,
+    artwork: image,
+}
+
+component DetailHero inherits Rectangle {
+    in property <string> title;
+    in property <string> tagline;
+    in property <string> metadata;
+    in property <string> overview;
+    in property <string> genres;
+    in property <string> studios;
+    in property <string> media-info;
+    in property <string> series-id;
+    in property <string> series-name;
+    in property <string> season-id;
+    in property <string> season-name;
+    in property <image> poster;
+    in property <image> backdrop;
+    in property <image> logo;
+    in property <bool> wide-art: false;
+    in property <bool> playable: false;
+    in property <bool> watched: false;
+    in property <bool> favorite: false;
+    in property <bool> busy: false;
+    in property <[string]> audio-options;
+    in property <[string]> subtitle-options;
+    in-out property <int> audio-index: 0;
+    in-out property <int> subtitle-index: 0;
+    callback play();
+    callback set-watched(bool);
+    callback set-favorite(bool);
+    callback audio-selected(int);
+    callback subtitle-selected(int);
+    callback open-related(string, string);
+
+    height: 400px;
+    background: #111719;
+    clip: true;
+
+    Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
+    Rectangle { background: @linear-gradient(90deg, #0f1214fa 0%, #0f1214d8 55%, #0f121466 100%); }
+    Rectangle { background: @linear-gradient(180deg, #0f121420 0%, #0f1214 100%); }
+
+    HorizontalLayout {
+        padding-left: 28px;
+        padding-right: 28px;
+        padding-top: 26px;
+        padding-bottom: 24px;
+        spacing: 28px;
+
+        Rectangle {
+            width: root.wide-art ? 300px : 205px;
+            height: root.wide-art ? 169px : 308px;
+            background: #192124;
+            border-radius: 8px;
+            clip: true;
+            drop-shadow-color: #000000a0;
+            drop-shadow-blur: 20px;
+            Text { text: root.title; color: #52646c; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
+            Image { source: root.poster; width: 100%; height: 100%; image-fit: cover; }
+        }
+
+        VerticalLayout {
+            spacing: 9px;
+
+            Image { source: root.logo; width: 320px; height: 74px; image-fit: contain; visible: root.logo.width > 0; }
+            Text { text: root.title; color: #ffffff; font-size: 34px; font-weight: 800; wrap: word-wrap; }
+            Text { text: root.tagline; color: #e2e6e8; font-size: 14px; visible: root.tagline != ""; overflow: elide; }
+            Text { text: root.metadata; color: #d0d8dc; font-size: 13px; overflow: elide; }
+
+            HorizontalLayout {
+                height: 34px;
+                spacing: 6px;
+                visible: root.series-id != "" || root.season-id != "";
+                Button {
+                    text: root.series-name == "" ? "Series" : root.series-name;
+                    visible: root.series-id != "";
+                    clicked => { root.open-related(root.series-id, "Series"); }
+                }
+                Text {
+                    text: "›";
+                    color: #84949a;
+                    font-size: 17px;
+                    vertical-alignment: center;
+                    visible: root.series-id != "" && root.season-id != "";
+                }
+                Button {
+                    text: root.season-name == "" ? "Season" : root.season-name;
+                    visible: root.season-id != "";
+                    clicked => { root.open-related(root.season-id, "Season"); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            HorizontalLayout {
+                height: 42px;
+                spacing: 8px;
+                Button { text: "Play / Resume"; visible: root.playable; enabled: !root.busy; clicked => { root.play(); } }
+                Button { text: root.watched ? "✓ Watched" : "Mark watched"; enabled: !root.busy; clicked => { root.set-watched(!root.watched); } }
+                Button { text: root.favorite ? "★ Favorite" : "☆ Favorite"; enabled: !root.busy; clicked => { root.set-favorite(!root.favorite); } }
+            }
+
+            HorizontalLayout {
+                height: 38px;
+                spacing: 8px;
+                visible: root.audio-options.length > 1 || root.subtitle-options.length > 1;
+                ComboBox {
+                    width: 220px;
+                    model: root.audio-options;
+                    current-index: root.audio-index;
+                    visible: root.audio-options.length > 1;
+                    selected(_) => { root.audio-index = self.current-index; root.audio-selected(self.current-index); }
+                }
+                ComboBox {
+                    width: 220px;
+                    model: root.subtitle-options;
+                    current-index: root.subtitle-index;
+                    visible: root.subtitle-options.length > 1;
+                    selected(_) => { root.subtitle-index = self.current-index; root.subtitle-selected(self.current-index); }
+                }
+            }
+
+            Text { text: root.overview == "" ? "No overview available." : root.overview; color: #c3cdd1; font-size: 14px; wrap: word-wrap; max-height: 82px; overflow: elide; }
+            Text { text: root.genres == "" ? "" : "Genres  " + root.genres; color: #9eacb2; font-size: 12px; visible: root.genres != ""; overflow: elide; }
+            Text { text: root.studios == "" ? "" : "Studio  " + root.studios; color: #9eacb2; font-size: 12px; visible: root.studios != ""; overflow: elide; }
+            Text { text: root.media-info; color: #7f929a; font-size: 11px; visible: root.media-info != ""; overflow: elide; }
+        }
+    }
+}
+
+component DetailActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 40px;
+    border-radius: 7px;
+    border-width: action-focus.has-focus ? 2px : 1px;
+    border-color: action-focus.has-focus ? #72d5f6 : root.primary ? #29b9e9 : root.active ? #1689b1 : #3a484e;
+    background: !root.enabled ? #222a2d : action-touch.pressed ? #35464d : root.primary ? #00a4dc : root.active ? #173d4b : action-touch.has-hover ? #2a353a : #20292d;
+
+    Text {
+        text: root.text;
+        color: root.enabled ? #f7fafb : #78878d;
+        font-size: 13px;
+        font-weight: root.primary || root.active ? 700 : 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    action-focus := FocusScope {
+        key-pressed(event) => {
+            if root.enabled && (event.text == "\n" || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    action-touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => {
+            if root.enabled {
+                action-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+}
+
+component DetailBreadcrumbLink inherits Rectangle {
+    in property <string> text;
+    in property <length> width-limit: 220px;
+    callback clicked();
+
+    width: min(breadcrumb-label.preferred-width + 20px, root.width-limit);
+    height: 30px;
+    border-radius: 6px;
+    border-width: breadcrumb-focus.has-focus ? 2px : 0px;
+    border-color: #72d5f6;
+    background: breadcrumb-touch.has-hover ? #24363dba : transparent;
+
+    breadcrumb-label := Text {
+        text: root.text;
+        color: #6fd3f5;
+        font-size: 13px;
+        font-weight: 650;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    breadcrumb-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    breadcrumb-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            breadcrumb-focus.focus();
+            root.clicked();
+        }
+    }
+}
+
+component SeasonDetailHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> metadata;
+    in property <string> summary;
+    in property <string> overview;
+    in property <string> series-id;
+    in property <string> series-name;
+    in property <image> poster;
+    in property <image> backdrop;
+    in property <string> play-label;
+    in property <bool> playable: false;
+    in property <bool> watched: false;
+    in property <bool> favorite: false;
+    in property <bool> busy: false;
+    callback play();
+    callback set-watched(bool);
+    callback set-favorite(bool);
+    callback open-series(string);
+
+    height: 300px;
+    background: #101618;
+    clip: true;
+
+    Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
+    Rectangle { background: @linear-gradient(90deg, #0f1416fc 0%, #0f1416dc 58%, #0f141676 100%); }
+    Rectangle { background: @linear-gradient(180deg, #0f14162a 0%, #0f1416 100%); }
+
+    content := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 24px;
+        width: min(parent.width - 56px, 1180px);
+        height: 248px;
+
+        HorizontalLayout {
+            spacing: 24px;
+
+            Rectangle {
+                width: 144px;
+                height: 216px;
+                background: #1b2529;
+                border-radius: 8px;
+                border-color: #36454b;
+                border-width: 1px;
+                clip: true;
+                drop-shadow-color: #00000090;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 5px;
+
+                Text {
+                    text: root.title;
+                    color: #52666f;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Image { source: root.poster; width: 100%; height: 100%; image-fit: cover; }
+            }
+
+            VerticalLayout {
+                spacing: 7px;
+
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 5px;
+                    DetailBreadcrumbLink {
+                        text: root.series-name == "" ? "Series" : root.series-name;
+                        visible: root.series-id != "";
+                        clicked => { root.open-series(root.series-id); }
+                    }
+                    Text {
+                        text: "›";
+                        color: #75868d;
+                        font-size: 17px;
+                        vertical-alignment: center;
+                        visible: root.series-id != "";
+                    }
+                    Text {
+                        text: root.title;
+                        color: #a9b5ba;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                Text {
+                    text: root.title;
+                    color: #ffffff;
+                    font-size: 31px;
+                    font-weight: 800;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.metadata;
+                    color: #c8d1d5;
+                    font-size: 13px;
+                    visible: root.metadata != "";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.summary;
+                    color: #8fdcf5;
+                    font-size: 13px;
+                    font-weight: 650;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.overview == "" ? "No season overview available." : root.overview;
+                    color: #b8c3c7;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    max-height: 50px;
+                    overflow: elide;
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 9px;
+                    DetailActionButton {
+                        width: 118px;
+                        text: root.play-label == "" ? "Play" : root.play-label;
+                        primary: true;
+                        visible: root.playable;
+                        enabled: !root.busy;
+                        clicked => { root.play(); }
+                    }
+                    DetailActionButton {
+                        width: 142px;
+                        text: root.watched ? "✓ Watched" : "Mark watched";
+                        active: root.watched;
+                        enabled: !root.busy;
+                        clicked => { root.set-watched(!root.watched); }
+                    }
+                    DetailActionButton {
+                        width: 132px;
+                        text: root.favorite ? "★ Favorite" : "☆ Favorite";
+                        active: root.favorite;
+                        enabled: !root.busy;
+                        clicked => { root.set-favorite(!root.favorite); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+component SeriesDetailHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> tagline;
+    in property <string> metadata;
+    in property <string> summary;
+    in property <string> play-context;
+    in property <float> progress: 0;
+    in property <image> poster;
+    in property <image> backdrop;
+    in property <string> play-label;
+    in property <bool> playable: false;
+    in property <bool> watched: false;
+    in property <bool> favorite: false;
+    in property <bool> busy: false;
+    callback play();
+    callback set-watched(bool);
+    callback set-favorite(bool);
+
+    height: 300px;
+    background: #101618;
+    clip: true;
+
+    Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
+    Rectangle { background: @linear-gradient(90deg, #0f1416fc 0%, #0f1416dc 58%, #0f141676 100%); }
+    Rectangle { background: @linear-gradient(180deg, #0f14162a 0%, #0f1416 100%); }
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 24px;
+        width: min(parent.width - 56px, 1180px);
+        height: 248px;
+
+        HorizontalLayout {
+            spacing: 24px;
+
+            Rectangle {
+                width: 144px;
+                height: 216px;
+                background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
+                border-radius: 8px;
+                border-color: #36464c;
+                border-width: 1px;
+                clip: true;
+                drop-shadow-color: #00000090;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 5px;
+
+                Text {
+                    text: root.title;
+                    color: #526a74;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Image { source: root.poster; width: 100%; height: 100%; image-fit: cover; }
+            }
+
+            VerticalLayout {
+                spacing: 7px;
+
+                Text {
+                    text: root.title;
+                    color: #ffffff;
+                    font-size: 31px;
+                    font-weight: 800;
+                    wrap: word-wrap;
+                    max-height: 68px;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.tagline;
+                    color: #d0d8db;
+                    font-size: 13px;
+                    visible: root.tagline != "";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.metadata;
+                    color: #c8d1d5;
+                    font-size: 13px;
+                    visible: root.metadata != "";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.summary;
+                    color: #8fdcf5;
+                    font-size: 13px;
+                    font-weight: 650;
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    height: 22px;
+                    spacing: 10px;
+                    visible: root.play-context != "";
+                    Text {
+                        width: 190px;
+                        text: root.play-context;
+                        color: #aebbc0;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        height: 5px;
+                        background: #2d393e;
+                        border-radius: 2px;
+                        vertical-stretch: 0;
+                        visible: root.progress > 0 && root.progress < 1;
+                        Rectangle {
+                            x: 0px;
+                            width: parent.width * root.progress;
+                            height: 100%;
+                            background: #00a4dc;
+                            border-radius: 2px;
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 9px;
+                    DetailActionButton {
+                        width: 118px;
+                        text: root.play-label == "" ? "Play" : root.play-label;
+                        primary: true;
+                        visible: root.playable;
+                        enabled: !root.busy;
+                        clicked => { root.play(); }
+                    }
+                    DetailActionButton {
+                        width: 142px;
+                        text: root.watched ? "✓ Watched" : "Mark watched";
+                        active: root.watched;
+                        enabled: !root.busy;
+                        clicked => { root.set-watched(!root.watched); }
+                    }
+                    DetailActionButton {
+                        width: 132px;
+                        text: root.favorite ? "★ Favorite" : "☆ Favorite";
+                        active: root.favorite;
+                        enabled: !root.busy;
+                        clicked => { root.set-favorite(!root.favorite); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+component DetailTrackSelector inherits Rectangle {
+    in property <string> label;
+    in property <[string]> options;
+    in-out property <int> selected-index: 0;
+    callback selected(int);
+
+    height: 40px;
+    background: #151e21d8;
+    border-color: #2e3c42;
+    border-width: 1px;
+    border-radius: 7px;
+
+    Text {
+        x: 10px;
+        y: 0px;
+        width: 62px;
+        height: parent.height;
+        text: root.label;
+        color: #879aa2;
+        font-size: 10px;
+        font-weight: 700;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    ComboBox {
+        x: 70px;
+        y: 5px;
+        width: parent.width - 76px;
+        height: 30px;
+        model: root.options;
+        current-index: root.selected-index;
+        selected(_) => {
+            root.selected-index = self.current-index;
+            root.selected(self.current-index);
+        }
+    }
+}
+
+component MediaDetailHeader inherits Rectangle {
+    in property <string> title;
+    in property <string> tagline;
+    in property <string> metadata;
+    in property <string> series-id;
+    in property <string> series-name;
+    in property <string> season-id;
+    in property <string> season-name;
+    in property <image> artwork;
+    in property <image> backdrop;
+    in property <bool> episode: false;
+    in property <string> play-label;
+    in property <float> progress: 0;
+    in property <string> progress-label;
+    in property <bool> playable: false;
+    in property <bool> watched: false;
+    in property <bool> favorite: false;
+    in property <bool> busy: false;
+    in property <[string]> audio-options;
+    in property <[string]> subtitle-options;
+    in-out property <int> audio-index: 0;
+    in-out property <int> subtitle-index: 0;
+    property <bool> has-track-options: root.audio-options.length > 1 || root.subtitle-options.length > 1;
+    property <int> track-option-count: (root.audio-options.length > 1 ? 1 : 0) + (root.subtitle-options.length > 1 ? 1 : 0);
+    property <length> track-column-width: min(root.width - 56px, 1180px) - (root.episode ? 304px : 168px);
+    property <length> track-card-width: root.track-option-count == 1
+        ? min(240px, root.track-column-width)
+        : min(225px, (root.track-column-width - 8px) / 2);
+    callback play();
+    callback set-watched(bool);
+    callback set-favorite(bool);
+    callback audio-selected(int);
+    callback subtitle-selected(int);
+    callback open-related(string, string);
+
+    height: root.has-track-options ? 350px : 300px;
+    background: #101618;
+    clip: true;
+
+    Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
+    Rectangle { background: @linear-gradient(90deg, #0e1416fd 0%, #0e1416e2 58%, #0e14167a 100%); }
+    Rectangle { background: @linear-gradient(180deg, #0e141624 0%, #0e1416 100%); }
+
+    media-content := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 24px;
+        width: min(parent.width - 56px, 1180px);
+        height: root.has-track-options ? 302px : 252px;
+
+        HorizontalLayout {
+            spacing: 24px;
+
+            Rectangle {
+                width: root.episode ? 280px : 144px;
+                height: root.episode ? 158px : 216px;
+                background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
+                border-radius: 8px;
+                border-color: #36464c;
+                border-width: 1px;
+                clip: true;
+                drop-shadow-color: #00000090;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 5px;
+
+                Text {
+                    text: root.title;
+                    color: #526a74;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                Image { source: root.artwork; width: 100%; height: 100%; image-fit: cover; }
+            }
+
+            VerticalLayout {
+                spacing: 7px;
+
+                HorizontalLayout {
+                    height: 30px;
+                    spacing: 5px;
+                    visible: root.episode && (root.series-id != "" || root.season-id != "");
+                    DetailBreadcrumbLink {
+                        text: root.series-name == "" ? "Series" : root.series-name;
+                        width-limit: 180px;
+                        visible: root.series-id != "";
+                        clicked => { root.open-related(root.series-id, "Series"); }
+                    }
+                    Text {
+                        text: "›";
+                        color: #75868d;
+                        font-size: 17px;
+                        vertical-alignment: center;
+                        visible: root.series-id != "" && root.season-id != "";
+                    }
+                    DetailBreadcrumbLink {
+                        text: root.season-name == "" ? "Season" : root.season-name;
+                        width-limit: 140px;
+                        visible: root.season-id != "";
+                        clicked => { root.open-related(root.season-id, "Season"); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                Text {
+                    text: root.title;
+                    color: #ffffff;
+                    font-size: 31px;
+                    font-weight: 800;
+                    wrap: word-wrap;
+                    max-height: 68px;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.tagline;
+                    color: #d0d8db;
+                    font-size: 13px;
+                    visible: root.tagline != "";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.metadata;
+                    color: #9eddf2;
+                    font-size: 13px;
+                    font-weight: 600;
+                    visible: root.metadata != "";
+                    overflow: elide;
+                }
+                HorizontalLayout {
+                    height: 20px;
+                    spacing: 10px;
+                    visible: root.progress-label != "" && root.progress > 0 && root.progress < 1;
+                    Text {
+                        width: 118px;
+                        text: root.progress-label;
+                        color: #aab8bd;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                    Rectangle {
+                        height: 5px;
+                        background: #2d393e;
+                        border-radius: 2px;
+                        vertical-stretch: 0;
+                        Rectangle {
+                            x: 0px;
+                            width: parent.width * root.progress;
+                            height: 100%;
+                            background: #00a4dc;
+                            border-radius: 2px;
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 9px;
+                    DetailActionButton {
+                        width: root.episode ? 104px : 118px;
+                        text: root.play-label == "" ? "Play" : root.play-label;
+                        primary: true;
+                        visible: root.playable;
+                        enabled: !root.busy;
+                        clicked => { root.play(); }
+                    }
+                    DetailActionButton {
+                        width: root.episode ? 128px : 142px;
+                        text: root.watched ? "✓ Watched" : "Mark watched";
+                        active: root.watched;
+                        enabled: !root.busy;
+                        clicked => { root.set-watched(!root.watched); }
+                    }
+                    DetailActionButton {
+                        width: root.episode ? 118px : 132px;
+                        text: root.favorite ? "★ Favorite" : "☆ Favorite";
+                        active: root.favorite;
+                        enabled: !root.busy;
+                        clicked => { root.set-favorite(!root.favorite); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                HorizontalLayout {
+                    height: 40px;
+                    spacing: 8px;
+                    visible: root.has-track-options;
+
+                    DetailTrackSelector {
+                        width: root.track-card-width;
+                        label: "Audio";
+                        options: root.audio-options;
+                        selected-index <=> root.audio-index;
+                        visible: root.audio-options.length > 1;
+                        selected(index) => { root.audio-selected(index); }
+                    }
+                    DetailTrackSelector {
+                        width: root.track-card-width;
+                        label: "Subtitles";
+                        options: root.subtitle-options;
+                        selected-index <=> root.subtitle-index;
+                        visible: root.subtitle-options.length > 1;
+                        selected(index) => { root.subtitle-selected(index); }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+        }
+    }
+}
+
+component MediaInformationSection inherits Rectangle {
+    in property <string> overview;
+    in property <string> genres;
+    in property <string> studios;
+    in property <string> media-info;
+    property <bool> narrow: root.width < 900px;
+    property <length> overview-width: root.narrow
+        ? root.width - 56px
+        : min(root.width - 56px, 1180px) - 329px;
+
+    height: root.narrow
+        ? max(310px, overview-measure.preferred-height + 218px)
+        : max(220px, overview-measure.preferred-height + 88px);
+    background: #0f1214;
+
+    overview-measure := Text {
+        width: root.overview-width;
+        text: root.overview == "" ? "No overview available." : root.overview;
+        font-size: 13px;
+        wrap: word-wrap;
+        visible: false;
+    }
+
+    if !root.narrow: HorizontalLayout {
+        x: (parent.width - self.width) / 2;
+        y: 24px;
+        width: min(parent.width - 56px, 1180px);
+        height: parent.height - 40px;
+        spacing: 28px;
+
+        VerticalLayout {
+            spacing: 10px;
+            Text { text: "About"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
+            wide-overview := Text {
+                text: root.overview == "" ? "No overview available." : root.overview;
+                color: #b2bec2;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        Rectangle { width: 1px; background: #29353a; }
+
+        VerticalLayout {
+            width: 300px;
+            spacing: 8px;
+            Text { text: "Details"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
+            Text { text: "Genres"; color: #778a92; font-size: 11px; visible: root.genres != ""; }
+            Text { text: root.genres; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+            Text { text: "Studio"; color: #778a92; font-size: 11px; visible: root.studios != ""; }
+            Text { text: root.studios; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+            Text { text: "Media"; color: #778a92; font-size: 11px; visible: root.media-info != ""; }
+            Text { text: root.media-info; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+            Text {
+                text: "No additional details available.";
+                color: #87979d;
+                font-size: 12px;
+                visible: root.genres == "" && root.studios == "" && root.media-info == "";
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+
+    if root.narrow: VerticalLayout {
+        x: 28px;
+        y: 22px;
+        width: parent.width - 56px;
+        height: parent.height - 36px;
+        spacing: 9px;
+
+        Text { text: "About"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
+        narrow-overview := Text {
+            text: root.overview == "" ? "No overview available." : root.overview;
+            color: #b2bec2;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 1px; background: #29353a; }
+        Text { text: "Details"; color: #f5f8f9; font-size: 18px; font-weight: 720; }
+        Text { text: "Genres  " + root.genres; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+        Text { text: "Studio  " + root.studios; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+        Text { text: "Media  " + root.media-info; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+        Text {
+            text: "No additional details available.";
+            color: #87979d;
+            font-size: 12px;
+            visible: root.genres == "" && root.studios == "" && root.media-info == "";
+        }
+        Rectangle { vertical-stretch: 1; }
+    }
+}
+
+component DetailSeasonCard inherits Rectangle {
+    in property <DetailCard> season;
+    callback open();
+
+    height: root.width * 1.5 + 50px;
+    background: transparent;
+
+    card-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.open();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    card-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            card-focus.focus();
+            root.open();
+        }
+    }
+
+    VerticalLayout {
+        spacing: 7px;
+        Rectangle {
+            height: root.width * 1.5;
+            background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
+            border-color: card-focus.has-focus ? #62ccee : card-touch.has-hover ? #52646c : #2f3d43;
+            border-width: card-focus.has-focus ? 3px : card-touch.has-hover ? 2px : 1px;
+            border-radius: 8px;
+            clip: true;
+            drop-shadow-color: card-touch.has-hover ? #000000a0 : #00000065;
+            drop-shadow-blur: card-touch.has-hover ? 14px : 7px;
+            drop-shadow-offset-y: card-touch.has-hover ? 5px : 3px;
+
+            Text {
+                text: root.season.title;
+                color: #526a74;
+                font-size: 14px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Image { source: root.season.artwork; width: 100%; height: 100%; image-fit: cover; }
+            if root.season.unplayed-count > 0: Rectangle {
+                x: parent.width - 42px;
+                y: 9px;
+                width: 32px;
+                height: 25px;
+                border-radius: 13px;
+                background: #00a4dc;
+                Text {
+                    text: root.season.unplayed-count;
+                    color: white;
+                    font-size: 11px;
+                    font-weight: 750;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if root.season.watched && root.season.unplayed-count == 0: Rectangle {
+                x: parent.width - 35px;
+                y: 9px;
+                width: 25px;
+                height: 25px;
+                border-radius: 13px;
+                background: #00a4dc;
+                Text { text: "✓"; color: white; font-size: 14px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        Text { text: root.season.title; color: #f5f8f9; font-size: 14px; font-weight: 700; overflow: elide; }
+        Text { text: root.season.subtitle; color: #899aa1; font-size: 11px; overflow: elide; }
+    }
+}
+
+component DetailSeasonShelf inherits Rectangle {
+    in property <[DetailCard]> seasons;
+    in property <string> summary;
+    in property <bool> failed: false;
+    callback open(string, string);
+    property <length> card-width: 158px;
+    property <length> content-width: max(0px, root.seasons.length * (root.card-width + 16px) - 16px);
+    property <length> offset-x: 0px;
+    property <length> viewport-width: min(root.width - 56px, 1180px);
+    property <length> viewport-x: (root.width - root.viewport-width) / 2;
+    property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
+    background: #0f1214;
+
+    Text {
+        x: root.viewport-x;
+        y: 16px;
+        text: "Seasons";
+        color: #f5f8f9;
+        font-size: 22px;
+        font-weight: 750;
+    }
+    Text {
+        x: root.viewport-x;
+        y: 20px;
+        width: root.viewport-width;
+        text: root.summary;
+        color: #84969d;
+        font-size: 12px;
+        horizontal-alignment: right;
+        visible: root.seasons.length > 0;
+        overflow: elide;
+    }
+
+    if root.seasons.length == 0: Rectangle {
+        x: root.viewport-x;
+        y: 55px;
+        width: root.viewport-width;
+        height: 116px;
+        background: #182024;
+        border-color: #2b383d;
+        border-width: 1px;
+        border-radius: 8px;
+        Text {
+            text: root.failed ? "Seasons could not be loaded." : "No seasons are available for this series.";
+            color: #94a4aa;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    season-viewport := Rectangle {
+        x: root.viewport-x;
+        y: 55px;
+        width: root.viewport-width;
+        height: parent.height - 64px;
+        clip: true;
+        visible: root.seasons.length > 0;
+
+        HorizontalLayout {
+            x: root.offset-x;
+            width: root.content-width;
+            spacing: 16px;
+            for season in root.seasons: DetailSeasonCard {
+                width: root.card-width;
+                season: season;
+                open => { root.open(season.id, season.kind); }
+            }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x - 18px;
+        y: 142px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: season-left-touch.has-hover ? #2b393fef : #171e21e5;
+        border-color: #3a484e;
+        border-width: 1px;
+        visible: root.offset-x < -1px;
+        Text { text: "‹"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        season-left-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = min(0px, root.offset-x + season-viewport.width * 0.8); }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x + root.viewport-width - 20px;
+        y: 142px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: season-right-touch.has-hover ? #2b393fef : #171e21e5;
+        border-color: #3a484e;
+        border-width: 1px;
+        visible: root.content-width > root.viewport-width && root.offset-x > root.minimum-offset + 1px;
+        Text { text: "›"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        season-right-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = max(root.minimum-offset, root.offset-x - season-viewport.width * 0.8); }
+        }
+    }
+}
+
+component DetailEpisodeRow inherits Rectangle {
+    in property <DetailCard> episode;
+    in property <bool> busy: false;
+    property <bool> emphasized: row-touch.has-hover || row-focus.has-focus;
+    callback open(string, string);
+    callback play(string);
+    callback set-watched(string, bool);
+    height: 142px;
+    background: root.episode.watched
+        ? (root.emphasized ? #1b2225 : #121719)
+        : (row-touch.has-hover ? #222c30 : #192124);
+    border-color: row-focus.has-focus
+        ? #62ccee
+        : root.episode.watched
+            ? (row-touch.has-hover ? #354146 : #252e32)
+            : (row-touch.has-hover ? #36464d : #29363b);
+    border-width: row-focus.has-focus ? 2px : 1px;
+    border-radius: 8px;
+    clip: true;
+
+    row-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.open(root.episode.id, root.episode.kind);
+                return accept;
+            }
+            return reject;
+        }
+    }
+    row-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            row-focus.focus();
+            root.open(root.episode.id, root.episode.kind);
+        }
+    }
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 16px;
+        Rectangle {
+            width: 208px;
+            height: 117px;
+            background: @linear-gradient(145deg, #253238 0%, #111719 100%);
+            border-radius: 6px;
+            clip: true;
+            Text {
+                text: root.episode.subtitle == "" ? "Episode" : root.episode.subtitle;
+                color: #526a74;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Image { source: root.episode.artwork; width: 100%; height: 100%; image-fit: cover; }
+            if root.episode.watched: Rectangle {
+                background: root.emphasized ? #10171972 : #101719a0;
+            }
+            if root.episode.watched: Rectangle { x: parent.width - 31px; y: 7px; width: 24px; height: 24px; border-radius: 12px; background: #00a4dc; Text { text: "✓"; color: white; horizontal-alignment: center; vertical-alignment: center; } }
+            if root.episode.progress > 0 && root.episode.progress < 1: Rectangle { y: parent.height - 5px; width: parent.width; height: 5px; background: #20282c; Rectangle { x: 0px; width: parent.width * root.episode.progress; height: 100%; background: #00a4dc; } }
+        }
+        VerticalLayout {
+            spacing: 7px;
+            Text {
+                text: root.episode.title;
+                color: root.episode.watched ? (root.emphasized ? #c7d0d3 : #8a969a) : #f6f9fa;
+                font-size: 16px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.episode.subtitle;
+                color: root.episode.watched ? (root.emphasized ? #829ba4 : #667a82) : #8fd0e7;
+                font-size: 12px;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.episode.overview == "" ? "No episode overview available." : root.episode.overview;
+                color: root.episode.watched ? (root.emphasized ? #929ea2 : #747f83) : #aebbc0;
+                font-size: 12px;
+                wrap: word-wrap;
+                max-height: 48px;
+                overflow: elide;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+        VerticalLayout {
+            width: 118px;
+            spacing: 8px;
+            Rectangle { vertical-stretch: 1; }
+            DetailActionButton {
+                width: 118px;
+                text: root.episode.progress > 0 && !root.episode.watched ? "Resume" : "Play";
+                primary: true;
+                enabled: !root.busy;
+                clicked => { root.play(root.episode.id); }
+            }
+            DetailActionButton {
+                width: 118px;
+                text: root.episode.watched ? "✓ Watched" : "Mark watched";
+                active: root.episode.watched;
+                enabled: !root.busy;
+                clicked => { root.set-watched(root.episode.id, !root.episode.watched); }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}
+
+component DetailPeopleShelf inherits Rectangle {
+    in property <[DetailPerson]> people;
+    property <length> card-width: 112px;
+    property <length> content-width: max(0px, root.people.length * (root.card-width + 16px) - 16px);
+    property <length> offset-x: 0px;
+    property <length> viewport-width: min(root.width - 56px, 1180px);
+    property <length> viewport-x: (root.width - root.viewport-width) / 2;
+    property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
+    background: #0f1214;
+
+    Text {
+        x: root.viewport-x;
+        y: 12px;
+        text: "Cast";
+        color: #f5f8f9;
+        font-size: 21px;
+        font-weight: 750;
+    }
+    cast-viewport := Rectangle {
+        x: root.viewport-x;
+        y: 49px;
+        width: root.viewport-width;
+        height: parent.height - 57px;
+        clip: true;
+        HorizontalLayout {
+            x: root.offset-x;
+            width: root.content-width;
+            spacing: 14px;
+            for person in root.people: Rectangle {
+                width: root.card-width;
+                background: transparent;
+                VerticalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        height: root.card-width;
+                        border-radius: root.card-width / 2;
+                        background: @linear-gradient(145deg, #28373d 0%, #172024 100%);
+                        border-color: #314047;
+                        border-width: 1px;
+                        clip: true;
+                        Text {
+                            text: "?";
+                            color: #66818c;
+                            font-size: 28px;
+                            font-weight: 700;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        Image { source: person.artwork; width: 100%; height: 100%; image-fit: cover; }
+                    }
+                    Text { text: person.name; color: #ecf1f3; font-size: 12px; font-weight: 650; horizontal-alignment: center; overflow: elide; }
+                    Text { text: person.role; color: #84949a; font-size: 10px; horizontal-alignment: center; overflow: elide; }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x - 18px;
+        y: 80px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: cast-left-touch.has-hover ? #2b393fef : #171e21e5;
+        border-color: #3a484e;
+        border-width: 1px;
+        visible: root.offset-x < -1px;
+        Text { text: "‹"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        cast-left-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = min(0px, root.offset-x + cast-viewport.width * 0.8); }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x + root.viewport-width - 20px;
+        y: 80px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: cast-right-touch.has-hover ? #2b393fef : #171e21e5;
+        border-color: #3a484e;
+        border-width: 1px;
+        visible: root.content-width > root.viewport-width && root.offset-x > root.minimum-offset + 1px;
+        Text { text: "›"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        cast-right-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = max(root.minimum-offset, root.offset-x - cast-viewport.width * 0.8); }
+        }
+    }
+}
+
+component MediaTile inherits Rectangle {
+    in property <CatalogItem> item;
+    in property <bool> manage-scroll: false;
+    callback opened();
+    callback scroll-requested(length, length);
+
+    height: self.width * 1.5 + 58px;
+    background: transparent;
+
+    tile-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.opened();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    VerticalLayout {
+        spacing: 8px;
+
+        poster := Rectangle {
+            height: root.width * 1.5;
+            background: #182024;
+            border-color: tile-focus.has-focus ? #52c8f2 : tile-touch.has-hover ? #87969d : #2b353a;
+            border-width: tile-focus.has-focus ? 3px : tile-touch.has-hover ? 2px : 1px;
+            border-radius: 9px;
+            clip: true;
+            drop-shadow-color: tile-touch.has-hover ? #000000a8 : #00000070;
+            drop-shadow-blur: tile-touch.has-hover ? 15px : 8px;
+            drop-shadow-offset-y: tile-touch.has-hover ? 5px : 3px;
+
+            Rectangle {
+                background: @linear-gradient(145deg, #203039 0%, #101517 100%);
+                Text {
+                    text: root.item.placeholder;
+                    color: #56707b;
+                    font-size: min(parent.width / 3, 42px);
+                    font-weight: 750;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Image {
+                source: root.item.artwork;
+                width: 100%;
+                height: 100%;
+                image-fit: cover;
+            }
+
+            Rectangle {
+                x: 8px;
+                y: 8px;
+                width: kind-label.preferred-width + 14px;
+                height: 24px;
+                border-radius: 12px;
+                background: #101416dc;
+                kind-label := Text {
+                    text: root.item.kind-label;
+                    color: #e8f0f3;
+                    font-size: 10px;
+                    font-weight: 650;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.item.watched: Rectangle {
+                x: parent.width - 34px;
+                y: 8px;
+                width: 26px;
+                height: 26px;
+                border-radius: 13px;
+                background: #00a4dc;
+                Text {
+                    text: "✓";
+                    color: #ffffff;
+                    font-size: 15px;
+                    font-weight: 800;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.item.progress > 0 && root.item.progress < 1: Rectangle {
+                x: 0px;
+                y: parent.height - 6px;
+                width: parent.width;
+                height: 6px;
+                background: #202a2fdd;
+                Rectangle {
+                    x: 0px;
+                    width: parent.width * root.item.progress;
+                    height: parent.height;
+                    background: #00a4dc;
+                }
+            }
+
+            tile-touch := TouchArea {
+                mouse-cursor: pointer;
+                scroll-event(event) => {
+                    if root.manage-scroll && (event.delta-x != 0px || event.delta-y != 0px) {
+                        root.scroll-requested(event.delta-x, event.delta-y);
+                        return accept;
+                    }
+                    return reject;
+                }
+                clicked => {
+                    tile-focus.focus();
+                    root.opened();
+                }
+            }
+        }
+
+        Text {
+            text: root.item.title;
+            color: #f3f7f8;
+            font-size: 14px;
+            font-weight: 650;
+            overflow: elide;
+        }
+        Text {
+            text: root.item.subtitle == "" ? root.item.kind : root.item.subtitle;
+            color: #8f9da3;
+            font-size: 12px;
+            overflow: elide;
+        }
+    }
+}
+
+component CatalogShelf inherits Rectangle {
+    in property <CatalogSection> section;
+    in property <[CatalogItem]> items;
+    in property <length> card-width: 176px;
+    callback open-item(string, string, bool, bool);
+    callback vertical-scroll(length);
+    property <length> content-width: root.section.count * (root.card-width + 16px) - 16px;
+    property <length> shelf-offset-x: 0px;
+    property <length> minimum-shelf-offset: min(0px, shelf.width - root.content-width);
+
+    height: card-width * 1.5 + 112px;
+    background: transparent;
+
+    Text {
+        x: 24px;
+        y: 7px;
+        text: root.section.title;
+        color: #f3f7f8;
+        font-size: 20px;
+        font-weight: 720;
+    }
+
+    shelf := Rectangle {
+        x: 24px;
+        y: 43px;
+        width: parent.width - 48px;
+        height: root.card-width * 1.5 + 62px;
+        background: transparent;
+        clip: true;
+
+        HorizontalLayout {
+            x: root.shelf-offset-x;
+            width: root.content-width;
+            spacing: 16px;
+            for shelf-entry[item-index] in root.section.count: MediaTile {
+                width: root.card-width;
+                item: root.items[root.section.start-index + item-index];
+                manage-scroll: true;
+                opened => {
+                    root.open-item(self.item.id, self.item.kind, self.item.is-container, self.item.playable);
+                }
+                scroll-requested(delta-x, delta-y) => {
+                    if abs(delta-x) > abs(delta-y) {
+                        root.shelf-offset-x = max(
+                            root.minimum-shelf-offset,
+                            min(0px, root.shelf-offset-x + delta-x)
+                        );
+                    } else {
+                        root.vertical-scroll(delta-y);
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 4px;
+        y: 43px + root.card-width * 0.62;
+        width: 38px;
+        height: 58px;
+        border-radius: 19px;
+        background: left-touch.has-hover ? #263238f2 : #151b1ee0;
+        visible: root.shelf-offset-x < -1px;
+        Text { text: "‹"; color: #ffffff; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        left-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.shelf-offset-x = min(0px, root.shelf-offset-x + shelf.width * 0.8); }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 42px;
+        y: 43px + root.card-width * 0.62;
+        width: 38px;
+        height: 58px;
+        border-radius: 19px;
+        background: right-touch.has-hover ? #263238f2 : #151b1ee0;
+        visible: root.content-width > shelf.width && root.shelf-offset-x > root.minimum-shelf-offset + 1px;
+        Text { text: "›"; color: #ffffff; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        right-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.shelf-offset-x = max(root.minimum-shelf-offset, root.shelf-offset-x - shelf.width * 0.8); }
+        }
+    }
+}
+
+export component JellyBridgeWindow inherits Window {
+    title: "JellyBridge";
+    icon: @image-url("../../../src/main/resources/icon.png");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 760px;
+    min-height: 520px;
+    background: #0f1214;
+
+    in-out property <string> screen: "login";
+    in-out property <bool> busy: false;
+    in-out property <string> message: "";
+    in-out property <string> page-title: "Home";
+    in-out property <string> account-name: "";
+    in-out property <string> account-initial: "?";
+    in-out property <bool> can-go-back: false;
+    in-out property <[CatalogSection]> sections;
+    in-out property <[CatalogItem]> catalog-items;
+    in-out property <string> catalog-summary: "";
+    in-out property <bool> catalog-home: false;
+    in-out property <string> search-text: "";
+    in-out property <[string]> sort-options;
+    in-out property <int> sort-index: 0;
+    in-out property <int> density-index: 1;
+    in-out property <float> tile-target-width: 260;
+    property <int> grid-columns: max(1, floor((root.width / 1px - 48 + 18) / (root.tile-target-width + 18)));
+    property <length> grid-card-width: (root.width - 48px - (root.grid-columns - 1) * 18px) / root.grid-columns;
+    property <int> grid-row-count: ceil(root.catalog-items.length / root.grid-columns);
+    property <length> home-scroll-target-y: 0px;
+    property <length> home-scroll-y: root.home-scroll-target-y;
+    animate home-scroll-y { duration: 220ms; easing: ease-out; }
+
+    in-out property <string> detail-id: "";
+    in-out property <string> detail-title: "";
+    in-out property <string> detail-subtitle: "";
+    in-out property <string> detail-overview: "";
+    in-out property <image> detail-artwork;
+    in-out property <image> detail-backdrop;
+    in-out property <image> detail-logo;
+    in-out property <string> detail-kind: "";
+    in-out property <string> detail-tagline: "";
+    in-out property <string> detail-genres: "";
+    in-out property <string> detail-studios: "";
+    in-out property <string> detail-media-info: "";
+    in-out property <string> detail-series-id: "";
+    in-out property <string> detail-series-name: "";
+    in-out property <string> detail-series-summary: "";
+    in-out property <string> detail-play-context: "";
+    in-out property <string> detail-season-id: "";
+    in-out property <string> detail-season-name: "";
+    in-out property <string> detail-season-summary: "";
+    in-out property <string> detail-play-label: "";
+    in-out property <float> detail-progress: 0;
+    in-out property <string> detail-progress-label: "";
+    in-out property <bool> detail-playable: false;
+    in-out property <bool> detail-watched: false;
+    in-out property <bool> detail-favorite: false;
+    in-out property <bool> detail-wide-art: false;
+    in-out property <[DetailCard]> detail-seasons;
+    in-out property <[DetailCard]> detail-episodes;
+    in-out property <[DetailPerson]> detail-people;
+    in-out property <[string]> detail-audio-options;
+    in-out property <[string]> detail-subtitle-options;
+    in-out property <int> detail-audio-index: 0;
+    in-out property <int> detail-subtitle-index: 0;
+
+    in-out property <image> video-frame;
+    in-out property <string> player-status: "Preparing playback…";
+    in-out property <bool> paused: false;
+    in-out property <float> volume: 100;
+    in-out property <bool> fullscreen-player: false;
+    in-out property <bool> controls-visible: true;
+    in-out property <float> playback-position: 0;
+    in-out property <float> playback-duration: 0;
+    in-out property <string> playback-position-label: "0:00";
+    in-out property <string> playback-duration-label: "0:00";
+    in-out property <[string]> audio-options;
+    in-out property <[string]> subtitle-options;
+    in-out property <int> audio-index: 0;
+    in-out property <int> subtitle-index: 0;
+    out property <float> video-logical-width: root.width / 1px;
+    out property <float> video-logical-height: max(root.height - 112px, 1px) / 1px;
+
+    callback login(string, string, string);
+    callback logout();
+    callback retry();
+    callback open-item(string, string, bool, bool);
+    callback search(string);
+    callback sort-changed(int);
+    callback density-changed(int);
+    callback go-home();
+    callback go-back();
+    callback play-current();
+    callback open-detail(string, string);
+    callback play-detail(string);
+    callback set-detail-watched(string, bool);
+    callback set-detail-favorite(string, bool);
+    callback detail-audio-selected(int);
+    callback detail-subtitle-selected(int);
+    callback toggle-playback();
+    callback toggle-mute();
+    callback seek-relative(float);
+    callback volume-changed(float);
+    callback seek-absolute(float);
+    callback select-audio(int);
+    callback select-subtitle(int);
+    callback toggle-fullscreen();
+    callback player-activity();
+    callback leave-player();
+    callback player-key-pressed(string, bool, bool, bool) -> bool;
+
+    forward-focus: app-key-scope;
+
+    app-key-scope := FocusScope {
+        capture-key-pressed(event) => {
+            if root.screen == "player" && root.player-key-pressed(
+                event.text,
+                event.repeat,
+                event.modifiers.shift,
+                event.modifiers.control || event.modifiers.meta || event.modifiers.alt
+            ) {
+                return accept;
+            }
+            return reject;
+        }
+
+    if root.screen == "login": Rectangle {
+        background: @linear-gradient(180deg, #0f1214 0%, #151b1e 100%);
+
+        Rectangle {
+            width: min(parent.width - 48px, 860px);
+            height: 430px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            background: #1b2124;
+            border-color: #303a3f;
+            border-width: 1px;
+            border-radius: 12px;
+            drop-shadow-color: #00000080;
+            drop-shadow-blur: 24px;
+
+            HorizontalLayout {
+                padding: 38px;
+                spacing: 40px;
+
+                VerticalLayout {
+                    width: 42%;
+                    alignment: center;
+                    spacing: 12px;
+
+                    Rectangle {
+                        width: 62px;
+                        height: 62px;
+                        border-radius: 12px;
+                        background: #162f38;
+                        Image {
+                            source: @image-url("../../../src/main/resources/icon.png");
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                        }
+                    }
+                    Text {
+                        text: "JellyBridge";
+                        color: #00a4dc;
+                        font-size: 36px;
+                        font-weight: 800;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "Native Jellyfin playback with MPV";
+                        color: #aeb8bd;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: #303a3f;
+                }
+
+                VerticalLayout {
+                    spacing: 13px;
+                    vertical-stretch: 1;
+
+                    Text {
+                        text: "Sign in";
+                        color: #f3f7f8;
+                        font-size: 25px;
+                        font-weight: 700;
+                    }
+                    Text { text: "Server URL"; color: #aeb8bd; font-size: 12px; }
+                    server-input := LineEdit {
+                        text: "http://";
+                        enabled: !root.busy;
+                        placeholder-text: "http://jellyfin.local:8096";
+                    }
+                    Text { text: "Username"; color: #aeb8bd; font-size: 12px; }
+                    username-input := LineEdit {
+                        enabled: !root.busy;
+                        placeholder-text: "Jellyfin username";
+                    }
+                    Text { text: "Password"; color: #aeb8bd; font-size: 12px; }
+                    password-input := LineEdit {
+                        enabled: !root.busy;
+                        input-type: password;
+                        placeholder-text: "Password";
+                        accepted => {
+                            root.login(server-input.text, username-input.text, self.text);
+                        }
+                    }
+                    Text {
+                        text: root.message;
+                        color: #ff8d8d;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        visible: root.message != "";
+                    }
+                    Button {
+                        text: root.busy ? "Connecting…" : "Connect";
+                        enabled: !root.busy && server-input.text != "" && username-input.text != "";
+                        clicked => {
+                            root.login(server-input.text, username-input.text, password-input.text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.screen == "catalog" || root.screen == "detail": VerticalLayout {
+        spacing: 0px;
+
+        Rectangle {
+            height: 64px;
+            background: #111719f5;
+
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: #2a3438;
+            }
+
+            HorizontalLayout {
+                padding-left: 18px;
+                padding-right: 18px;
+                padding-top: 10px;
+                padding-bottom: 11px;
+                spacing: 10px;
+
+                Rectangle {
+                    width: 42px;
+                    border-radius: 21px;
+                    background: back-touch.has-hover ? #283338 : #1b2428;
+                    border-color: #344147;
+                    border-width: 1px;
+                    visible: root.can-go-back || root.screen == "detail";
+                    Text {
+                        text: "‹";
+                        color: #f2f6f7;
+                        font-size: 27px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    back-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.go-back(); }
+                    }
+                }
+
+                brand := Rectangle {
+                    width: 172px;
+                    background: transparent;
+                    Rectangle {
+                        x: 0px;
+                        y: 2px;
+                        width: 38px;
+                        height: 38px;
+                        border-radius: 10px;
+                        background: @linear-gradient(145deg, #08a9df 0%, #006c98 100%);
+                        Image {
+                            source: @image-url("../../../src/main/resources/icon.png");
+                            width: 100%;
+                            height: 100%;
+                            image-fit: contain;
+                        }
+                    }
+                    Text {
+                        x: 49px;
+                        text: "JellyBridge";
+                        color: #f4f8f9;
+                        font-size: 19px;
+                        font-weight: 760;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.go-home(); }
+                    }
+                }
+
+                Rectangle {
+                    width: 1px;
+                    background: #303a3f;
+                }
+
+                Rectangle {
+                    width: 70px;
+                    border-radius: 9px;
+                    background: root.catalog-home && root.screen == "catalog"
+                        ? #123746
+                        : home-touch.has-hover ? #202a2e : transparent;
+                    Text {
+                        text: "Home";
+                        color: root.catalog-home && root.screen == "catalog" ? #50c9f2 : #bac5c9;
+                        font-size: 13px;
+                        font-weight: 650;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    home-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.go-home(); }
+                    }
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.screen == "detail" ? root.detail-title : root.page-title;
+                    color: #7f9097;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    width: 174px;
+                    border-radius: 21px;
+                    background: #1a2327;
+                    border-color: #2f3b40;
+                    border-width: 1px;
+
+                    Rectangle {
+                        x: 5px;
+                        y: 4px;
+                        width: 34px;
+                        height: 34px;
+                        border-radius: 17px;
+                        background: #006f98;
+                        Text {
+                            text: root.account-initial;
+                            color: white;
+                            font-size: 15px;
+                            font-weight: 750;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        x: 48px;
+                        width: parent.width - 58px;
+                        text: root.account-name;
+                        color: #d6dfe2;
+                        font-size: 12px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+
+                Rectangle {
+                    width: 82px;
+                    border-radius: 9px;
+                    background: logout-touch.has-hover ? #332329 : transparent;
+                    border-color: logout-touch.has-hover ? #77414d : #384247;
+                    border-width: 1px;
+                    Text {
+                        text: "Sign out";
+                        color: logout-touch.has-hover ? #ffb6bd : #aebbc0;
+                        font-size: 12px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    logout-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.logout(); }
+                    }
+                }
+            }
+        }
+
+        if root.screen == "catalog": VerticalLayout {
+            spacing: 0px;
+
+            Rectangle {
+                height: root.width < 980px ? 142px : 92px;
+                background: #0f1214;
+
+                Text {
+                    x: 24px;
+                    y: 14px;
+                    text: root.page-title;
+                    color: #f3f7f8;
+                    font-size: 27px;
+                    font-weight: 750;
+                    overflow: elide;
+                }
+                Text {
+                    x: 24px;
+                    y: 52px;
+                    text: root.catalog-summary;
+                    color: #849399;
+                    font-size: 12px;
+                }
+
+                search-debounce := Timer {
+                    interval: 300ms;
+                    triggered => { root.search(root.search-text); }
+                }
+
+                search-input := LineEdit {
+                    x: root.width < 980px ? 24px : parent.width - 696px;
+                    y: root.width < 980px ? 91px : 26px;
+                    width: root.width < 980px ? parent.width - 482px : 300px;
+                    text <=> root.search-text;
+                    placeholder-text: root.catalog-home ? "Search all media" : "Search this library";
+                    enabled: !root.busy;
+                    edited => { search-debounce.restart(); }
+                    accepted => {
+                        search-debounce.stop();
+                        root.search(self.text);
+                    }
+                }
+
+                sort-combo := ComboBox {
+                    x: root.width < 980px ? parent.width - 440px : parent.width - 380px;
+                    y: root.width < 980px ? 91px : 26px;
+                    width: 222px;
+                    model: root.sort-options;
+                    current-index: root.sort-index;
+                    enabled: !root.busy;
+                    selected(_) => {
+                        root.sort-index = self.current-index;
+                        root.sort-changed(self.current-index);
+                    }
+                }
+
+                density-controls := Rectangle {
+                    x: parent.width - 204px;
+                    y: root.width < 980px ? 91px : 26px;
+                    width: 180px;
+                    height: 32px;
+                    border-radius: 7px;
+                    background: #1a2124;
+                    border-color: #303a3f;
+                    border-width: 1px;
+
+                    HorizontalLayout {
+                        spacing: 2px;
+                        padding: 3px;
+                        for density-label[density-item-index] in ["Compact", "Normal", "Large"]: Rectangle {
+                            border-radius: 5px;
+                            background: root.density-index == density-item-index ? #006f98 : density-touch.has-hover ? #283237 : transparent;
+                            Text {
+                                text: density-label;
+                                color: root.density-index == density-item-index ? #ffffff : #aeb8bd;
+                                font-size: 10px;
+                                font-weight: root.density-index == density-item-index ? 700 : 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            density-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.density-index = density-item-index;
+                                    root.density-changed(density-item-index);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: 1px;
+                background: #20282c;
+            }
+
+            Rectangle {
+                vertical-stretch: 1;
+                background: #0f1214;
+
+                if root.busy: VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Text {
+                        text: "Loading your library…";
+                        color: #aeb8bd;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                if !root.busy && root.catalog-items.length == 0: VerticalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    Text {
+                        text: root.message == "" ? (root.search-text == "" ? "Nothing to show" : "No matching media") : root.message;
+                        color: root.message == "" ? #aeb8bd : #ff8d8d;
+                        font-size: 16px;
+                        horizontal-alignment: center;
+                    }
+                    Button {
+                        text: "Retry";
+                        visible: root.message != "";
+                        clicked => { root.retry(); }
+                    }
+                }
+
+                if !root.busy && root.catalog-items.length > 0 && root.catalog-home: home-list := ListView {
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-y: root.home-scroll-y;
+                    for section in root.sections: CatalogShelf {
+                        width: root.width;
+                        section: section;
+                        items: root.catalog-items;
+                        card-width: root.tile-target-width * 1px;
+                        open-item(id, kind, is-container, playable) => {
+                            root.open-item(id, kind, is-container, playable);
+                        }
+                        vertical-scroll(delta-y) => {
+                            root.home-scroll-target-y = max(
+                                home-list.height - home-list.viewport-height,
+                                min(
+                                    0px,
+                                    root.home-scroll-target-y + max(-480px, min(480px, delta-y))
+                                )
+                            );
+                        }
+                    }
+                }
+
+                if !root.busy && root.catalog-items.length > 0 && !root.catalog-home: ListView {
+                    width: parent.width;
+                    height: parent.height;
+                    for grid-row[row-index] in root.grid-row-count: Rectangle {
+                        width: root.width;
+                        height: root.grid-card-width * 1.5 + 82px;
+                        background: transparent;
+                        HorizontalLayout {
+                            padding-left: 24px;
+                            padding-right: 24px;
+                            spacing: 18px;
+                            for grid-column[column-index] in root.grid-columns: Rectangle {
+                                width: root.grid-card-width;
+                                background: transparent;
+                                property <int> catalog-index: row-index * root.grid-columns + column-index;
+                                if self.catalog-index < root.catalog-items.length: MediaTile {
+                                    width: parent.width;
+                                    item: root.catalog-items[parent.catalog-index];
+                                    opened => {
+                                        root.open-item(self.item.id, self.item.kind, self.item.is-container, self.item.playable);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                height: root.message != "" && root.catalog-items.length > 0 ? 38px : 0px;
+                background: #3a1f22;
+                Text {
+                    text: root.message;
+                    color: #ffb1b1;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.screen == "detail": Rectangle {
+            vertical-stretch: 1;
+            background: #0f1214;
+
+            ScrollView {
+              VerticalLayout {
+                spacing: 0px;
+                if root.detail-kind != "Series" && root.detail-kind != "Season" && root.detail-kind != "Movie" && root.detail-kind != "Episode": DetailHero {
+                    width: root.width;
+                    height: 400px;
+                    title: root.detail-title;
+                    tagline: root.detail-tagline;
+                    metadata: root.detail-subtitle;
+                    overview: root.detail-overview;
+                    genres: root.detail-genres;
+                    studios: root.detail-studios;
+                    media-info: root.detail-media-info;
+                    series-id: root.detail-series-id;
+                    series-name: root.detail-series-name;
+                    season-id: root.detail-season-id;
+                    season-name: root.detail-season-name;
+                    poster: root.detail-artwork;
+                    backdrop: root.detail-backdrop;
+                    logo: root.detail-logo;
+                    wide-art: root.detail-wide-art;
+                    playable: root.detail-playable;
+                    watched: root.detail-watched;
+                    favorite: root.detail-favorite;
+                    busy: root.busy;
+                    audio-options: root.detail-audio-options;
+                    subtitle-options: root.detail-subtitle-options;
+                    audio-index <=> root.detail-audio-index;
+                    subtitle-index <=> root.detail-subtitle-index;
+                    play => { root.play-current(); }
+                    set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+                    set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+                    audio-selected(index) => { root.detail-audio-selected(index); }
+                    subtitle-selected(index) => { root.detail-subtitle-selected(index); }
+                    open-related(id, kind) => { root.open-detail(id, kind); }
+                }
+
+                if root.detail-kind == "Series": SeriesDetailHeader {
+                    width: root.width;
+                    title: root.detail-title;
+                    tagline: root.detail-tagline;
+                    metadata: root.detail-subtitle;
+                    summary: root.detail-series-summary;
+                    play-context: root.detail-play-context;
+                    progress: root.detail-progress;
+                    poster: root.detail-artwork;
+                    backdrop: root.detail-backdrop;
+                    play-label: root.detail-play-label;
+                    playable: root.detail-playable;
+                    watched: root.detail-watched;
+                    favorite: root.detail-favorite;
+                    busy: root.busy;
+                    play => { root.play-current(); }
+                    set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+                    set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+                }
+
+                if root.detail-kind == "Movie" || root.detail-kind == "Episode": MediaDetailHeader {
+                    width: root.width;
+                    title: root.detail-title;
+                    tagline: root.detail-tagline;
+                    metadata: root.detail-subtitle;
+                    series-id: root.detail-series-id;
+                    series-name: root.detail-series-name;
+                    season-id: root.detail-season-id;
+                    season-name: root.detail-season-name;
+                    artwork: root.detail-artwork;
+                    backdrop: root.detail-backdrop;
+                    episode: root.detail-kind == "Episode";
+                    play-label: root.detail-play-label;
+                    progress: root.detail-progress;
+                    progress-label: root.detail-progress-label;
+                    playable: root.detail-playable;
+                    watched: root.detail-watched;
+                    favorite: root.detail-favorite;
+                    busy: root.busy;
+                    audio-options: root.detail-audio-options;
+                    subtitle-options: root.detail-subtitle-options;
+                    audio-index <=> root.detail-audio-index;
+                    subtitle-index <=> root.detail-subtitle-index;
+                    play => { root.play-current(); }
+                    set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+                    set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+                    audio-selected(index) => { root.detail-audio-selected(index); }
+                    subtitle-selected(index) => { root.detail-subtitle-selected(index); }
+                    open-related(id, kind) => { root.open-detail(id, kind); }
+                }
+
+                if root.detail-kind == "Season": SeasonDetailHeader {
+                    width: root.width;
+                    title: root.detail-title;
+                    metadata: root.detail-subtitle;
+                    summary: root.detail-season-summary;
+                    overview: root.detail-overview;
+                    series-id: root.detail-series-id;
+                    series-name: root.detail-series-name;
+                    poster: root.detail-artwork;
+                    backdrop: root.detail-backdrop;
+                    play-label: root.detail-play-label;
+                    playable: root.detail-playable;
+                    watched: root.detail-watched;
+                    favorite: root.detail-favorite;
+                    busy: root.busy;
+                    play => { root.play-current(); }
+                    set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+                    set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+                    open-series(id) => { root.open-detail(id, "Series"); }
+                }
+
+                if root.message != "": Rectangle {
+                    width: root.width;
+                    height: 38px; background: #3a1f22;
+                    Text { text: root.message; color: #ffb1b1; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                    Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
+                }
+
+                if root.detail-kind == "Movie" || root.detail-kind == "Episode": MediaInformationSection {
+                    width: root.width;
+                    overview: root.detail-overview;
+                    genres: root.detail-genres;
+                    studios: root.detail-studios;
+                    media-info: root.detail-media-info;
+                }
+
+                if root.detail-kind == "Series": DetailSeasonShelf {
+                    width: root.width;
+                    height: 360px;
+                    seasons: root.detail-seasons;
+                    summary: root.detail-series-summary;
+                    failed: root.message != "";
+                    open(id, kind) => { root.open-detail(id, kind); }
+                }
+
+                if root.detail-kind == "Series": MediaInformationSection {
+                    width: root.width;
+                    overview: root.detail-overview;
+                    genres: root.detail-genres;
+                    studios: root.detail-studios;
+                    media-info: root.detail-media-info;
+                }
+
+                if root.detail-kind == "Season": VerticalLayout {
+                    width: root.width;
+                    padding-top: 20px;
+                    padding-bottom: 28px;
+                    spacing: 10px;
+
+                    HorizontalLayout {
+                        height: 38px;
+                        padding-left: max(28px, (root.width - 1180px) / 2);
+                        padding-right: max(28px, (root.width - 1180px) / 2);
+                        Text {
+                            text: "Episodes";
+                            color: #f5f8f9;
+                            font-size: 22px;
+                            font-weight: 750;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Text {
+                            text: root.detail-season-summary;
+                            color: #87989f;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            visible: root.detail-episodes.length > 0;
+                        }
+                    }
+
+                    if root.detail-episodes.length == 0: HorizontalLayout {
+                        height: 116px;
+                        padding-left: max(28px, (root.width - 1180px) / 2);
+                        padding-right: max(28px, (root.width - 1180px) / 2);
+                        Rectangle {
+                            background: #182024;
+                            border-color: #2b383d;
+                            border-width: 1px;
+                            border-radius: 8px;
+                            Text {
+                                text: root.message == "" ? "No episodes are available for this season." : "Episodes could not be loaded.";
+                                color: #94a4aa;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    for episode in root.detail-episodes: HorizontalLayout {
+                        height: 142px;
+                        padding-left: max(28px, (root.width - 1180px) / 2);
+                        padding-right: max(28px, (root.width - 1180px) / 2);
+                        DetailEpisodeRow {
+                            horizontal-stretch: 1;
+                            episode: episode;
+                            busy: root.busy;
+                            open(id, kind) => { root.open-detail(id, kind); }
+                            play(id) => { root.play-detail(id); }
+                            set-watched(id, watched) => { root.set-detail-watched(id, watched); }
+                        }
+                    }
+                }
+
+                if root.detail-people.length > 0: DetailPeopleShelf {
+                    width: root.width;
+                    height: 220px;
+                    people: root.detail-people;
+                }
+              }
+            }
+        }
+    }
+
+    if root.screen == "player": Rectangle {
+        background: #000000;
+        player-surface := Rectangle {
+            width: parent.width;
+            height: parent.height;
+            background: #050607;
+            clip: true;
+
+            Image {
+                source: root.video-frame;
+                width: 100%;
+                height: 100%;
+                image-fit: contain;
+            }
+
+            single-click-timer := Timer {
+                running: false;
+                interval: 220ms;
+                triggered => {
+                    single-click-timer.stop();
+                    root.toggle-playback();
+                }
+            }
+
+            player-pointer := TouchArea {
+                mouse-cursor: root.fullscreen-player && !root.controls-visible ? none : default;
+                moved => { root.player-activity(); }
+                clicked => {
+                    root.player-activity();
+                    single-click-timer.restart();
+                }
+                double-clicked => {
+                    single-click-timer.stop();
+                    root.player-activity();
+                    root.toggle-fullscreen();
+                }
+            }
+        }
+
+        Rectangle {
+            visible: !root.fullscreen-player || root.controls-visible;
+            x: root.fullscreen-player ? 24px : 0px;
+            y: root.fullscreen-player ? 24px : 0px;
+            width: root.fullscreen-player ? parent.width - 48px : parent.width;
+            height: 64px;
+            border-radius: root.fullscreen-player ? 10px : 0px;
+            background: #101416e8;
+
+            HorizontalLayout {
+                padding-left: 14px;
+                padding-right: 14px;
+                spacing: 12px;
+                Button {
+                    text: "‹ Back";
+                    clicked => { root.player-activity(); root.leave-player(); }
+                }
+                Text {
+                    text: root.detail-title;
+                    color: #f3f7f8;
+                    font-size: 19px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.player-status;
+                    color: #aeb8bd;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle {
+            visible: !root.fullscreen-player || root.controls-visible;
+            x: root.fullscreen-player ? 24px : 0px;
+            y: parent.height - self.height - (root.fullscreen-player ? 24px : 0px);
+            width: root.fullscreen-player ? parent.width - 48px : parent.width;
+            height: 158px;
+            border-radius: root.fullscreen-player ? 10px : 0px;
+            background: #101416ee;
+
+            VerticalLayout {
+                padding: 14px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text {
+                        text: root.playback-position-label;
+                        color: #dbe3e7;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                    Slider {
+                        minimum: 0;
+                        maximum: max(root.playback-duration, 1);
+                        value: min(root.playback-position, self.maximum);
+                        horizontal-stretch: 1;
+                        released(value) => {
+                            root.player-activity();
+                            root.seek-absolute(value);
+                        }
+                    }
+                    Text {
+                        text: root.playback-duration-label;
+                        color: #dbe3e7;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: root.paused ? "Play" : "Pause";
+                        clicked => { root.player-activity(); root.toggle-playback(); }
+                    }
+                    Button {
+                        text: "−10 s";
+                        clicked => { root.player-activity(); root.seek-relative(-10); }
+                    }
+                    Button {
+                        text: "+10 s";
+                        clicked => { root.player-activity(); root.seek-relative(10); }
+                    }
+                    Text { text: "Audio"; color: #dbe3e7; vertical-alignment: center; }
+                    audio-combo := ComboBox {
+                        width: 180px;
+                        model: root.audio-options;
+                        current-index: root.audio-index;
+                        enabled: root.audio-options.length > 0;
+                        selected(_) => {
+                            root.player-activity();
+                            root.select-audio(self.current-index);
+                        }
+                    }
+                    Text { text: "Subtitles"; color: #dbe3e7; vertical-alignment: center; }
+                    subtitle-combo := ComboBox {
+                        width: 180px;
+                        model: root.subtitle-options;
+                        current-index: root.subtitle-index;
+                        enabled: root.subtitle-options.length > 0;
+                        selected(_) => {
+                            root.player-activity();
+                            root.select-subtitle(self.current-index);
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text { text: "Volume"; color: #dbe3e7; vertical-alignment: center; }
+                    Slider {
+                        minimum: 0;
+                        maximum: 100;
+                        value: root.volume;
+                        width: 150px;
+                        changed(value) => {
+                            root.player-activity();
+                            root.volume = value;
+                            root.volume-changed(value);
+                        }
+                    }
+                    Button {
+                        text: root.fullscreen-player ? "Exit Fullscreen" : "Fullscreen";
+                        clicked => { root.player-activity(); root.toggle-fullscreen(); }
+                    }
+                }
+            }
+        }
+    }
+    }
+}

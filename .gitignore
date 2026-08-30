@@ -3,6 +3,7 @@
 .kotlin/
 build/
 out/
+target/
 
 # IntelliJ / Android Studio project state
 .idea/
