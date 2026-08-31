@@ -1,7 +1,7 @@
 import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { DetailCard, DetailPerson, DetailKind } from "../../types.slint";
-import { DetailHero, SeasonDetailHeader, SeriesDetailHeader, MediaDetailHeader } from "detail-headers.slint";
+import { DetailHeader } from "detail-header.slint";
 import { MediaInformationSection } from "media-info-section.slint";
 import { DetailSeasonShelf } from "season-shelf.slint";
 import { DetailEpisodeRow } from "episode-row.slint";
@@ -58,12 +58,13 @@ export component DetailScreen inherits Rectangle {
     ScrollView {
       VerticalLayout {
         spacing: 0px;
-        if root.detail-kind != DetailKind.series && root.detail-kind != DetailKind.season && root.detail-kind != DetailKind.movie && root.detail-kind != DetailKind.episode: DetailHero {
+        DetailHeader {
             width: root.width;
-            height: 400px;
+            kind: root.detail-kind;
             title: root.detail-title;
             tagline: root.detail-tagline;
             metadata: root.detail-subtitle;
+            summary: root.detail-kind == DetailKind.season ? root.detail-season-summary : root.detail-series-summary;
             overview: root.detail-overview;
             genres: root.detail-genres;
             studios: root.detail-studios;
@@ -76,6 +77,9 @@ export component DetailScreen inherits Rectangle {
             backdrop: root.detail-backdrop;
             logo: root.detail-logo;
             wide-art: root.detail-wide-art;
+            play-label: root.detail-play-label;
+            progress-text: root.detail-kind == DetailKind.series ? root.detail-play-context : root.detail-progress-label;
+            progress: root.detail-progress;
             playable: root.detail-playable;
             watched: root.detail-watched;
             favorite: root.detail-favorite;
@@ -90,78 +94,6 @@ export component DetailScreen inherits Rectangle {
             audio-selected(index) => { root.detail-audio-selected(index); }
             subtitle-selected(index) => { root.detail-subtitle-selected(index); }
             open-related(id, kind) => { root.open-detail(id, kind); }
-        }
-
-        if root.detail-kind == DetailKind.series: SeriesDetailHeader {
-            width: root.width;
-            title: root.detail-title;
-            tagline: root.detail-tagline;
-            metadata: root.detail-subtitle;
-            summary: root.detail-series-summary;
-            play-context: root.detail-play-context;
-            progress: root.detail-progress;
-            poster: root.detail-artwork;
-            backdrop: root.detail-backdrop;
-            play-label: root.detail-play-label;
-            playable: root.detail-playable;
-            watched: root.detail-watched;
-            favorite: root.detail-favorite;
-            busy: root.busy;
-            play => { root.play-current(); }
-            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
-            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
-        }
-
-        if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaDetailHeader {
-            width: root.width;
-            title: root.detail-title;
-            tagline: root.detail-tagline;
-            metadata: root.detail-subtitle;
-            series-id: root.detail-series-id;
-            series-name: root.detail-series-name;
-            season-id: root.detail-season-id;
-            season-name: root.detail-season-name;
-            artwork: root.detail-artwork;
-            backdrop: root.detail-backdrop;
-            episode: root.detail-kind == DetailKind.episode;
-            play-label: root.detail-play-label;
-            progress: root.detail-progress;
-            progress-label: root.detail-progress-label;
-            playable: root.detail-playable;
-            watched: root.detail-watched;
-            favorite: root.detail-favorite;
-            busy: root.busy;
-            audio-options: root.detail-audio-options;
-            subtitle-options: root.detail-subtitle-options;
-            audio-index <=> root.detail-audio-index;
-            subtitle-index <=> root.detail-subtitle-index;
-            play => { root.play-current(); }
-            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
-            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
-            audio-selected(index) => { root.detail-audio-selected(index); }
-            subtitle-selected(index) => { root.detail-subtitle-selected(index); }
-            open-related(id, kind) => { root.open-detail(id, kind); }
-        }
-
-        if root.detail-kind == DetailKind.season: SeasonDetailHeader {
-            width: root.width;
-            title: root.detail-title;
-            metadata: root.detail-subtitle;
-            summary: root.detail-season-summary;
-            overview: root.detail-overview;
-            series-id: root.detail-series-id;
-            series-name: root.detail-series-name;
-            poster: root.detail-artwork;
-            backdrop: root.detail-backdrop;
-            play-label: root.detail-play-label;
-            playable: root.detail-playable;
-            watched: root.detail-watched;
-            favorite: root.detail-favorite;
-            busy: root.busy;
-            play => { root.play-current(); }
-            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
-            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
-            open-series(id) => { root.open-detail(id, "Series"); }
         }
 
         if root.message != "": Rectangle {

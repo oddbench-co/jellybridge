@@ -412,7 +412,7 @@ mod tests {
         let source = concat!(
             include_str!("../../ui/app-window.slint"),
             include_str!("../../ui/features/catalog/media-tile.slint"),
-            include_str!("../../ui/features/detail/detail-headers.slint"),
+            include_str!("../../ui/features/detail/detail-header.slint"),
             include_str!("../../ui/features/detail/episode-row.slint"),
         );
         let mut progress_fill_count = 0;
@@ -436,6 +436,6 @@ mod tests {
             );
         }
 
-        assert_eq!(progress_fill_count, 4, "update this contract for new fills");
+        assert_eq!(progress_fill_count, 3, "update this contract for new fills");
     }
 }
