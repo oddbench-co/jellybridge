@@ -27,9 +27,6 @@ export component CatalogScreen inherits VerticalLayout {
     private property <int> grid-columns: max(1, floor((root.width / 1px - 48 + 18) / (root.tile-target-width + 18)));
     private property <length> grid-card-width: (root.width - 48px - (root.grid-columns - 1) * 18px) / root.grid-columns;
     private property <int> grid-row-count: ceil(root.catalog-items.length / root.grid-columns);
-    private property <length> home-scroll-target-y: 0px;
-    private property <length> home-scroll-y: root.home-scroll-target-y;
-    animate home-scroll-y { duration: 220ms; easing: ease-out; }
 
     spacing: 0px;
 
@@ -165,10 +162,9 @@ export component CatalogScreen inherits VerticalLayout {
             }
         }
 
-        if !root.busy && root.catalog-items.length > 0 && root.catalog-home: home-list := ListView {
+        if !root.busy && root.catalog-items.length > 0 && root.catalog-home: ListView {
             width: parent.width;
             height: parent.height;
-            viewport-y: root.home-scroll-y;
             for section in root.sections: CatalogShelf {
                 width: root.width;
                 section: section;
@@ -176,15 +172,6 @@ export component CatalogScreen inherits VerticalLayout {
                 card-width: root.tile-target-width * 1px;
                 open-item(id, kind, is-container, playable) => {
                     root.open-item(id, kind, is-container, playable);
-                }
-                vertical-scroll(delta-y) => {
-                    root.home-scroll-target-y = max(
-                        home-list.height - home-list.viewport-height,
-                        min(
-                            0px,
-                            root.home-scroll-target-y + max(-480px, min(480px, delta-y))
-                        )
-                    );
                 }
             }
         }

@@ -3,9 +3,7 @@ import { CatalogItem } from "../../types.slint";
 
 export component MediaTile inherits Rectangle {
     in property <CatalogItem> item;
-    in property <bool> manage-scroll: false;
     callback opened();
-    callback scroll-requested(length, length);
 
     height: self.width * 1.5 + 58px;
     background: transparent;
@@ -100,15 +98,11 @@ export component MediaTile inherits Rectangle {
                 }
             }
 
+            // Scroll events deliberately pass through: the shelf (or the
+            // surrounding list view) owns scrolling, so it works uniformly
+            // over tiles, gaps, and titles alike.
             tile-touch := TouchArea {
                 mouse-cursor: pointer;
-                scroll-event(event) => {
-                    if root.manage-scroll && (event.delta-x != 0px || event.delta-y != 0px) {
-                        root.scroll-requested(event.delta-x, event.delta-y);
-                        return accept;
-                    }
-                    return reject;
-                }
                 clicked => {
                     tile-focus.focus();
                     root.opened();

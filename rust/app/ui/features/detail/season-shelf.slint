@@ -90,6 +90,7 @@ export component DetailSeasonShelf inherits Rectangle {
     property <length> viewport-width: min(root.width - 56px, 1180px);
     property <length> viewport-x: (root.width - root.viewport-width) / 2;
     property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
+    animate offset-x { duration: 120ms; easing: ease-out; }
     background: Theme.bg;
 
     Text {
@@ -137,6 +138,22 @@ export component DetailSeasonShelf inherits Rectangle {
         height: parent.height - 64px;
         clip: true;
         visible: root.seasons.length > 0;
+
+        // One scroll layer for the whole shelf; vertical deltas fall
+        // through to the page's ScrollView.
+        TouchArea {
+            scroll-event(event) => {
+                if abs(event.delta-x) > abs(event.delta-y) && root.content-width > root.viewport-width {
+                    root.offset-x = clamp(
+                        root.offset-x + event.delta-x,
+                        root.minimum-offset,
+                        0px
+                    );
+                    return accept;
+                }
+                return reject;
+            }
+        }
 
         HorizontalLayout {
             x: root.offset-x;

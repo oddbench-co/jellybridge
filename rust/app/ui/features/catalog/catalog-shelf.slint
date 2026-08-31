@@ -7,10 +7,12 @@ export component CatalogShelf inherits Rectangle {
     in property <[CatalogItem]> items;
     in property <length> card-width: 176px;
     callback open-item(string, string, bool, bool);
-    callback vertical-scroll(length);
     property <length> content-width: root.section.count * (root.card-width + 16px) - 16px;
     property <length> shelf-offset-x: 0px;
     property <length> minimum-shelf-offset: min(0px, shelf.width - root.content-width);
+    // Short enough to track trackpad deltas ~1:1, long enough that wheel
+    // ticks and the arrow-button jumps glide instead of teleporting.
+    animate shelf-offset-x { duration: 120ms; easing: ease-out; }
 
     height: card-width * 1.5 + 112px;
     background: transparent;
@@ -32,6 +34,24 @@ export component CatalogShelf inherits Rectangle {
         background: transparent;
         clip: true;
 
+        // One scroll layer for the whole shelf. Tiles don't consume scroll
+        // events, so this receives them uniformly over posters, gaps, and
+        // titles; vertical deltas are rejected so the surrounding list view
+        // scrolls natively.
+        TouchArea {
+            scroll-event(event) => {
+                if abs(event.delta-x) > abs(event.delta-y) && root.content-width > shelf.width {
+                    root.shelf-offset-x = clamp(
+                        root.shelf-offset-x + event.delta-x,
+                        root.minimum-shelf-offset,
+                        0px
+                    );
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
         HorizontalLayout {
             x: root.shelf-offset-x;
             width: root.content-width;
@@ -39,19 +59,8 @@ export component CatalogShelf inherits Rectangle {
             for shelf-entry[item-index] in root.section.count: MediaTile {
                 width: root.card-width;
                 item: root.items[root.section.start-index + item-index];
-                manage-scroll: true;
                 opened => {
                     root.open-item(self.item.id, self.item.kind, self.item.is-container, self.item.playable);
-                }
-                scroll-requested(delta-x, delta-y) => {
-                    if abs(delta-x) > abs(delta-y) {
-                        root.shelf-offset-x = max(
-                            root.minimum-shelf-offset,
-                            min(0px, root.shelf-offset-x + delta-x)
-                        );
-                    } else {
-                        root.vertical-scroll(delta-y);
-                    }
                 }
             }
         }
