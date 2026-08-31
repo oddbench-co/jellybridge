@@ -8,7 +8,7 @@ pkg_paths=()
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64)
         if ! command -v brew >/dev/null 2>&1; then
-            echo "Homebrew is required for the macOS feasibility build" >&2
+            echo "Homebrew is required for the macOS build" >&2
             exit 2
         fi
         rustup_bin="$(brew --prefix rustup)/bin"
@@ -36,7 +36,7 @@ case "$(uname -s)/$(uname -m)" in
     Linux/x86_64)
         rustup_path="$(command -v rustup || true)"
         if [[ -z "$rustup_path" ]]; then
-            echo "rustup is required for the Linux feasibility build" >&2
+            echo "rustup is required for the Linux build" >&2
             exit 2
         fi
         rustup_bin="$(dirname -- "$rustup_path")"
@@ -52,15 +52,15 @@ case "$(uname -s)/$(uname -m)" in
         fi
         ;;
     *)
-        echo "unsupported vertical-slice host: $(uname -s)/$(uname -m)" >&2
+        echo "unsupported host: $(uname -s)/$(uname -m)" >&2
         exit 2
         ;;
 esac
 export PATH="$rustup_bin:$PATH"
 export RUSTUP_TOOLCHAIN="1.98.0-$rust_host"
 if ((${#pkg_paths[@]} > 0)); then
-    slice_pkg_config_path="$(IFS=:; echo "${pkg_paths[*]}")"
-    export PKG_CONFIG_PATH="$slice_pkg_config_path${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    jellybridge_pkg_config_path="$(IFS=:; echo "${pkg_paths[*]}")"
+    export PKG_CONFIG_PATH="$jellybridge_pkg_config_path${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 fi
 
 cd "$PROJECT_DIR"

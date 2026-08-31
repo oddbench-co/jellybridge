@@ -4,7 +4,7 @@ set -euo pipefail
 # Creates a self-contained macOS package from the complete Homebrew mpv graph.
 # This intentionally includes GPL-enabled FFmpeg dependencies and is for the
 # owner's personal use only. Public release packages must continue to use the
-# audited native-bundle workflow in package-rust-slice.sh.
+# audited native-bundle workflow formerly proven by the player slice.
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(cd -- "$script_dir/.." && pwd)"
@@ -47,7 +47,7 @@ export LIBRARY_PATH="$mpv_prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 export DYLD_FALLBACK_LIBRARY_PATH="$mpv_prefix/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
 
 cd "$project_dir"
-"$script_dir/run-rust-slice.sh" build --locked --release -p jellybridge-app
+"$script_dir/cargo-env.sh" build --locked --release -p jellybridge-app
 "$packager_bin" \
     --manifest-path Cargo.toml \
     --packages jellybridge-app \

@@ -17,7 +17,7 @@ use slint::{
     BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, GraphicsAPI, Image, PhysicalSize,
 };
 
-use crate::player::RenderClient;
+use crate::services::player::RenderClient;
 
 type RedrawRequest = Arc<dyn Fn() + Send + Sync + 'static>;
 

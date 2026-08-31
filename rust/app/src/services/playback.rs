@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::proxy::{PlaybackOrigin, ProxySession, start_proxy, strict_client_with_extra_root};
+use crate::services::proxy::{PlaybackOrigin, ProxySession, start_proxy, strict_client_with_extra_root};
 
 const SUBTITLE_DIRECTORY_PREFIX: &str = "jellybridge-subs-v1-";
 const SUBTITLE_MARKER: &str = ".jellybridge-subtitle-cache-v1";
@@ -55,7 +55,7 @@ pub enum JellyfinSliceError {
     #[error("temporary subtitle storage failed")]
     SubtitleIo(#[source] std::io::Error),
     #[error("the loopback playback proxy failed")]
-    Proxy(#[from] crate::proxy::ProxyError),
+    Proxy(#[from] crate::services::proxy::ProxyError),
 }
 
 #[derive(Clone)]

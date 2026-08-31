@@ -2,6 +2,7 @@ mod api;
 mod catalog;
 mod detail;
 mod player_ui;
+mod services;
 mod session;
 
 use std::cell::{Cell, RefCell};
@@ -20,13 +21,13 @@ use detail::{
     DetailEffect, DetailItemData, DetailKind, DetailMessage, DetailModel, DetailMutationKind,
     DetailPageData, DetailTarget, ImageRef,
 };
-use jellybridge_vertical_slice::jellyfin::{
+use services::playback::{
     JellyfinSliceConfig, PreparedJellyfinPlayback, prepare_jellyfin_playback,
 };
-use jellybridge_vertical_slice::player::{
+use services::player::{
     PlayerCommand, PlayerEvent, PlayerSubtitleFile, PlayerTrack, create_player,
 };
-use jellybridge_vertical_slice::render::{RenderHost, native_display};
+use services::render::{RenderHost, native_display};
 use player_ui::{PlayerHotkeyAction, PlayerUiState, next_track_index, resolve_player_hotkey};
 use session::{
     SessionStore, SettingsStore, StoredPlaybackPreference, StoredSettings, cache_directory,
@@ -614,7 +615,7 @@ fn wire_player_controls(
 
 fn install_renderer(
     window: &JellyBridgeWindow,
-    render_client: jellybridge_vertical_slice::player::RenderClient,
+    render_client: services::player::RenderClient,
     image_is_cleared: Rc<Cell<bool>>,
     player_ui: Rc<RefCell<PlayerUiState>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
