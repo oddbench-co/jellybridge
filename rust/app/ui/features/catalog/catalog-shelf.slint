@@ -1,6 +1,7 @@
 import { Theme } from "../../theme.slint";
 import { CatalogSection, CatalogItem } from "../../types.slint";
 import { MediaTile } from "media-tile.slint";
+import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
 export component CatalogShelf inherits Rectangle {
     in property <CatalogSection> section;
@@ -34,22 +35,16 @@ export component CatalogShelf inherits Rectangle {
         background: transparent;
         clip: true;
 
-        // One scroll layer for the whole shelf. Tiles don't consume scroll
+        // One scroll layer for the whole shelf: tiles don't consume scroll
         // events, so this receives them uniformly over posters, gaps, and
-        // titles; vertical deltas are rejected so the surrounding list view
-        // scrolls natively.
-        TouchArea {
-            scroll-event(event) => {
-                if abs(event.delta-x) > abs(event.delta-y) && root.content-width > shelf.width {
-                    root.shelf-offset-x = clamp(
-                        root.shelf-offset-x + event.delta-x,
-                        root.minimum-shelf-offset,
-                        0px
-                    );
-                    return accept;
-                }
-                return reject;
-            }
+        // titles.
+        ShelfScrollArea {
+            width: 100%;
+            height: 100%;
+            viewport-width: shelf.width;
+            content-width: root.content-width;
+            minimum-offset: root.minimum-shelf-offset;
+            offset-x <=> root.shelf-offset-x;
         }
 
         HorizontalLayout {

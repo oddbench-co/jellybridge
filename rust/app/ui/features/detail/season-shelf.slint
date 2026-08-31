@@ -1,5 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { DetailCard } from "../../types.slint";
+import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
 export component DetailSeasonCard inherits Rectangle {
     in property <DetailCard> season;
@@ -139,20 +140,13 @@ export component DetailSeasonShelf inherits Rectangle {
         clip: true;
         visible: root.seasons.length > 0;
 
-        // One scroll layer for the whole shelf; vertical deltas fall
-        // through to the page's ScrollView.
-        TouchArea {
-            scroll-event(event) => {
-                if abs(event.delta-x) > abs(event.delta-y) && root.content-width > root.viewport-width {
-                    root.offset-x = clamp(
-                        root.offset-x + event.delta-x,
-                        root.minimum-offset,
-                        0px
-                    );
-                    return accept;
-                }
-                return reject;
-            }
+        ShelfScrollArea {
+            width: 100%;
+            height: 100%;
+            viewport-width: root.viewport-width;
+            content-width: root.content-width;
+            minimum-offset: root.minimum-offset;
+            offset-x <=> root.offset-x;
         }
 
         HorizontalLayout {

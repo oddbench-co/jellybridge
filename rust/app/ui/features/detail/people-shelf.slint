@@ -1,5 +1,6 @@
 import { Theme } from "../../theme.slint";
 import { DetailPerson } from "../../types.slint";
+import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
 export component DetailPeopleShelf inherits Rectangle {
     in property <[DetailPerson]> people;
@@ -27,20 +28,13 @@ export component DetailPeopleShelf inherits Rectangle {
         height: parent.height - 57px;
         clip: true;
 
-        // One scroll layer for the whole shelf; vertical deltas fall
-        // through to the page's ScrollView.
-        TouchArea {
-            scroll-event(event) => {
-                if abs(event.delta-x) > abs(event.delta-y) && root.content-width > root.viewport-width {
-                    root.offset-x = clamp(
-                        root.offset-x + event.delta-x,
-                        root.minimum-offset,
-                        0px
-                    );
-                    return accept;
-                }
-                return reject;
-            }
+        ShelfScrollArea {
+            width: 100%;
+            height: 100%;
+            viewport-width: root.viewport-width;
+            content-width: root.content-width;
+            minimum-offset: root.minimum-offset;
+            offset-x <=> root.offset-x;
         }
 
         HorizontalLayout {

@@ -1,0 +1,49 @@
+// Full-width scroll layer for a horizontal shelf. Applies horizontal deltas
+// (accelerated) to offset-x and locks each gesture to one axis: the first
+// event picks horizontal or vertical, and the lock holds until scroll events
+// pause. Vertical events are rejected so the surrounding ListView/ScrollView
+// scrolls natively.
+export component ShelfScrollArea inherits TouchArea {
+    in property <length> viewport-width;
+    in property <length> content-width;
+    in property <length> minimum-offset;
+    in-out property <length> offset-x;
+
+    // 3x makes a wheel tick / trackpad flick cover a useful distance.
+    in property <float> speed: 3.0;
+
+    // 0 = unlocked, 1 = horizontal, 2 = vertical
+    private property <int> axis: 0;
+
+    // Slint scroll events carry no begin/end phase, so a short idle timer
+    // defines "gesture ended" and releases the axis lock.
+    axis-reset := Timer {
+        running: false;
+        interval: 200ms;
+        triggered => {
+            self.stop();
+            root.axis = 0;
+        }
+    }
+
+    scroll-event(event) => {
+        if root.axis == 0 {
+            root.axis = abs(event.delta-x) > abs(event.delta-y) && root.content-width > root.viewport-width
+                ? 1
+                : 2;
+        }
+        axis-reset.restart();
+        if root.axis == 1 {
+            root.offset-x = clamp(
+                root.offset-x + event.delta-x * root.speed,
+                root.minimum-offset,
+                0px
+            );
+            // Swallow the whole event so its vertical component cannot
+            // scroll the page mid-gesture.
+            return accept;
+        }
+        // Vertical gesture: the shelf never moves; the outer view scrolls.
+        return reject;
+    }
+}
