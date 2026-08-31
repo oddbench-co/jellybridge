@@ -105,10 +105,9 @@ export component DetailHeader inherits Rectangle {
             VerticalLayout {
                 spacing: 7px;
 
-                HorizontalLayout {
+                if root.show-breadcrumbs: HorizontalLayout {
                     height: 30px;
                     spacing: 5px;
-                    visible: root.show-breadcrumbs;
                     DetailBreadcrumbLink {
                         text: root.series-name == "" ? "Series" : root.series-name;
                         width-limit: 180px;
@@ -139,12 +138,11 @@ export component DetailHeader inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
 
-                Image {
+                if root.is-other && root.logo.width > 0: Image {
                     source: root.logo;
                     width: 320px;
                     height: 74px;
                     image-fit: contain;
-                    visible: root.is-other && root.logo.width > 0;
                 }
                 Text {
                     text: root.title;
@@ -170,49 +168,43 @@ export component DetailHeader inherits Rectangle {
                     visible: root.metadata != "";
                     overflow: elide;
                 }
-                Text {
+                if (root.kind == DetailKind.series || root.kind == DetailKind.season) && root.summary != "": Text {
                     text: root.summary;
                     color: Theme.accent-bright;
                     font-size: 13px;
                     font-weight: 650;
-                    visible: (root.kind == DetailKind.series || root.kind == DetailKind.season) && root.summary != "";
                     overflow: elide;
                 }
-                Text {
+                if root.is-other || root.kind == DetailKind.season: Text {
                     text: root.overview == "" ? "No overview available." : root.overview;
                     color: Theme.text-secondary;
                     font-size: 13px;
                     wrap: word-wrap;
                     max-height: root.is-other ? 82px : 50px;
                     overflow: elide;
-                    visible: root.is-other || root.kind == DetailKind.season;
                 }
-                Text {
+                if root.is-other && root.genres != "": Text {
                     text: "Genres  " + root.genres;
                     color: Theme.text-muted;
                     font-size: 12px;
-                    visible: root.is-other && root.genres != "";
                     overflow: elide;
                 }
-                Text {
+                if root.is-other && root.studios != "": Text {
                     text: "Studio  " + root.studios;
                     color: Theme.text-muted;
                     font-size: 12px;
-                    visible: root.is-other && root.studios != "";
                     overflow: elide;
                 }
-                Text {
+                if root.is-other && root.media-info != "": Text {
                     text: root.media-info;
                     color: Theme.text-faint;
                     font-size: 11px;
-                    visible: root.is-other && root.media-info != "";
                     overflow: elide;
                 }
 
-                HorizontalLayout {
+                if !root.is-other && root.progress-text != "": HorizontalLayout {
                     height: 20px;
                     spacing: 10px;
-                    visible: !root.is-other && root.progress-text != "";
                     Text {
                         width: 190px;
                         text: root.progress-text;
@@ -267,10 +259,9 @@ export component DetailHeader inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                 }
 
-                HorizontalLayout {
+                if root.show-tracks: HorizontalLayout {
                     height: 40px;
                     spacing: 8px;
-                    visible: root.show-tracks;
 
                     DetailTrackSelector {
                         width: root.track-card-width;
