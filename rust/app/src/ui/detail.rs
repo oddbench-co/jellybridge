@@ -120,6 +120,7 @@ pub fn present(context: &AppContext, generation: u64) {
             window.set_detail_progress_label("".into());
             window.set_detail_seasons(ModelRc::new(VecModel::from(Vec::new())));
             window.set_detail_episodes(ModelRc::new(VecModel::from(Vec::new())));
+            window.set_detail_next_up(ModelRc::new(VecModel::<DetailCard>::default()));
             window.set_detail_people(ModelRc::new(VecModel::from(Vec::new())));
         });
         return;
@@ -160,6 +161,9 @@ pub fn present(context: &AppContext, generation: u64) {
     let message = page.children_error.clone().unwrap_or(error);
     let seasons = page.seasons.clone();
     let episodes = page.episodes.clone();
+    let next_up = (page.item.kind == DetailKind::Series)
+        .then(|| page.play_target().cloned())
+        .flatten();
     let people = page.item.people.clone();
     let audio_options = page
         .item
@@ -268,6 +272,10 @@ pub fn present(context: &AppContext, generation: u64) {
         if !patch_rows(&window.get_detail_episodes(), &episodes, |a, b| a.id == b.id) {
             window.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
         }
+        let next_up = next_up.iter().map(to_detail_card).collect::<Vec<_>>();
+        if !patch_rows(&window.get_detail_next_up(), &next_up, |a, b| a.id == b.id) {
+            window.set_detail_next_up(ModelRc::new(VecModel::from(next_up)));
+        }
         if !patch_rows(&window.get_detail_people(), &people, |a, b| {
             a.id == b.id && a.name == b.name
         }) {
@@ -293,6 +301,11 @@ pub fn present(context: &AppContext, generation: u64) {
 }
 
 fn to_detail_card(item: &DetailItemData) -> DetailCard {
+    let index_label = (item.kind == DetailKind::Episode)
+        .then_some(item.index_number)
+        .flatten()
+        .map(|number| format!("{number}."))
+        .unwrap_or_default();
     DetailCard {
         id: item.id.as_str().into(),
         title: item.title.as_str().into(),
@@ -306,21 +319,27 @@ fn to_detail_card(item: &DetailItemData) -> DetailCard {
         favorite: item.favorite,
         progress: item.progress,
         unplayed_count: item.unplayed_count.unwrap_or(0),
+        rating: item.community_rating.unwrap_or(0.0),
+        ends_at: ends_at_label(item).into(),
+        index_label: index_label.into(),
     }
 }
 
 fn detail_card_subtitle(item: &DetailItemData) -> String {
-    let episode_number = detail_episode_number(item);
     let runtime = item.runtime_seconds.map(|seconds| {
         let minutes = (seconds / 60.0).round() as u64;
         format!("{minutes} min")
     });
+    // Episode rows carry the episode number in their title and year/rating
+    // as dedicated fields; their subtitle is just the runtime.
+    if item.kind == DetailKind::Episode {
+        return runtime.unwrap_or_default();
+    }
     let unplayed = item
         .unplayed_count
         .filter(|count| *count > 0)
         .map(|count| format!("{count} unwatched"));
     [
-        episode_number,
         item.production_year.map(|year| year.to_string()),
         runtime,
         unplayed,

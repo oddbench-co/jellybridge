@@ -5,41 +5,7 @@ import { DetailSeasonShelf } from "season-shelf.slint";
 import { DetailEpisodeRow } from "episode-row.slint";
 import { EpisodeShelf } from "episode-shelf.slint";
 import { DetailPeopleShelf } from "people-shelf.slint";
-
-// Round icon action button for the title strip (play, replay, watched, ...).
-component DetailIconButton inherits Rectangle {
-    in property <string> glyph;
-    in property <bool> primary: false;
-    in property <bool> active: false;
-    in property <bool> enabled: true;
-    in property <string> tip;
-    callback clicked();
-
-    width: 44px;
-    height: 44px;
-    border-radius: 22px;
-    background: root.primary
-        ? (icon-touch.has-hover ? Theme.accent-bright : Theme.accent)
-        : root.active
-            ? Theme.accent-deep
-            : icon-touch.has-hover ? Theme.surface-hover : Theme.surface-raised;
-    border-color: root.primary || root.active ? transparent : Theme.border;
-    border-width: 1px;
-    opacity: root.enabled ? 1.0 : 0.45;
-
-    Text {
-        text: root.glyph;
-        color: root.primary ? Theme.bg : root.active ? Theme.text-bright : Theme.text-secondary;
-        font-size: 19px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-    icon-touch := TouchArea {
-        mouse-cursor: pointer;
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-    }
-}
+import { DetailIconButton } from "icon-button.slint";
 
 export component DetailScreen inherits Rectangle {
     in property <bool> busy;
@@ -79,6 +45,7 @@ export component DetailScreen inherits Rectangle {
     in property <bool> detail-watched;
     in property <bool> detail-favorite;
     in property <[DetailCard]> detail-seasons;
+    in property <[DetailCard]> detail-next-up;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
     in property <[string]> detail-audio-options;
@@ -412,6 +379,13 @@ export component DetailScreen inherits Rectangle {
             }
 
             // ── Kind-specific shelves ─────────────────────────────────────
+            if root.detail-kind == DetailKind.series && root.detail-next-up.length > 0: EpisodeShelf {
+                width: root.width;
+                episodes: root.detail-next-up;
+                heading: "Next Up";
+                open(id, kind) => { root.open-detail(id, kind); }
+            }
+
             if root.detail-kind == DetailKind.series: DetailSeasonShelf {
                 width: root.width;
                 height: 360px;
@@ -468,7 +442,7 @@ export component DetailScreen inherits Rectangle {
                 }
 
                 for episode in root.detail-episodes: HorizontalLayout {
-                    height: 142px;
+                    height: 158px;
                     padding-left: max(28px, (root.width - 1180px) / 2);
                     padding-right: max(28px, (root.width - 1180px) / 2);
                     DetailEpisodeRow {
@@ -478,6 +452,7 @@ export component DetailScreen inherits Rectangle {
                         open(id, kind) => { root.open-detail(id, kind); }
                         play(id) => { root.play-detail(id); }
                         set-watched(id, watched) => { root.set-detail-watched(id, watched); }
+                        set-favorite(id, favorite) => { root.set-detail-favorite(id, favorite); }
                     }
                 }
             }

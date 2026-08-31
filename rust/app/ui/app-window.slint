@@ -74,6 +74,7 @@ export component JellyBridgeWindow inherits Window {
     in property <bool> detail-watched: false;
     in property <bool> detail-favorite: false;
     in property <[DetailCard]> detail-seasons;
+    in property <[DetailCard]> detail-next-up;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
     in property <[string]> detail-audio-options;
@@ -249,6 +250,7 @@ export component JellyBridgeWindow inherits Window {
                 detail-watched: root.detail-watched;
                 detail-favorite: root.detail-favorite;
                 detail-seasons: root.detail-seasons;
+                detail-next-up: root.detail-next-up;
                 detail-episodes: root.detail-episodes;
                 detail-people: root.detail-people;
                 detail-audio-options: root.detail-audio-options;
