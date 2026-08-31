@@ -116,8 +116,9 @@ export component DetailScreen inherits Rectangle {
     ScrollView {
       content := Rectangle {
         width: root.width;
+        height: page-layout.preferred-height;
 
-        VerticalLayout {
+        page-layout := VerticalLayout {
             spacing: 0px;
 
             // ── Hero: backdrop with the item logo centered on it ──────────
@@ -306,6 +307,11 @@ export component DetailScreen inherits Rectangle {
                         Text { text: "Video"; width: 86px; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
                         Text { text: root.detail-media-info; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; overflow: elide; }
                     }
+                    if root.detail-audio-options.length == 1: HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Audio"; width: 86px; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
+                        Text { text: root.detail-audio-options[0]; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                    }
                     if root.detail-audio-options.length > 1: HorizontalLayout {
                         height: 34px;
                         spacing: 12px;
@@ -360,18 +366,11 @@ export component DetailScreen inherits Rectangle {
                         font-weight: 650;
                     }
 
-                    if root.detail-tags != "": HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: "Tags:"; color: Theme.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text {
-                            text: root.detail-tags;
-                            color: Theme.text-secondary;
-                            font-size: 12px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                            wrap: word-wrap;
-                            horizontal-stretch: 1;
-                        }
+                    if root.detail-tags != "": Text {
+                        text: "Tags: " + root.detail-tags;
+                        color: Theme.text-muted;
+                        font-size: 12px;
+                        wrap: word-wrap;
                     }
                     if root.detail-links.length > 0: HorizontalLayout {
                         spacing: 14px;

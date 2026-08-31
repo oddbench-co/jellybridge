@@ -14,7 +14,7 @@ const CLIENT_VERSION: &str = "0.1.0-rust";
 const DEVICE_NAME: &str = "Desktop";
 const DEVICE_ID: &str = "jellybridge-rust-desktop";
 const ITEM_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,Overview,RunTimeTicks,MediaStreams,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
-const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls";
+const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -699,7 +699,19 @@ impl From<LibraryItem> for DetailItemData {
             .unwrap_or(0.0);
         let poster = detail_poster(&item);
         let backdrop = detail_backdrop(&item);
-        let logo = own_image(&item, "Logo", ImageType::Logo);
+        // Episodes and seasons rarely have their own logo; fall back to the
+        // series logo like Jellyfin web does.
+        let logo = own_image(&item, "Logo", ImageType::Logo).or_else(|| {
+            item.parent_logo_item_id
+                .as_ref()
+                .zip(item.parent_logo_image_tag.as_ref())
+                .map(|(id, tag)| ImageRef {
+                    item_id: id.clone(),
+                    image_type: ImageType::Logo,
+                    index: None,
+                    tag: tag.clone(),
+                })
+        });
         let thumbnail = own_image(&item, "Thumb", ImageType::Thumb)
             .or_else(|| own_image(&item, "Primary", ImageType::Primary));
         let media_summary = media_summary(&item.media_streams);
@@ -872,9 +884,19 @@ fn detail_backdrop(item: &LibraryItem) -> Option<ImageRef> {
 }
 
 fn stream_label(stream: &ItemMediaStream) -> String {
+    // Jellyfin's DisplayTitle is already a complete human label
+    // ("Surround 5.1 - English - DTS-HD MA - Default"); decorating it with
+    // language and codec again just duplicates words.
+    if let Some(display_title) = stream
+        .display_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+    {
+        return display_title.to_owned();
+    }
     [
         stream.language.as_deref().map(str::to_uppercase),
-        stream.display_title.clone(),
         stream.codec.as_deref().map(str::to_uppercase),
     ]
     .into_iter()
@@ -1022,6 +1044,10 @@ struct LibraryItem {
     parent_primary_image_item_id: Option<String>,
     #[serde(rename = "ParentBackdropItemId")]
     parent_backdrop_item_id: Option<String>,
+    #[serde(rename = "ParentLogoItemId")]
+    parent_logo_item_id: Option<String>,
+    #[serde(rename = "ParentLogoImageTag")]
+    parent_logo_image_tag: Option<String>,
     #[serde(rename = "ParentBackdropImageTags", default)]
     parent_backdrop_image_tags: Vec<String>,
     #[serde(rename = "ImageTags", default)]
@@ -1247,7 +1273,7 @@ mod tests {
         assert_eq!(detail.logo.as_ref().unwrap().tag, "logo-tag");
         assert!(detail.favorite);
         assert_eq!(detail.unplayed_count, Some(3));
-        assert_eq!(detail.streams[0].label, "JPN - Japanese - AAC");
+        assert_eq!(detail.streams[0].label, "Japanese");
     }
 
     #[test]
