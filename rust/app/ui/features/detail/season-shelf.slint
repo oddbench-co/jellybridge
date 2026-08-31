@@ -1,0 +1,186 @@
+import { Theme } from "../../theme.slint";
+import { DetailCard } from "../../types.slint";
+
+export component DetailSeasonCard inherits Rectangle {
+    in property <DetailCard> season;
+    callback open();
+
+    height: root.width * 1.5 + 50px;
+    background: transparent;
+
+    card-focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == "\n" || event.text == " " {
+                root.open();
+                return accept;
+            }
+            return reject;
+        }
+    }
+    card-touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            card-focus.focus();
+            root.open();
+        }
+    }
+
+    VerticalLayout {
+        spacing: 7px;
+        Rectangle {
+            height: root.width * 1.5;
+            background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.bg 100%);
+            border-color: card-focus.has-focus ? Theme.accent-bright : card-touch.has-hover ? Theme.border-strong : Theme.surface-hover;
+            border-width: card-focus.has-focus ? 3px : card-touch.has-hover ? 2px : 1px;
+            border-radius: Theme.radius-medium;
+            clip: true;
+            drop-shadow-color: card-touch.has-hover ? Theme.scrim.with-alpha(0.63) : Theme.scrim.with-alpha(0.4);
+            drop-shadow-blur: card-touch.has-hover ? 14px : 7px;
+            drop-shadow-offset-y: card-touch.has-hover ? 5px : 3px;
+
+            Text {
+                text: root.season.title;
+                color: Theme.border-strong;
+                font-size: 14px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Image { source: root.season.artwork; width: 100%; height: 100%; image-fit: cover; }
+            if root.season.unplayed-count > 0: Rectangle {
+                x: parent.width - 42px;
+                y: 9px;
+                width: 32px;
+                height: 25px;
+                border-radius: Theme.radius-large;
+                background: Theme.accent;
+                Text {
+                    text: root.season.unplayed-count;
+                    color: white;
+                    font-size: 11px;
+                    font-weight: 750;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if root.season.watched && root.season.unplayed-count == 0: Rectangle {
+                x: parent.width - 35px;
+                y: 9px;
+                width: 25px;
+                height: 25px;
+                border-radius: Theme.radius-large;
+                background: Theme.accent;
+                Text { text: "✓"; color: white; font-size: 14px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        Text { text: root.season.title; color: Theme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+        Text { text: root.season.subtitle; color: Theme.text-faint; font-size: 11px; overflow: elide; }
+    }
+}
+
+
+export component DetailSeasonShelf inherits Rectangle {
+    in property <[DetailCard]> seasons;
+    in property <string> summary;
+    in property <bool> failed: false;
+    callback open(string, string);
+    property <length> card-width: 158px;
+    property <length> content-width: max(0px, root.seasons.length * (root.card-width + 16px) - 16px);
+    property <length> offset-x: 0px;
+    property <length> viewport-width: min(root.width - 56px, 1180px);
+    property <length> viewport-x: (root.width - root.viewport-width) / 2;
+    property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
+    background: Theme.bg;
+
+    Text {
+        x: root.viewport-x;
+        y: 16px;
+        text: "Seasons";
+        color: Theme.text-primary;
+        font-size: 22px;
+        font-weight: 750;
+    }
+    Text {
+        x: root.viewport-x;
+        y: 20px;
+        width: root.viewport-width;
+        text: root.summary;
+        color: Theme.text-faint;
+        font-size: 12px;
+        horizontal-alignment: right;
+        visible: root.seasons.length > 0;
+        overflow: elide;
+    }
+
+    if root.seasons.length == 0: Rectangle {
+        x: root.viewport-x;
+        y: 55px;
+        width: root.viewport-width;
+        height: 116px;
+        background: Theme.surface;
+        border-color: Theme.surface-hover;
+        border-width: 1px;
+        border-radius: Theme.radius-medium;
+        Text {
+            text: root.failed ? "Seasons could not be loaded." : "No seasons are available for this series.";
+            color: Theme.text-muted;
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    season-viewport := Rectangle {
+        x: root.viewport-x;
+        y: 55px;
+        width: root.viewport-width;
+        height: parent.height - 64px;
+        clip: true;
+        visible: root.seasons.length > 0;
+
+        HorizontalLayout {
+            x: root.offset-x;
+            width: root.content-width;
+            spacing: 16px;
+            for season in root.seasons: DetailSeasonCard {
+                width: root.card-width;
+                season: season;
+                open => { root.open(season.id, season.kind); }
+            }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x - 18px;
+        y: 142px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: season-left-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
+        border-width: 1px;
+        visible: root.offset-x < -1px;
+        Text { text: "‹"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        season-left-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = min(0px, root.offset-x + season-viewport.width * 0.8); }
+        }
+    }
+
+    Rectangle {
+        x: root.viewport-x + root.viewport-width - 20px;
+        y: 142px;
+        width: 38px;
+        height: 56px;
+        border-radius: 19px;
+        background: season-right-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
+        border-width: 1px;
+        visible: root.content-width > root.viewport-width && root.offset-x > root.minimum-offset + 1px;
+        Text { text: "›"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
+        season-right-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.offset-x = max(root.minimum-offset, root.offset-x - season-viewport.width * 0.8); }
+        }
+    }
+}

@@ -1,0 +1,94 @@
+import { Theme } from "../../theme.slint";
+
+export component MediaInformationSection inherits Rectangle {
+    in property <string> overview;
+    in property <string> genres;
+    in property <string> studios;
+    in property <string> media-info;
+    property <bool> narrow: root.width < 900px;
+    property <length> overview-width: root.narrow
+        ? root.width - 56px
+        : min(root.width - 56px, 1180px) - 329px;
+
+    height: root.narrow
+        ? max(310px, overview-measure.preferred-height + 218px)
+        : max(220px, overview-measure.preferred-height + 88px);
+    background: Theme.bg;
+
+    overview-measure := Text {
+        width: root.overview-width;
+        text: root.overview == "" ? "No overview available." : root.overview;
+        font-size: 13px;
+        wrap: word-wrap;
+        visible: false;
+    }
+
+    if !root.narrow: HorizontalLayout {
+        x: (parent.width - self.width) / 2;
+        y: 24px;
+        width: min(parent.width - 56px, 1180px);
+        height: parent.height - 40px;
+        spacing: 28px;
+
+        VerticalLayout {
+            spacing: 10px;
+            Text { text: "About"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
+            wide-overview := Text {
+                text: root.overview == "" ? "No overview available." : root.overview;
+                color: Theme.text-secondary;
+                font-size: 13px;
+                wrap: word-wrap;
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+
+        Rectangle { width: 1px; background: Theme.surface-hover; }
+
+        VerticalLayout {
+            width: 300px;
+            spacing: 8px;
+            Text { text: "Details"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
+            Text { text: "Genres"; color: Theme.text-faint; font-size: 11px; visible: root.genres != ""; }
+            Text { text: root.genres; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+            Text { text: "Studio"; color: Theme.text-faint; font-size: 11px; visible: root.studios != ""; }
+            Text { text: root.studios; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+            Text { text: "Media"; color: Theme.text-faint; font-size: 11px; visible: root.media-info != ""; }
+            Text { text: root.media-info; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+            Text {
+                text: "No additional details available.";
+                color: Theme.text-faint;
+                font-size: 12px;
+                visible: root.genres == "" && root.studios == "" && root.media-info == "";
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+
+    if root.narrow: VerticalLayout {
+        x: 28px;
+        y: 22px;
+        width: parent.width - 56px;
+        height: parent.height - 36px;
+        spacing: 9px;
+
+        Text { text: "About"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
+        narrow-overview := Text {
+            text: root.overview == "" ? "No overview available." : root.overview;
+            color: Theme.text-secondary;
+            font-size: 13px;
+            wrap: word-wrap;
+        }
+        Rectangle { height: 1px; background: Theme.surface-hover; }
+        Text { text: "Details"; color: Theme.text-primary; font-size: 18px; font-weight: 720; }
+        Text { text: "Genres  " + root.genres; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+        Text { text: "Studio  " + root.studios; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+        Text { text: "Media  " + root.media-info; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+        Text {
+            text: "No additional details available.";
+            color: Theme.text-faint;
+            font-size: 12px;
+            visible: root.genres == "" && root.studios == "" && root.media-info == "";
+        }
+        Rectangle { vertical-stretch: 1; }
+    }
+}

@@ -1,0 +1,89 @@
+import { Theme } from "../../theme.slint";
+import { CatalogSection, CatalogItem } from "../../types.slint";
+import { MediaTile } from "media-tile.slint";
+
+export component CatalogShelf inherits Rectangle {
+    in property <CatalogSection> section;
+    in property <[CatalogItem]> items;
+    in property <length> card-width: 176px;
+    callback open-item(string, string, bool, bool);
+    callback vertical-scroll(length);
+    property <length> content-width: root.section.count * (root.card-width + 16px) - 16px;
+    property <length> shelf-offset-x: 0px;
+    property <length> minimum-shelf-offset: min(0px, shelf.width - root.content-width);
+
+    height: card-width * 1.5 + 112px;
+    background: transparent;
+
+    Text {
+        x: 24px;
+        y: 7px;
+        text: root.section.title;
+        color: Theme.text-primary;
+        font-size: 20px;
+        font-weight: 720;
+    }
+
+    shelf := Rectangle {
+        x: 24px;
+        y: 43px;
+        width: parent.width - 48px;
+        height: root.card-width * 1.5 + 62px;
+        background: transparent;
+        clip: true;
+
+        HorizontalLayout {
+            x: root.shelf-offset-x;
+            width: root.content-width;
+            spacing: 16px;
+            for shelf-entry[item-index] in root.section.count: MediaTile {
+                width: root.card-width;
+                item: root.items[root.section.start-index + item-index];
+                manage-scroll: true;
+                opened => {
+                    root.open-item(self.item.id, self.item.kind, self.item.is-container, self.item.playable);
+                }
+                scroll-requested(delta-x, delta-y) => {
+                    if abs(delta-x) > abs(delta-y) {
+                        root.shelf-offset-x = max(
+                            root.minimum-shelf-offset,
+                            min(0px, root.shelf-offset-x + delta-x)
+                        );
+                    } else {
+                        root.vertical-scroll(delta-y);
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: 4px;
+        y: 43px + root.card-width * 0.62;
+        width: 38px;
+        height: 58px;
+        border-radius: 19px;
+        background: left-touch.has-hover ? Theme.overlay-raised : Theme.overlay-dim;
+        visible: root.shelf-offset-x < -1px;
+        Text { text: "‹"; color: Theme.text-bright; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        left-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.shelf-offset-x = min(0px, root.shelf-offset-x + shelf.width * 0.8); }
+        }
+    }
+
+    Rectangle {
+        x: parent.width - 42px;
+        y: 43px + root.card-width * 0.62;
+        width: 38px;
+        height: 58px;
+        border-radius: 19px;
+        background: right-touch.has-hover ? Theme.overlay-raised : Theme.overlay-dim;
+        visible: root.content-width > shelf.width && root.shelf-offset-x > root.minimum-shelf-offset + 1px;
+        Text { text: "›"; color: Theme.text-bright; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        right-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.shelf-offset-x = max(root.minimum-shelf-offset, root.shelf-offset-x - shelf.width * 0.8); }
+        }
+    }
+}
