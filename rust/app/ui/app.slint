@@ -1,5 +1,6 @@
 import { Button, ComboBox, LineEdit, ListView, ScrollView, Slider } from "std-widgets.slint";
 import { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind } from "types.slint";
+import { Theme } from "theme.slint";
 
 export { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind }
 
@@ -35,12 +36,12 @@ component DetailHero inherits Rectangle {
     callback open-related(string, string);
 
     height: 400px;
-    background: #111719;
+    background: Theme.bg;
     clip: true;
 
     Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
-    Rectangle { background: @linear-gradient(90deg, #0f1214fa 0%, #0f1214d8 55%, #0f121466 100%); }
-    Rectangle { background: @linear-gradient(180deg, #0f121420 0%, #0f1214 100%); }
+    Rectangle { background: @linear-gradient(90deg, Theme.bg.with-alpha(0.98) 0%, Theme.bg.with-alpha(0.85) 55%, Theme.bg.with-alpha(0.4) 100%); }
+    Rectangle { background: @linear-gradient(180deg, Theme.bg.with-alpha(0.13) 0%, Theme.bg 100%); }
 
     HorizontalLayout {
         padding-left: 28px;
@@ -52,12 +53,12 @@ component DetailHero inherits Rectangle {
         Rectangle {
             width: root.wide-art ? 300px : 205px;
             height: root.wide-art ? 169px : 308px;
-            background: #192124;
-            border-radius: 8px;
+            background: Theme.surface;
+            border-radius: Theme.radius-medium;
             clip: true;
-            drop-shadow-color: #000000a0;
+            drop-shadow-color: Theme.scrim.with-alpha(0.63);
             drop-shadow-blur: 20px;
-            Text { text: root.title; color: #52646c; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
+            Text { text: root.title; color: Theme.border-strong; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
             Image { source: root.poster; width: 100%; height: 100%; image-fit: cover; }
         }
 
@@ -65,9 +66,9 @@ component DetailHero inherits Rectangle {
             spacing: 9px;
 
             Image { source: root.logo; width: 320px; height: 74px; image-fit: contain; visible: root.logo.width > 0; }
-            Text { text: root.title; color: #ffffff; font-size: 34px; font-weight: 800; wrap: word-wrap; }
-            Text { text: root.tagline; color: #e2e6e8; font-size: 14px; visible: root.tagline != ""; overflow: elide; }
-            Text { text: root.metadata; color: #d0d8dc; font-size: 13px; overflow: elide; }
+            Text { text: root.title; color: Theme.text-bright; font-size: 34px; font-weight: 800; wrap: word-wrap; }
+            Text { text: root.tagline; color: Theme.text-primary; font-size: 14px; visible: root.tagline != ""; overflow: elide; }
+            Text { text: root.metadata; color: Theme.text-secondary; font-size: 13px; overflow: elide; }
 
             HorizontalLayout {
                 height: 34px;
@@ -80,7 +81,7 @@ component DetailHero inherits Rectangle {
                 }
                 Text {
                     text: "›";
-                    color: #84949a;
+                    color: Theme.text-faint;
                     font-size: 17px;
                     vertical-alignment: center;
                     visible: root.series-id != "" && root.season-id != "";
@@ -121,10 +122,10 @@ component DetailHero inherits Rectangle {
                 }
             }
 
-            Text { text: root.overview == "" ? "No overview available." : root.overview; color: #c3cdd1; font-size: 14px; wrap: word-wrap; max-height: 82px; overflow: elide; }
-            Text { text: root.genres == "" ? "" : "Genres  " + root.genres; color: #9eacb2; font-size: 12px; visible: root.genres != ""; overflow: elide; }
-            Text { text: root.studios == "" ? "" : "Studio  " + root.studios; color: #9eacb2; font-size: 12px; visible: root.studios != ""; overflow: elide; }
-            Text { text: root.media-info; color: #7f929a; font-size: 11px; visible: root.media-info != ""; overflow: elide; }
+            Text { text: root.overview == "" ? "No overview available." : root.overview; color: Theme.text-secondary; font-size: 14px; wrap: word-wrap; max-height: 82px; overflow: elide; }
+            Text { text: root.genres == "" ? "" : "Genres  " + root.genres; color: Theme.text-muted; font-size: 12px; visible: root.genres != ""; overflow: elide; }
+            Text { text: root.studios == "" ? "" : "Studio  " + root.studios; color: Theme.text-muted; font-size: 12px; visible: root.studios != ""; overflow: elide; }
+            Text { text: root.media-info; color: Theme.text-faint; font-size: 11px; visible: root.media-info != ""; overflow: elide; }
         }
     }
 }
@@ -137,14 +138,14 @@ component DetailActionButton inherits Rectangle {
     callback clicked();
 
     height: 40px;
-    border-radius: 7px;
+    border-radius: Theme.radius-small;
     border-width: action-focus.has-focus ? 2px : 1px;
-    border-color: action-focus.has-focus ? #72d5f6 : root.primary ? #29b9e9 : root.active ? #1689b1 : #3a484e;
-    background: !root.enabled ? #222a2d : action-touch.pressed ? #35464d : root.primary ? #00a4dc : root.active ? #173d4b : action-touch.has-hover ? #2a353a : #20292d;
+    border-color: action-focus.has-focus ? Theme.accent-bright : root.primary ? Theme.accent : root.active ? Theme.accent-deep : Theme.border;
+    background: !root.enabled ? Theme.surface-raised : action-touch.pressed ? Theme.border : root.primary ? Theme.accent : root.active ? Theme.accent-surface : action-touch.has-hover ? Theme.surface-hover : Theme.surface-raised;
 
     Text {
         text: root.text;
-        color: root.enabled ? #f7fafb : #78878d;
+        color: root.enabled ? Theme.text-primary : Theme.text-faint;
         font-size: 13px;
         font-weight: root.primary || root.active ? 700 : 600;
         horizontal-alignment: center;
@@ -179,14 +180,14 @@ component DetailBreadcrumbLink inherits Rectangle {
 
     width: min(breadcrumb-label.preferred-width + 20px, root.width-limit);
     height: 30px;
-    border-radius: 6px;
+    border-radius: Theme.radius-small;
     border-width: breadcrumb-focus.has-focus ? 2px : 0px;
-    border-color: #72d5f6;
-    background: breadcrumb-touch.has-hover ? #24363dba : transparent;
+    border-color: Theme.accent-bright;
+    background: breadcrumb-touch.has-hover ? Theme.overlay : transparent;
 
     breadcrumb-label := Text {
         text: root.text;
-        color: #6fd3f5;
+        color: Theme.accent-bright;
         font-size: 13px;
         font-weight: 650;
         horizontal-alignment: center;
@@ -233,12 +234,12 @@ component SeasonDetailHeader inherits Rectangle {
     callback open-series(string);
 
     height: 300px;
-    background: #101618;
+    background: Theme.bg;
     clip: true;
 
     Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
-    Rectangle { background: @linear-gradient(90deg, #0f1416fc 0%, #0f1416dc 58%, #0f141676 100%); }
-    Rectangle { background: @linear-gradient(180deg, #0f14162a 0%, #0f1416 100%); }
+    Rectangle { background: @linear-gradient(90deg, Theme.bg.with-alpha(0.99) 0%, Theme.bg.with-alpha(0.86) 58%, Theme.bg.with-alpha(0.46) 100%); }
+    Rectangle { background: @linear-gradient(180deg, Theme.bg.with-alpha(0.16) 0%, Theme.bg 100%); }
 
     content := Rectangle {
         x: (parent.width - self.width) / 2;
@@ -252,18 +253,18 @@ component SeasonDetailHeader inherits Rectangle {
             Rectangle {
                 width: 144px;
                 height: 216px;
-                background: #1b2529;
-                border-radius: 8px;
-                border-color: #36454b;
+                background: Theme.surface;
+                border-radius: Theme.radius-medium;
+                border-color: Theme.border;
                 border-width: 1px;
                 clip: true;
-                drop-shadow-color: #00000090;
+                drop-shadow-color: Theme.scrim.with-alpha(0.56);
                 drop-shadow-blur: 16px;
                 drop-shadow-offset-y: 5px;
 
                 Text {
                     text: root.title;
-                    color: #52666f;
+                    color: Theme.border-strong;
                     font-size: 14px;
                     wrap: word-wrap;
                     horizontal-alignment: center;
@@ -285,14 +286,14 @@ component SeasonDetailHeader inherits Rectangle {
                     }
                     Text {
                         text: "›";
-                        color: #75868d;
+                        color: Theme.text-faint;
                         font-size: 17px;
                         vertical-alignment: center;
                         visible: root.series-id != "";
                     }
                     Text {
                         text: root.title;
-                        color: #a9b5ba;
+                        color: Theme.text-muted;
                         font-size: 13px;
                         vertical-alignment: center;
                         overflow: elide;
@@ -302,28 +303,28 @@ component SeasonDetailHeader inherits Rectangle {
 
                 Text {
                     text: root.title;
-                    color: #ffffff;
+                    color: Theme.text-bright;
                     font-size: 31px;
                     font-weight: 800;
                     overflow: elide;
                 }
                 Text {
                     text: root.metadata;
-                    color: #c8d1d5;
+                    color: Theme.text-secondary;
                     font-size: 13px;
                     visible: root.metadata != "";
                     overflow: elide;
                 }
                 Text {
                     text: root.summary;
-                    color: #8fdcf5;
+                    color: Theme.accent-bright;
                     font-size: 13px;
                     font-weight: 650;
                     overflow: elide;
                 }
                 Text {
                     text: root.overview == "" ? "No season overview available." : root.overview;
-                    color: #b8c3c7;
+                    color: Theme.text-secondary;
                     font-size: 13px;
                     wrap: word-wrap;
                     max-height: 50px;
@@ -381,12 +382,12 @@ component SeriesDetailHeader inherits Rectangle {
     callback set-favorite(bool);
 
     height: 300px;
-    background: #101618;
+    background: Theme.bg;
     clip: true;
 
     Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
-    Rectangle { background: @linear-gradient(90deg, #0f1416fc 0%, #0f1416dc 58%, #0f141676 100%); }
-    Rectangle { background: @linear-gradient(180deg, #0f14162a 0%, #0f1416 100%); }
+    Rectangle { background: @linear-gradient(90deg, Theme.bg.with-alpha(0.99) 0%, Theme.bg.with-alpha(0.86) 58%, Theme.bg.with-alpha(0.46) 100%); }
+    Rectangle { background: @linear-gradient(180deg, Theme.bg.with-alpha(0.16) 0%, Theme.bg 100%); }
 
     Rectangle {
         x: (parent.width - self.width) / 2;
@@ -400,18 +401,18 @@ component SeriesDetailHeader inherits Rectangle {
             Rectangle {
                 width: 144px;
                 height: 216px;
-                background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
-                border-radius: 8px;
-                border-color: #36464c;
+                background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.bg 100%);
+                border-radius: Theme.radius-medium;
+                border-color: Theme.border;
                 border-width: 1px;
                 clip: true;
-                drop-shadow-color: #00000090;
+                drop-shadow-color: Theme.scrim.with-alpha(0.56);
                 drop-shadow-blur: 16px;
                 drop-shadow-offset-y: 5px;
 
                 Text {
                     text: root.title;
-                    color: #526a74;
+                    color: Theme.border-strong;
                     font-size: 14px;
                     wrap: word-wrap;
                     horizontal-alignment: center;
@@ -425,7 +426,7 @@ component SeriesDetailHeader inherits Rectangle {
 
                 Text {
                     text: root.title;
-                    color: #ffffff;
+                    color: Theme.text-bright;
                     font-size: 31px;
                     font-weight: 800;
                     wrap: word-wrap;
@@ -434,21 +435,21 @@ component SeriesDetailHeader inherits Rectangle {
                 }
                 Text {
                     text: root.tagline;
-                    color: #d0d8db;
+                    color: Theme.text-secondary;
                     font-size: 13px;
                     visible: root.tagline != "";
                     overflow: elide;
                 }
                 Text {
                     text: root.metadata;
-                    color: #c8d1d5;
+                    color: Theme.text-secondary;
                     font-size: 13px;
                     visible: root.metadata != "";
                     overflow: elide;
                 }
                 Text {
                     text: root.summary;
-                    color: #8fdcf5;
+                    color: Theme.accent-bright;
                     font-size: 13px;
                     font-weight: 650;
                     overflow: elide;
@@ -460,14 +461,14 @@ component SeriesDetailHeader inherits Rectangle {
                     Text {
                         width: 190px;
                         text: root.play-context;
-                        color: #aebbc0;
+                        color: Theme.text-muted;
                         font-size: 11px;
                         vertical-alignment: center;
                         overflow: elide;
                     }
                     Rectangle {
                         height: 5px;
-                        background: #2d393e;
+                        background: Theme.surface-hover;
                         border-radius: 2px;
                         vertical-stretch: 0;
                         visible: root.progress > 0 && root.progress < 1;
@@ -475,7 +476,7 @@ component SeriesDetailHeader inherits Rectangle {
                             x: 0px;
                             width: parent.width * root.progress;
                             height: 100%;
-                            background: #00a4dc;
+                            background: Theme.accent;
                             border-radius: 2px;
                         }
                     }
@@ -520,10 +521,10 @@ component DetailTrackSelector inherits Rectangle {
     callback selected(int);
 
     height: 40px;
-    background: #151e21d8;
-    border-color: #2e3c42;
+    background: Theme.overlay-dim;
+    border-color: Theme.surface-hover;
     border-width: 1px;
-    border-radius: 7px;
+    border-radius: Theme.radius-small;
 
     Text {
         x: 10px;
@@ -531,7 +532,7 @@ component DetailTrackSelector inherits Rectangle {
         width: 62px;
         height: parent.height;
         text: root.label;
-        color: #879aa2;
+        color: Theme.text-faint;
         font-size: 10px;
         font-weight: 700;
         vertical-alignment: center;
@@ -587,12 +588,12 @@ component MediaDetailHeader inherits Rectangle {
     callback open-related(string, string);
 
     height: root.has-track-options ? 350px : 300px;
-    background: #101618;
+    background: Theme.bg;
     clip: true;
 
     Image { source: root.backdrop; width: 100%; height: 100%; image-fit: cover; }
-    Rectangle { background: @linear-gradient(90deg, #0e1416fd 0%, #0e1416e2 58%, #0e14167a 100%); }
-    Rectangle { background: @linear-gradient(180deg, #0e141624 0%, #0e1416 100%); }
+    Rectangle { background: @linear-gradient(90deg, Theme.bg.with-alpha(0.99) 0%, Theme.bg.with-alpha(0.89) 58%, Theme.bg.with-alpha(0.48) 100%); }
+    Rectangle { background: @linear-gradient(180deg, Theme.bg.with-alpha(0.14) 0%, Theme.bg 100%); }
 
     media-content := Rectangle {
         x: (parent.width - self.width) / 2;
@@ -606,18 +607,18 @@ component MediaDetailHeader inherits Rectangle {
             Rectangle {
                 width: root.episode ? 280px : 144px;
                 height: root.episode ? 158px : 216px;
-                background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
-                border-radius: 8px;
-                border-color: #36464c;
+                background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.bg 100%);
+                border-radius: Theme.radius-medium;
+                border-color: Theme.border;
                 border-width: 1px;
                 clip: true;
-                drop-shadow-color: #00000090;
+                drop-shadow-color: Theme.scrim.with-alpha(0.56);
                 drop-shadow-blur: 16px;
                 drop-shadow-offset-y: 5px;
 
                 Text {
                     text: root.title;
-                    color: #526a74;
+                    color: Theme.border-strong;
                     font-size: 14px;
                     wrap: word-wrap;
                     horizontal-alignment: center;
@@ -641,7 +642,7 @@ component MediaDetailHeader inherits Rectangle {
                     }
                     Text {
                         text: "›";
-                        color: #75868d;
+                        color: Theme.text-faint;
                         font-size: 17px;
                         vertical-alignment: center;
                         visible: root.series-id != "" && root.season-id != "";
@@ -657,7 +658,7 @@ component MediaDetailHeader inherits Rectangle {
 
                 Text {
                     text: root.title;
-                    color: #ffffff;
+                    color: Theme.text-bright;
                     font-size: 31px;
                     font-weight: 800;
                     wrap: word-wrap;
@@ -666,14 +667,14 @@ component MediaDetailHeader inherits Rectangle {
                 }
                 Text {
                     text: root.tagline;
-                    color: #d0d8db;
+                    color: Theme.text-secondary;
                     font-size: 13px;
                     visible: root.tagline != "";
                     overflow: elide;
                 }
                 Text {
                     text: root.metadata;
-                    color: #9eddf2;
+                    color: Theme.accent-bright;
                     font-size: 13px;
                     font-weight: 600;
                     visible: root.metadata != "";
@@ -686,21 +687,21 @@ component MediaDetailHeader inherits Rectangle {
                     Text {
                         width: 118px;
                         text: root.progress-label;
-                        color: #aab8bd;
+                        color: Theme.text-muted;
                         font-size: 11px;
                         vertical-alignment: center;
                         overflow: elide;
                     }
                     Rectangle {
                         height: 5px;
-                        background: #2d393e;
+                        background: Theme.surface-hover;
                         border-radius: 2px;
                         vertical-stretch: 0;
                         Rectangle {
                             x: 0px;
                             width: parent.width * root.progress;
                             height: 100%;
-                            background: #00a4dc;
+                            background: Theme.accent;
                             border-radius: 2px;
                         }
                     }
@@ -774,7 +775,7 @@ component MediaInformationSection inherits Rectangle {
     height: root.narrow
         ? max(310px, overview-measure.preferred-height + 218px)
         : max(220px, overview-measure.preferred-height + 88px);
-    background: #0f1214;
+    background: Theme.bg;
 
     overview-measure := Text {
         width: root.overview-width;
@@ -793,31 +794,31 @@ component MediaInformationSection inherits Rectangle {
 
         VerticalLayout {
             spacing: 10px;
-            Text { text: "About"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
+            Text { text: "About"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
             wide-overview := Text {
                 text: root.overview == "" ? "No overview available." : root.overview;
-                color: #b2bec2;
+                color: Theme.text-secondary;
                 font-size: 13px;
                 wrap: word-wrap;
             }
             Rectangle { vertical-stretch: 1; }
         }
 
-        Rectangle { width: 1px; background: #29353a; }
+        Rectangle { width: 1px; background: Theme.surface-hover; }
 
         VerticalLayout {
             width: 300px;
             spacing: 8px;
-            Text { text: "Details"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
-            Text { text: "Genres"; color: #778a92; font-size: 11px; visible: root.genres != ""; }
-            Text { text: root.genres; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
-            Text { text: "Studio"; color: #778a92; font-size: 11px; visible: root.studios != ""; }
-            Text { text: root.studios; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
-            Text { text: "Media"; color: #778a92; font-size: 11px; visible: root.media-info != ""; }
-            Text { text: root.media-info; color: #c4cdd1; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+            Text { text: "Details"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
+            Text { text: "Genres"; color: Theme.text-faint; font-size: 11px; visible: root.genres != ""; }
+            Text { text: root.genres; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+            Text { text: "Studio"; color: Theme.text-faint; font-size: 11px; visible: root.studios != ""; }
+            Text { text: root.studios; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+            Text { text: "Media"; color: Theme.text-faint; font-size: 11px; visible: root.media-info != ""; }
+            Text { text: root.media-info; color: Theme.text-secondary; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
             Text {
                 text: "No additional details available.";
-                color: #87979d;
+                color: Theme.text-faint;
                 font-size: 12px;
                 visible: root.genres == "" && root.studios == "" && root.media-info == "";
             }
@@ -832,21 +833,21 @@ component MediaInformationSection inherits Rectangle {
         height: parent.height - 36px;
         spacing: 9px;
 
-        Text { text: "About"; color: #f5f8f9; font-size: 21px; font-weight: 750; }
+        Text { text: "About"; color: Theme.text-primary; font-size: 21px; font-weight: 750; }
         narrow-overview := Text {
             text: root.overview == "" ? "No overview available." : root.overview;
-            color: #b2bec2;
+            color: Theme.text-secondary;
             font-size: 13px;
             wrap: word-wrap;
         }
-        Rectangle { height: 1px; background: #29353a; }
-        Text { text: "Details"; color: #f5f8f9; font-size: 18px; font-weight: 720; }
-        Text { text: "Genres  " + root.genres; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
-        Text { text: "Studio  " + root.studios; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
-        Text { text: "Media  " + root.media-info; color: #aebbc0; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
+        Rectangle { height: 1px; background: Theme.surface-hover; }
+        Text { text: "Details"; color: Theme.text-primary; font-size: 18px; font-weight: 720; }
+        Text { text: "Genres  " + root.genres; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.genres != ""; }
+        Text { text: "Studio  " + root.studios; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.studios != ""; }
+        Text { text: "Media  " + root.media-info; color: Theme.text-muted; font-size: 12px; wrap: word-wrap; visible: root.media-info != ""; }
         Text {
             text: "No additional details available.";
-            color: #87979d;
+            color: Theme.text-faint;
             font-size: 12px;
             visible: root.genres == "" && root.studios == "" && root.media-info == "";
         }
@@ -882,18 +883,18 @@ component DetailSeasonCard inherits Rectangle {
         spacing: 7px;
         Rectangle {
             height: root.width * 1.5;
-            background: @linear-gradient(145deg, #26353b 0%, #12191c 100%);
-            border-color: card-focus.has-focus ? #62ccee : card-touch.has-hover ? #52646c : #2f3d43;
+            background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.bg 100%);
+            border-color: card-focus.has-focus ? Theme.accent-bright : card-touch.has-hover ? Theme.border-strong : Theme.surface-hover;
             border-width: card-focus.has-focus ? 3px : card-touch.has-hover ? 2px : 1px;
-            border-radius: 8px;
+            border-radius: Theme.radius-medium;
             clip: true;
-            drop-shadow-color: card-touch.has-hover ? #000000a0 : #00000065;
+            drop-shadow-color: card-touch.has-hover ? Theme.scrim.with-alpha(0.63) : Theme.scrim.with-alpha(0.4);
             drop-shadow-blur: card-touch.has-hover ? 14px : 7px;
             drop-shadow-offset-y: card-touch.has-hover ? 5px : 3px;
 
             Text {
                 text: root.season.title;
-                color: #526a74;
+                color: Theme.border-strong;
                 font-size: 14px;
                 wrap: word-wrap;
                 horizontal-alignment: center;
@@ -905,8 +906,8 @@ component DetailSeasonCard inherits Rectangle {
                 y: 9px;
                 width: 32px;
                 height: 25px;
-                border-radius: 13px;
-                background: #00a4dc;
+                border-radius: Theme.radius-large;
+                background: Theme.accent;
                 Text {
                     text: root.season.unplayed-count;
                     color: white;
@@ -921,13 +922,13 @@ component DetailSeasonCard inherits Rectangle {
                 y: 9px;
                 width: 25px;
                 height: 25px;
-                border-radius: 13px;
-                background: #00a4dc;
+                border-radius: Theme.radius-large;
+                background: Theme.accent;
                 Text { text: "✓"; color: white; font-size: 14px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
-        Text { text: root.season.title; color: #f5f8f9; font-size: 14px; font-weight: 700; overflow: elide; }
-        Text { text: root.season.subtitle; color: #899aa1; font-size: 11px; overflow: elide; }
+        Text { text: root.season.title; color: Theme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+        Text { text: root.season.subtitle; color: Theme.text-faint; font-size: 11px; overflow: elide; }
     }
 }
 
@@ -942,13 +943,13 @@ component DetailSeasonShelf inherits Rectangle {
     property <length> viewport-width: min(root.width - 56px, 1180px);
     property <length> viewport-x: (root.width - root.viewport-width) / 2;
     property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
-    background: #0f1214;
+    background: Theme.bg;
 
     Text {
         x: root.viewport-x;
         y: 16px;
         text: "Seasons";
-        color: #f5f8f9;
+        color: Theme.text-primary;
         font-size: 22px;
         font-weight: 750;
     }
@@ -957,7 +958,7 @@ component DetailSeasonShelf inherits Rectangle {
         y: 20px;
         width: root.viewport-width;
         text: root.summary;
-        color: #84969d;
+        color: Theme.text-faint;
         font-size: 12px;
         horizontal-alignment: right;
         visible: root.seasons.length > 0;
@@ -969,13 +970,13 @@ component DetailSeasonShelf inherits Rectangle {
         y: 55px;
         width: root.viewport-width;
         height: 116px;
-        background: #182024;
-        border-color: #2b383d;
+        background: Theme.surface;
+        border-color: Theme.surface-hover;
         border-width: 1px;
-        border-radius: 8px;
+        border-radius: Theme.radius-medium;
         Text {
             text: root.failed ? "Seasons could not be loaded." : "No seasons are available for this series.";
-            color: #94a4aa;
+            color: Theme.text-muted;
             font-size: 13px;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -1008,8 +1009,8 @@ component DetailSeasonShelf inherits Rectangle {
         width: 38px;
         height: 56px;
         border-radius: 19px;
-        background: season-left-touch.has-hover ? #2b393fef : #171e21e5;
-        border-color: #3a484e;
+        background: season-left-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
         border-width: 1px;
         visible: root.offset-x < -1px;
         Text { text: "‹"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1025,8 +1026,8 @@ component DetailSeasonShelf inherits Rectangle {
         width: 38px;
         height: 56px;
         border-radius: 19px;
-        background: season-right-touch.has-hover ? #2b393fef : #171e21e5;
-        border-color: #3a484e;
+        background: season-right-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
         border-width: 1px;
         visible: root.content-width > root.viewport-width && root.offset-x > root.minimum-offset + 1px;
         Text { text: "›"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1046,15 +1047,15 @@ component DetailEpisodeRow inherits Rectangle {
     callback set-watched(string, bool);
     height: 142px;
     background: root.episode.watched
-        ? (root.emphasized ? #1b2225 : #121719)
-        : (row-touch.has-hover ? #222c30 : #192124);
+        ? (root.emphasized ? Theme.surface : Theme.bg)
+        : (row-touch.has-hover ? Theme.surface-raised : Theme.surface);
     border-color: row-focus.has-focus
-        ? #62ccee
+        ? Theme.accent-bright
         : root.episode.watched
-            ? (row-touch.has-hover ? #354146 : #252e32)
-            : (row-touch.has-hover ? #36464d : #29363b);
+            ? (row-touch.has-hover ? Theme.border : Theme.surface-raised)
+            : (row-touch.has-hover ? Theme.border : Theme.surface-hover);
     border-width: row-focus.has-focus ? 2px : 1px;
-    border-radius: 8px;
+    border-radius: Theme.radius-medium;
     clip: true;
 
     row-focus := FocusScope {
@@ -1079,12 +1080,12 @@ component DetailEpisodeRow inherits Rectangle {
         Rectangle {
             width: 208px;
             height: 117px;
-            background: @linear-gradient(145deg, #253238 0%, #111719 100%);
-            border-radius: 6px;
+            background: @linear-gradient(145deg, Theme.surface-raised 0%, Theme.bg 100%);
+            border-radius: Theme.radius-small;
             clip: true;
             Text {
                 text: root.episode.subtitle == "" ? "Episode" : root.episode.subtitle;
-                color: #526a74;
+                color: Theme.border-strong;
                 font-size: 13px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
@@ -1092,30 +1093,30 @@ component DetailEpisodeRow inherits Rectangle {
             }
             Image { source: root.episode.artwork; width: 100%; height: 100%; image-fit: cover; }
             if root.episode.watched: Rectangle {
-                background: root.emphasized ? #10171972 : #101719a0;
+                background: root.emphasized ? Theme.bg.with-alpha(0.45) : Theme.bg.with-alpha(0.63);
             }
-            if root.episode.watched: Rectangle { x: parent.width - 31px; y: 7px; width: 24px; height: 24px; border-radius: 12px; background: #00a4dc; Text { text: "✓"; color: white; horizontal-alignment: center; vertical-alignment: center; } }
-            if root.episode.progress > 0 && root.episode.progress < 1: Rectangle { y: parent.height - 5px; width: parent.width; height: 5px; background: #20282c; Rectangle { x: 0px; width: parent.width * root.episode.progress; height: 100%; background: #00a4dc; } }
+            if root.episode.watched: Rectangle { x: parent.width - 31px; y: 7px; width: 24px; height: 24px; border-radius: Theme.radius-large; background: Theme.accent; Text { text: "✓"; color: white; horizontal-alignment: center; vertical-alignment: center; } }
+            if root.episode.progress > 0 && root.episode.progress < 1: Rectangle { y: parent.height - 5px; width: parent.width; height: 5px; background: Theme.surface-raised; Rectangle { x: 0px; width: parent.width * root.episode.progress; height: 100%; background: Theme.accent; } }
         }
         VerticalLayout {
             spacing: 7px;
             Text {
                 text: root.episode.title;
-                color: root.episode.watched ? (root.emphasized ? #c7d0d3 : #8a969a) : #f6f9fa;
+                color: root.episode.watched ? (root.emphasized ? Theme.text-secondary : Theme.text-faint) : Theme.text-primary;
                 font-size: 16px;
                 font-weight: 700;
                 overflow: elide;
             }
             Text {
                 text: root.episode.subtitle;
-                color: root.episode.watched ? (root.emphasized ? #829ba4 : #667a82) : #8fd0e7;
+                color: root.episode.watched ? (root.emphasized ? Theme.text-faint : Theme.border-strong) : Theme.accent-bright;
                 font-size: 12px;
                 font-weight: 600;
                 overflow: elide;
             }
             Text {
                 text: root.episode.overview == "" ? "No episode overview available." : root.episode.overview;
-                color: root.episode.watched ? (root.emphasized ? #929ea2 : #747f83) : #aebbc0;
+                color: root.episode.watched ? (root.emphasized ? Theme.text-faint : Theme.text-faint) : Theme.text-muted;
                 font-size: 12px;
                 wrap: word-wrap;
                 max-height: 48px;
@@ -1154,13 +1155,13 @@ component DetailPeopleShelf inherits Rectangle {
     property <length> viewport-width: min(root.width - 56px, 1180px);
     property <length> viewport-x: (root.width - root.viewport-width) / 2;
     property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
-    background: #0f1214;
+    background: Theme.bg;
 
     Text {
         x: root.viewport-x;
         y: 12px;
         text: "Cast";
-        color: #f5f8f9;
+        color: Theme.text-primary;
         font-size: 21px;
         font-weight: 750;
     }
@@ -1182,13 +1183,13 @@ component DetailPeopleShelf inherits Rectangle {
                     Rectangle {
                         height: root.card-width;
                         border-radius: root.card-width / 2;
-                        background: @linear-gradient(145deg, #28373d 0%, #172024 100%);
-                        border-color: #314047;
+                        background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.surface 100%);
+                        border-color: Theme.border;
                         border-width: 1px;
                         clip: true;
                         Text {
                             text: "?";
-                            color: #66818c;
+                            color: Theme.border-strong;
                             font-size: 28px;
                             font-weight: 700;
                             horizontal-alignment: center;
@@ -1196,8 +1197,8 @@ component DetailPeopleShelf inherits Rectangle {
                         }
                         Image { source: person.artwork; width: 100%; height: 100%; image-fit: cover; }
                     }
-                    Text { text: person.name; color: #ecf1f3; font-size: 12px; font-weight: 650; horizontal-alignment: center; overflow: elide; }
-                    Text { text: person.role; color: #84949a; font-size: 10px; horizontal-alignment: center; overflow: elide; }
+                    Text { text: person.name; color: Theme.text-primary; font-size: 12px; font-weight: 650; horizontal-alignment: center; overflow: elide; }
+                    Text { text: person.role; color: Theme.text-faint; font-size: 10px; horizontal-alignment: center; overflow: elide; }
                 }
             }
         }
@@ -1209,8 +1210,8 @@ component DetailPeopleShelf inherits Rectangle {
         width: 38px;
         height: 56px;
         border-radius: 19px;
-        background: cast-left-touch.has-hover ? #2b393fef : #171e21e5;
-        border-color: #3a484e;
+        background: cast-left-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
         border-width: 1px;
         visible: root.offset-x < -1px;
         Text { text: "‹"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1226,8 +1227,8 @@ component DetailPeopleShelf inherits Rectangle {
         width: 38px;
         height: 56px;
         border-radius: 19px;
-        background: cast-right-touch.has-hover ? #2b393fef : #171e21e5;
-        border-color: #3a484e;
+        background: cast-right-touch.has-hover ? Theme.overlay-raised : Theme.overlay;
+        border-color: Theme.border;
         border-width: 1px;
         visible: root.content-width > root.viewport-width && root.offset-x > root.minimum-offset + 1px;
         Text { text: "›"; color: white; font-size: 27px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1262,20 +1263,20 @@ component MediaTile inherits Rectangle {
 
         poster := Rectangle {
             height: root.width * 1.5;
-            background: #182024;
-            border-color: tile-focus.has-focus ? #52c8f2 : tile-touch.has-hover ? #87969d : #2b353a;
+            background: Theme.surface;
+            border-color: tile-focus.has-focus ? Theme.accent-bright : tile-touch.has-hover ? Theme.text-faint : Theme.surface-hover;
             border-width: tile-focus.has-focus ? 3px : tile-touch.has-hover ? 2px : 1px;
-            border-radius: 9px;
+            border-radius: Theme.radius-medium;
             clip: true;
-            drop-shadow-color: tile-touch.has-hover ? #000000a8 : #00000070;
+            drop-shadow-color: tile-touch.has-hover ? Theme.scrim.with-alpha(0.66) : Theme.scrim.with-alpha(0.44);
             drop-shadow-blur: tile-touch.has-hover ? 15px : 8px;
             drop-shadow-offset-y: tile-touch.has-hover ? 5px : 3px;
 
             Rectangle {
-                background: @linear-gradient(145deg, #203039 0%, #101517 100%);
+                background: @linear-gradient(145deg, Theme.accent-surface 0%, Theme.bg 100%);
                 Text {
                     text: root.item.placeholder;
-                    color: #56707b;
+                    color: Theme.border-strong;
                     font-size: min(parent.width / 3, 42px);
                     font-weight: 750;
                     horizontal-alignment: center;
@@ -1294,11 +1295,11 @@ component MediaTile inherits Rectangle {
                 y: 8px;
                 width: kind-label.preferred-width + 14px;
                 height: 24px;
-                border-radius: 12px;
-                background: #101416dc;
+                border-radius: Theme.radius-large;
+                background: Theme.bg.with-alpha(0.86);
                 kind-label := Text {
                     text: root.item.kind-label;
-                    color: #e8f0f3;
+                    color: Theme.text-primary;
                     font-size: 10px;
                     font-weight: 650;
                     horizontal-alignment: center;
@@ -1311,11 +1312,11 @@ component MediaTile inherits Rectangle {
                 y: 8px;
                 width: 26px;
                 height: 26px;
-                border-radius: 13px;
-                background: #00a4dc;
+                border-radius: Theme.radius-large;
+                background: Theme.accent;
                 Text {
                     text: "✓";
-                    color: #ffffff;
+                    color: Theme.text-bright;
                     font-size: 15px;
                     font-weight: 800;
                     horizontal-alignment: center;
@@ -1328,12 +1329,12 @@ component MediaTile inherits Rectangle {
                 y: parent.height - 6px;
                 width: parent.width;
                 height: 6px;
-                background: #202a2fdd;
+                background: Theme.overlay;
                 Rectangle {
                     x: 0px;
                     width: parent.width * root.item.progress;
                     height: parent.height;
-                    background: #00a4dc;
+                    background: Theme.accent;
                 }
             }
 
@@ -1355,14 +1356,14 @@ component MediaTile inherits Rectangle {
 
         Text {
             text: root.item.title;
-            color: #f3f7f8;
+            color: Theme.text-primary;
             font-size: 14px;
             font-weight: 650;
             overflow: elide;
         }
         Text {
             text: root.item.subtitle == "" ? root.item.kind : root.item.subtitle;
-            color: #8f9da3;
+            color: Theme.text-faint;
             font-size: 12px;
             overflow: elide;
         }
@@ -1386,7 +1387,7 @@ component CatalogShelf inherits Rectangle {
         x: 24px;
         y: 7px;
         text: root.section.title;
-        color: #f3f7f8;
+        color: Theme.text-primary;
         font-size: 20px;
         font-weight: 720;
     }
@@ -1430,9 +1431,9 @@ component CatalogShelf inherits Rectangle {
         width: 38px;
         height: 58px;
         border-radius: 19px;
-        background: left-touch.has-hover ? #263238f2 : #151b1ee0;
+        background: left-touch.has-hover ? Theme.overlay-raised : Theme.overlay-dim;
         visible: root.shelf-offset-x < -1px;
-        Text { text: "‹"; color: #ffffff; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        Text { text: "‹"; color: Theme.text-bright; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
         left-touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.shelf-offset-x = min(0px, root.shelf-offset-x + shelf.width * 0.8); }
@@ -1445,9 +1446,9 @@ component CatalogShelf inherits Rectangle {
         width: 38px;
         height: 58px;
         border-radius: 19px;
-        background: right-touch.has-hover ? #263238f2 : #151b1ee0;
+        background: right-touch.has-hover ? Theme.overlay-raised : Theme.overlay-dim;
         visible: root.content-width > shelf.width && root.shelf-offset-x > root.minimum-shelf-offset + 1px;
-        Text { text: "›"; color: #ffffff; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
+        Text { text: "›"; color: Theme.text-bright; font-size: 28px; horizontal-alignment: center; vertical-alignment: center; }
         right-touch := TouchArea {
             mouse-cursor: pointer;
             clicked => { root.shelf-offset-x = max(root.minimum-shelf-offset, root.shelf-offset-x - shelf.width * 0.8); }
@@ -1462,7 +1463,7 @@ export component JellyBridgeWindow inherits Window {
     preferred-height: 800px;
     min-width: 760px;
     min-height: 520px;
-    background: #0f1214;
+    background: Theme.bg;
 
     // `in`: Rust owns it. `in-out`: genuinely edited from both sides.
     // `private`: nobody outside this component should know it exists.
@@ -1610,18 +1611,18 @@ export component JellyBridgeWindow inherits Window {
         }
 
     if root.screen == Screen.login: Rectangle {
-        background: @linear-gradient(180deg, #0f1214 0%, #151b1e 100%);
+        background: @linear-gradient(180deg, Theme.bg 0%, Theme.surface-dim 100%);
 
         Rectangle {
             width: min(parent.width - 48px, 860px);
             height: 430px;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            background: #1b2124;
-            border-color: #303a3f;
+            background: Theme.surface;
+            border-color: Theme.border;
             border-width: 1px;
-            border-radius: 12px;
-            drop-shadow-color: #00000080;
+            border-radius: Theme.radius-large;
+            drop-shadow-color: Theme.scrim.with-alpha(0.5);
             drop-shadow-blur: 24px;
 
             HorizontalLayout {
@@ -1636,8 +1637,8 @@ export component JellyBridgeWindow inherits Window {
                     Rectangle {
                         width: 62px;
                         height: 62px;
-                        border-radius: 12px;
-                        background: #162f38;
+                        border-radius: Theme.radius-large;
+                        background: Theme.accent-surface;
                         Image {
                             source: @image-url("../assets/icon.png");
                             width: 100%;
@@ -1647,14 +1648,14 @@ export component JellyBridgeWindow inherits Window {
                     }
                     Text {
                         text: "JellyBridge";
-                        color: #00a4dc;
+                        color: Theme.accent;
                         font-size: 36px;
                         font-weight: 800;
                         horizontal-alignment: center;
                     }
                     Text {
                         text: "Native Jellyfin playback with MPV";
-                        color: #aeb8bd;
+                        color: Theme.text-muted;
                         font-size: 14px;
                         horizontal-alignment: center;
                     }
@@ -1662,7 +1663,7 @@ export component JellyBridgeWindow inherits Window {
 
                 Rectangle {
                     width: 1px;
-                    background: #303a3f;
+                    background: Theme.border;
                 }
 
                 VerticalLayout {
@@ -1671,22 +1672,22 @@ export component JellyBridgeWindow inherits Window {
 
                     Text {
                         text: "Sign in";
-                        color: #f3f7f8;
+                        color: Theme.text-primary;
                         font-size: 25px;
                         font-weight: 700;
                     }
-                    Text { text: "Server URL"; color: #aeb8bd; font-size: 12px; }
+                    Text { text: "Server URL"; color: Theme.text-muted; font-size: 12px; }
                     server-input := LineEdit {
                         text: "http://";
                         enabled: !root.busy;
                         placeholder-text: "http://jellyfin.local:8096";
                     }
-                    Text { text: "Username"; color: #aeb8bd; font-size: 12px; }
+                    Text { text: "Username"; color: Theme.text-muted; font-size: 12px; }
                     username-input := LineEdit {
                         enabled: !root.busy;
                         placeholder-text: "Jellyfin username";
                     }
-                    Text { text: "Password"; color: #aeb8bd; font-size: 12px; }
+                    Text { text: "Password"; color: Theme.text-muted; font-size: 12px; }
                     password-input := LineEdit {
                         enabled: !root.busy;
                         input-type: password;
@@ -1697,7 +1698,7 @@ export component JellyBridgeWindow inherits Window {
                     }
                     Text {
                         text: root.message;
-                        color: #ff8d8d;
+                        color: Theme.danger-text;
                         font-size: 12px;
                         wrap: word-wrap;
                         visible: root.message != "";
@@ -1719,13 +1720,13 @@ export component JellyBridgeWindow inherits Window {
 
         Rectangle {
             height: 64px;
-            background: #111719f5;
+            background: Theme.bg.with-alpha(0.96);
 
             Rectangle {
                 y: parent.height - 1px;
                 width: parent.width;
                 height: 1px;
-                background: #2a3438;
+                background: Theme.surface-hover;
             }
 
             HorizontalLayout {
@@ -1738,13 +1739,13 @@ export component JellyBridgeWindow inherits Window {
                 Rectangle {
                     width: 42px;
                     border-radius: 21px;
-                    background: back-touch.has-hover ? #283338 : #1b2428;
-                    border-color: #344147;
+                    background: back-touch.has-hover ? Theme.surface-hover : Theme.surface;
+                    border-color: Theme.border;
                     border-width: 1px;
                     visible: root.can-go-back || root.screen == Screen.detail;
                     Text {
                         text: "‹";
-                        color: #f2f6f7;
+                        color: Theme.text-primary;
                         font-size: 27px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
@@ -1763,8 +1764,8 @@ export component JellyBridgeWindow inherits Window {
                         y: 2px;
                         width: 38px;
                         height: 38px;
-                        border-radius: 10px;
-                        background: @linear-gradient(145deg, #08a9df 0%, #006c98 100%);
+                        border-radius: Theme.radius-large;
+                        background: @linear-gradient(145deg, Theme.accent 0%, Theme.accent-deep 100%);
                         Image {
                             source: @image-url("../assets/icon.png");
                             width: 100%;
@@ -1775,7 +1776,7 @@ export component JellyBridgeWindow inherits Window {
                     Text {
                         x: 49px;
                         text: "JellyBridge";
-                        color: #f4f8f9;
+                        color: Theme.text-primary;
                         font-size: 19px;
                         font-weight: 760;
                         vertical-alignment: center;
@@ -1788,18 +1789,18 @@ export component JellyBridgeWindow inherits Window {
 
                 Rectangle {
                     width: 1px;
-                    background: #303a3f;
+                    background: Theme.border;
                 }
 
                 Rectangle {
                     width: 70px;
-                    border-radius: 9px;
+                    border-radius: Theme.radius-medium;
                     background: root.catalog-home && root.screen == Screen.catalog
-                        ? #123746
-                        : home-touch.has-hover ? #202a2e : transparent;
+                        ? Theme.accent-surface
+                        : home-touch.has-hover ? Theme.surface-raised : transparent;
                     Text {
                         text: "Home";
-                        color: root.catalog-home && root.screen == Screen.catalog ? #50c9f2 : #bac5c9;
+                        color: root.catalog-home && root.screen == Screen.catalog ? Theme.accent-bright : Theme.text-secondary;
                         font-size: 13px;
                         font-weight: 650;
                         horizontal-alignment: center;
@@ -1814,7 +1815,7 @@ export component JellyBridgeWindow inherits Window {
                 Text {
                     horizontal-stretch: 1;
                     text: root.screen == Screen.detail ? root.detail-title : root.page-title;
-                    color: #7f9097;
+                    color: Theme.text-faint;
                     font-size: 12px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -1824,8 +1825,8 @@ export component JellyBridgeWindow inherits Window {
                 Rectangle {
                     width: 174px;
                     border-radius: 21px;
-                    background: #1a2327;
-                    border-color: #2f3b40;
+                    background: Theme.surface;
+                    border-color: Theme.surface-hover;
                     border-width: 1px;
 
                     Rectangle {
@@ -1834,7 +1835,7 @@ export component JellyBridgeWindow inherits Window {
                         width: 34px;
                         height: 34px;
                         border-radius: 17px;
-                        background: #006f98;
+                        background: Theme.accent-deep;
                         Text {
                             text: root.account-initial;
                             color: white;
@@ -1848,7 +1849,7 @@ export component JellyBridgeWindow inherits Window {
                         x: 48px;
                         width: parent.width - 58px;
                         text: root.account-name;
-                        color: #d6dfe2;
+                        color: Theme.text-secondary;
                         font-size: 12px;
                         font-weight: 600;
                         vertical-alignment: center;
@@ -1858,13 +1859,13 @@ export component JellyBridgeWindow inherits Window {
 
                 Rectangle {
                     width: 82px;
-                    border-radius: 9px;
-                    background: logout-touch.has-hover ? #332329 : transparent;
-                    border-color: logout-touch.has-hover ? #77414d : #384247;
+                    border-radius: Theme.radius-medium;
+                    background: logout-touch.has-hover ? Theme.danger-surface : transparent;
+                    border-color: logout-touch.has-hover ? Theme.danger-border : Theme.border;
                     border-width: 1px;
                     Text {
                         text: "Sign out";
-                        color: logout-touch.has-hover ? #ffb6bd : #aebbc0;
+                        color: logout-touch.has-hover ? Theme.danger-text : Theme.text-muted;
                         font-size: 12px;
                         font-weight: 600;
                         horizontal-alignment: center;
@@ -1883,13 +1884,13 @@ export component JellyBridgeWindow inherits Window {
 
             Rectangle {
                 height: root.width < 980px ? 142px : 92px;
-                background: #0f1214;
+                background: Theme.bg;
 
                 Text {
                     x: 24px;
                     y: 14px;
                     text: root.page-title;
-                    color: #f3f7f8;
+                    color: Theme.text-primary;
                     font-size: 27px;
                     font-weight: 750;
                     overflow: elide;
@@ -1898,7 +1899,7 @@ export component JellyBridgeWindow inherits Window {
                     x: 24px;
                     y: 52px;
                     text: root.catalog-summary;
-                    color: #849399;
+                    color: Theme.text-faint;
                     font-size: 12px;
                 }
 
@@ -1939,20 +1940,20 @@ export component JellyBridgeWindow inherits Window {
                     y: root.width < 980px ? 91px : 26px;
                     width: 180px;
                     height: 32px;
-                    border-radius: 7px;
-                    background: #1a2124;
-                    border-color: #303a3f;
+                    border-radius: Theme.radius-small;
+                    background: Theme.surface;
+                    border-color: Theme.border;
                     border-width: 1px;
 
                     HorizontalLayout {
                         spacing: 2px;
                         padding: 3px;
                         for density-label[density-item-index] in ["Compact", "Normal", "Large"]: Rectangle {
-                            border-radius: 5px;
-                            background: root.density-index == density-item-index ? #006f98 : density-touch.has-hover ? #283237 : transparent;
+                            border-radius: Theme.radius-small;
+                            background: root.density-index == density-item-index ? Theme.accent-deep : density-touch.has-hover ? Theme.surface-hover : transparent;
                             Text {
                                 text: density-label;
-                                color: root.density-index == density-item-index ? #ffffff : #aeb8bd;
+                                color: root.density-index == density-item-index ? Theme.text-bright : Theme.text-muted;
                                 font-size: 10px;
                                 font-weight: root.density-index == density-item-index ? 700 : 500;
                                 horizontal-alignment: center;
@@ -1972,19 +1973,19 @@ export component JellyBridgeWindow inherits Window {
 
             Rectangle {
                 height: 1px;
-                background: #20282c;
+                background: Theme.surface-raised;
             }
 
             Rectangle {
                 vertical-stretch: 1;
-                background: #0f1214;
+                background: Theme.bg;
 
                 if root.busy: VerticalLayout {
                     alignment: center;
                     spacing: 12px;
                     Text {
                         text: "Loading your library…";
-                        color: #aeb8bd;
+                        color: Theme.text-muted;
                         font-size: 16px;
                         horizontal-alignment: center;
                     }
@@ -1995,7 +1996,7 @@ export component JellyBridgeWindow inherits Window {
                     spacing: 10px;
                     Text {
                         text: root.message == "" ? (root.search-text == "" ? "Nothing to show" : "No matching media") : root.message;
-                        color: root.message == "" ? #aeb8bd : #ff8d8d;
+                        color: root.message == "" ? Theme.text-muted : Theme.danger-text;
                         font-size: 16px;
                         horizontal-alignment: center;
                     }
@@ -2060,10 +2061,10 @@ export component JellyBridgeWindow inherits Window {
 
             Rectangle {
                 height: root.message != "" && root.catalog-items.length > 0 ? 38px : 0px;
-                background: #3a1f22;
+                background: Theme.danger-surface;
                 Text {
                     text: root.message;
-                    color: #ffb1b1;
+                    color: Theme.danger-text;
                     font-size: 12px;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -2073,7 +2074,7 @@ export component JellyBridgeWindow inherits Window {
 
         if root.screen == Screen.detail: Rectangle {
             vertical-stretch: 1;
-            background: #0f1214;
+            background: Theme.bg;
 
             ScrollView {
               VerticalLayout {
@@ -2186,8 +2187,8 @@ export component JellyBridgeWindow inherits Window {
 
                 if root.message != "": Rectangle {
                     width: root.width;
-                    height: 38px; background: #3a1f22;
-                    Text { text: root.message; color: #ffb1b1; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                    height: 38px; background: Theme.danger-surface;
+                    Text { text: root.message; color: Theme.danger-text; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
                     Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
                 }
 
@@ -2228,7 +2229,7 @@ export component JellyBridgeWindow inherits Window {
                         padding-right: max(28px, (root.width - 1180px) / 2);
                         Text {
                             text: "Episodes";
-                            color: #f5f8f9;
+                            color: Theme.text-primary;
                             font-size: 22px;
                             font-weight: 750;
                             vertical-alignment: center;
@@ -2236,7 +2237,7 @@ export component JellyBridgeWindow inherits Window {
                         Rectangle { horizontal-stretch: 1; }
                         Text {
                             text: root.detail-season-summary;
-                            color: #87989f;
+                            color: Theme.text-faint;
                             font-size: 12px;
                             vertical-alignment: center;
                             visible: root.detail-episodes.length > 0;
@@ -2248,13 +2249,13 @@ export component JellyBridgeWindow inherits Window {
                         padding-left: max(28px, (root.width - 1180px) / 2);
                         padding-right: max(28px, (root.width - 1180px) / 2);
                         Rectangle {
-                            background: #182024;
-                            border-color: #2b383d;
+                            background: Theme.surface;
+                            border-color: Theme.surface-hover;
                             border-width: 1px;
-                            border-radius: 8px;
+                            border-radius: Theme.radius-medium;
                             Text {
                                 text: root.message == "" ? "No episodes are available for this season." : "Episodes could not be loaded.";
-                                color: #94a4aa;
+                                color: Theme.text-muted;
                                 font-size: 13px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -2288,11 +2289,11 @@ export component JellyBridgeWindow inherits Window {
     }
 
     if root.screen == Screen.player: Rectangle {
-        background: #000000;
+        background: Theme.scrim;
         player-surface := Rectangle {
             width: parent.width;
             height: parent.height;
-            background: #050607;
+            background: Theme.video-bg;
             clip: true;
 
             Image {
@@ -2333,7 +2334,7 @@ export component JellyBridgeWindow inherits Window {
             width: root.fullscreen-player ? parent.width - 48px : parent.width;
             height: 64px;
             border-radius: root.fullscreen-player ? 10px : 0px;
-            background: #101416e8;
+            background: Theme.bg.with-alpha(0.91);
 
             HorizontalLayout {
                 padding-left: 14px;
@@ -2345,7 +2346,7 @@ export component JellyBridgeWindow inherits Window {
                 }
                 Text {
                     text: root.detail-title;
-                    color: #f3f7f8;
+                    color: Theme.text-primary;
                     font-size: 19px;
                     font-weight: 700;
                     vertical-alignment: center;
@@ -2354,7 +2355,7 @@ export component JellyBridgeWindow inherits Window {
                 Rectangle { horizontal-stretch: 1; }
                 Text {
                     text: root.player-status;
-                    color: #aeb8bd;
+                    color: Theme.text-muted;
                     font-size: 12px;
                     vertical-alignment: center;
                 }
@@ -2368,7 +2369,7 @@ export component JellyBridgeWindow inherits Window {
             width: root.fullscreen-player ? parent.width - 48px : parent.width;
             height: 158px;
             border-radius: root.fullscreen-player ? 10px : 0px;
-            background: #101416ee;
+            background: Theme.bg.with-alpha(0.93);
 
             VerticalLayout {
                 padding: 14px;
@@ -2378,7 +2379,7 @@ export component JellyBridgeWindow inherits Window {
                     spacing: 10px;
                     Text {
                         text: root.playback-position-label;
-                        color: #dbe3e7;
+                        color: Theme.text-secondary;
                         font-size: 12px;
                         vertical-alignment: center;
                     }
@@ -2399,7 +2400,7 @@ export component JellyBridgeWindow inherits Window {
                     }
                     Text {
                         text: root.playback-duration-label;
-                        color: #dbe3e7;
+                        color: Theme.text-secondary;
                         font-size: 12px;
                         vertical-alignment: center;
                     }
@@ -2419,7 +2420,7 @@ export component JellyBridgeWindow inherits Window {
                         text: "+10 s";
                         clicked => { root.player-activity(); root.seek-relative(10); }
                     }
-                    Text { text: "Audio"; color: #dbe3e7; vertical-alignment: center; }
+                    Text { text: "Audio"; color: Theme.text-secondary; vertical-alignment: center; }
                     audio-combo := ComboBox {
                         width: 180px;
                         model: root.audio-options;
@@ -2430,7 +2431,7 @@ export component JellyBridgeWindow inherits Window {
                             root.select-audio(self.current-index);
                         }
                     }
-                    Text { text: "Subtitles"; color: #dbe3e7; vertical-alignment: center; }
+                    Text { text: "Subtitles"; color: Theme.text-secondary; vertical-alignment: center; }
                     subtitle-combo := ComboBox {
                         width: 180px;
                         model: root.subtitle-options;
@@ -2442,7 +2443,7 @@ export component JellyBridgeWindow inherits Window {
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
-                    Text { text: "Volume"; color: #dbe3e7; vertical-alignment: center; }
+                    Text { text: "Volume"; color: Theme.text-secondary; vertical-alignment: center; }
                     Slider {
                         minimum: 0;
                         maximum: 100;
