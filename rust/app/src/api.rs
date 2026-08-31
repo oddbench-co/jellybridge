@@ -3,11 +3,11 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::catalog::CatalogSort;
-use crate::detail::{
+use crate::features::catalog::CatalogSort;
+use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageRef, ImageType, PersonData, StreamData,
 };
-use crate::session::StoredSession;
+use crate::services::session::StoredSession;
 
 const CLIENT_NAME: &str = "JellyBridge";
 const CLIENT_VERSION: &str = "0.1.0-rust";

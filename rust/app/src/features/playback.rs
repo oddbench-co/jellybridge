@@ -1,0 +1,360 @@
+//! Playback orchestration: preparing a Jellyfin stream for the mpv worker and
+//! remembering per-title track preferences.
+
+use crate::app::AppContext;
+use crate::features::detail::{DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData};
+use crate::services::playback::{PlaybackConfig, prepare_playback};
+use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
+use crate::services::session::{SettingsStore, StoredSettings};
+use crate::ui;
+
+pub fn start_playback(context: &AppContext) {
+    let detail = context.state.lock().ok().and_then(|mut state| {
+        let id = state
+            .detail
+            .update(DetailMessage::Play)
+            .into_iter()
+            .find_map(|effect| match effect {
+                DetailEffect::Play(id) => Some(id),
+                _ => None,
+            })?;
+        state.detail.item_by_id(&id)
+    });
+    let Some(detail) = detail else { return };
+    start_playback_item(context, detail);
+}
+
+pub fn start_playback_item(context: &AppContext, detail: DetailItemData) {
+    let Some(session) = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.api.as_ref().map(|api| api.session().clone()))
+    else {
+        return;
+    };
+    if !detail.playable {
+        return;
+    }
+    let initial_position = detail.resume_seconds.max(0.0);
+    let initial_duration = detail
+        .runtime_seconds
+        .unwrap_or_default()
+        .max(initial_position);
+    let preference_key = playback_preference_key(&detail);
+    let config = match PlaybackConfig::from_session(&session, detail.id.clone()) {
+        Ok(config) => config,
+        Err(error) => {
+            ui::set_message(context, &error.to_string());
+            return;
+        }
+    };
+    let generation = context.next_generation();
+    ui::set_screen_busy(context, "detail", true, "Preparing authenticated playback…");
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        // Settings are read here, off the UI thread, because the store does
+        // blocking file I/O.
+        let settings = ctx.settings_store.load().unwrap_or_default();
+        let (audio_source_index, subtitle_source_index) =
+            resolved_playback_sources(&detail, &settings);
+        let old = ctx.playback.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(old) = old {
+            old.shutdown().await;
+        }
+        let prepared = prepare_playback(config).await;
+        if !ctx.is_current(generation) {
+            if let Ok(prepared) = prepared {
+                prepared.shutdown().await;
+            }
+            return;
+        }
+        match prepared {
+            Ok(prepared) => {
+                let uri = prepared.local_url.clone();
+                let subtitles = prepared
+                    .subtitle_streams
+                    .iter()
+                    .map(|subtitle| PlayerSubtitleFile {
+                        path: subtitle.path.clone(),
+                        source_index: Some(i64::from(subtitle.stream_index)),
+                        language: subtitle.language.clone(),
+                        title: subtitle.title.clone(),
+                    })
+                    .collect();
+                if let Ok(mut tracks) = ctx.player_tracks.lock() {
+                    tracks.preference_key = Some(preference_key);
+                }
+                if ctx
+                    .player_sender
+                    .send(PlayerCommand::Load {
+                        uri,
+                        start_seconds: initial_position,
+                        subtitles,
+                        audio_source_index,
+                        subtitle_source_index,
+                    })
+                    .is_err()
+                {
+                    prepared.shutdown().await;
+                    ui::set_message(&ctx, "The MPV player worker is unavailable");
+                    return;
+                }
+                if let Ok(mut slot) = ctx.playback.lock() {
+                    *slot = Some(prepared);
+                }
+                ui::player::present_playback_started(
+                    &ctx,
+                    detail.title,
+                    initial_position,
+                    initial_duration,
+                );
+            }
+            Err(error) => {
+                ui::player::present_playback_failed(&ctx, error.to_string());
+            }
+        }
+    });
+}
+
+pub fn resolved_playback_sources(
+    item: &DetailItemData,
+    settings: &StoredSettings,
+) -> (Option<i64>, Option<i64>) {
+    let audio = item
+        .streams
+        .iter()
+        .filter(|stream| stream.kind.eq_ignore_ascii_case("audio"))
+        .collect::<Vec<_>>();
+    let subtitles = item
+        .streams
+        .iter()
+        .filter(|stream| stream.kind.eq_ignore_ascii_case("subtitle"))
+        .collect::<Vec<_>>();
+    let preference = settings
+        .playback_preferences
+        .get(&playback_preference_key(item));
+    let selected_audio = preference
+        .and_then(|preference| {
+            best_preference_match(&audio, &preference.audio_language, &preference.audio_title)
+        })
+        .or_else(|| audio.iter().position(|stream| stream.is_default))
+        .or_else(|| (!audio.is_empty()).then_some(0))
+        .and_then(|index| audio.get(index))
+        .map(|stream| i64::from(stream.index));
+    let selected_subtitle = if preference.is_some_and(|preference| preference.subtitles_disabled) {
+        Some(-1)
+    } else {
+        preference
+            .and_then(|preference| {
+                best_preference_match(
+                    &subtitles,
+                    &preference.subtitle_language,
+                    &preference.subtitle_title,
+                )
+            })
+            .or_else(|| subtitles.iter().position(|stream| stream.is_default))
+            .and_then(|index| subtitles.get(index))
+            .map(|stream| i64::from(stream.index))
+    };
+    (selected_audio, selected_subtitle)
+}
+
+pub fn stop_remote_playback(context: &AppContext) {
+    let remote = context
+        .playback
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    if let Some(remote) = remote {
+        context.runtime.spawn(remote.shutdown());
+    }
+}
+
+pub fn playback_preference_key(item: &DetailItemData) -> String {
+    match item.kind {
+        DetailKind::Episode => {
+            if let Some(id) = item.series_id.as_ref() {
+                format!("series:{id}")
+            } else if let Some(id) = item.season_id.as_ref() {
+                format!("season:{id}")
+            } else if let Some(id) = item.parent_id.as_ref() {
+                format!("item:{id}")
+            } else {
+                format!("item:{}", item.id)
+            }
+        }
+        DetailKind::Movie => format!("movie:{}", item.id),
+        _ => format!("item:{}", item.id),
+    }
+}
+
+pub fn persist_player_track_preference(
+    store: &SettingsStore,
+    key: Option<&str>,
+    audio: Option<&PlayerTrack>,
+    subtitle: Option<Option<&PlayerTrack>>,
+) {
+    let Some(key) = key else { return };
+    let settings = match store.load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::warn!(%error, "playback preference could not be loaded");
+            return;
+        }
+    };
+    let mut preference = settings
+        .playback_preferences
+        .get(key)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(track) = audio {
+        preference.audio_language = clean_preference(&track.language);
+        preference.audio_title = clean_preference(&track.title);
+    }
+    if let Some(track) = subtitle {
+        if let Some(track) = track {
+            preference.subtitle_language = clean_preference(&track.language);
+            preference.subtitle_title = clean_preference(&track.title);
+            preference.subtitles_disabled = false;
+        } else {
+            preference.subtitles_disabled = true;
+        }
+    }
+    if let Err(error) = store.save_playback_preference(key, preference) {
+        tracing::warn!(%error, "playback preference could not be saved");
+    }
+}
+
+pub fn best_preference_match<T>(
+    streams: &[T],
+    language: &Option<String>,
+    title: &Option<String>,
+) -> Option<usize>
+where
+    T: std::borrow::Borrow<StreamData>,
+{
+    let language = normalized_preference(language);
+    let title = normalized_preference(title);
+    if language.is_none() && title.is_none() {
+        return None;
+    }
+    streams
+        .iter()
+        .enumerate()
+        .map(|(index, stream)| {
+            let stream = stream.borrow();
+            let mut score = 0;
+            if language.is_some() && normalized_preference(&stream.language) == language {
+                score += 4;
+            }
+            if title.is_some() && normalized_preference(&stream.title) == title {
+                score += 2;
+            }
+            (index, score)
+        })
+        .filter(|(_, score)| *score > 0)
+        .max_by_key(|(_, score)| *score)
+        .map(|(index, _)| index)
+}
+
+fn normalized_preference(value: &Option<String>) -> Option<String> {
+    clean_preference(value).map(|value| value.to_lowercase())
+}
+
+pub fn clean_preference(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::session::StoredPlaybackPreference;
+
+    #[test]
+    fn episode_preferences_are_scoped_to_the_series() {
+        let mut episode = DetailItemData::fixture("episode-1", DetailKind::Episode);
+        episode.series_id = Some("series-1".into());
+
+        assert_eq!(playback_preference_key(&episode), "series:series-1");
+    }
+
+    #[test]
+    fn stored_language_preferences_resolve_to_jellyfin_source_indexes() {
+        let mut episode = DetailItemData::fixture("episode-1", DetailKind::Episode);
+        episode.series_id = Some("series-1".into());
+        episode.streams = vec![
+            StreamData {
+                index: 4,
+                kind: "Audio".into(),
+                label: "ENG".into(),
+                language: Some("eng".into()),
+                title: Some("Stereo".into()),
+                codec: Some("aac".into()),
+                is_default: true,
+            },
+            StreamData {
+                index: 9,
+                kind: "Audio".into(),
+                label: "JPN".into(),
+                language: Some("jpn".into()),
+                title: Some("5.1".into()),
+                codec: Some("aac".into()),
+                is_default: false,
+            },
+            StreamData {
+                index: 12,
+                kind: "Subtitle".into(),
+                label: "ENG Signs".into(),
+                language: Some("eng".into()),
+                title: Some("Signs".into()),
+                codec: Some("srt".into()),
+                is_default: false,
+            },
+        ];
+        let mut settings = StoredSettings::default();
+        settings.playback_preferences.insert(
+            "series:series-1".into(),
+            StoredPlaybackPreference {
+                audio_language: Some("JPN".into()),
+                audio_title: None,
+                subtitle_language: Some("eng".into()),
+                subtitle_title: Some("Signs".into()),
+                subtitles_disabled: false,
+            },
+        );
+
+        assert_eq!(
+            resolved_playback_sources(&episode, &settings),
+            (Some(9), Some(12))
+        );
+    }
+
+    #[test]
+    fn stored_subtitle_off_choice_is_applied_explicitly() {
+        let mut movie = DetailItemData::fixture("movie-1", DetailKind::Movie);
+        movie.streams.push(StreamData {
+            index: 5,
+            kind: "Subtitle".into(),
+            label: "English".into(),
+            language: Some("eng".into()),
+            title: None,
+            codec: Some("srt".into()),
+            is_default: true,
+        });
+        let mut settings = StoredSettings::default();
+        settings.playback_preferences.insert(
+            "movie:movie-1".into(),
+            StoredPlaybackPreference {
+                subtitles_disabled: true,
+                ..StoredPlaybackPreference::default()
+            },
+        );
+
+        assert_eq!(resolved_playback_sources(&movie, &settings).1, Some(-1));
+    }
+}

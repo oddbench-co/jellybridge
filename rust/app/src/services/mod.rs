@@ -6,3 +6,4 @@ pub mod playback;
 pub mod player;
 pub mod proxy;
 pub mod render;
+pub mod session;

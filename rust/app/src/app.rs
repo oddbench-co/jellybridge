@@ -1,0 +1,157 @@
+//! Application state and shared orchestration context. This module must not
+//! know any Slint type; the UI is reached only through [`crate::ui::UiHandle`].
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::api::{CatalogItemData, CatalogSectionData, JellyfinApi};
+use crate::features::catalog::{CatalogDensity, CatalogSort, CatalogSectionRange, flatten_sections};
+use crate::features::detail::{DetailModel, DetailTarget};
+use crate::services::playback::PreparedPlayback;
+use crate::services::player::{PlayerCommand, PlayerTrack};
+use crate::services::session::{SessionStore, SettingsStore};
+use crate::ui::UiHandle;
+
+#[derive(Clone)]
+pub struct PageSnapshot {
+    pub title: String,
+    pub items: Vec<CatalogItemData>,
+    pub sections: Vec<CatalogSectionRange>,
+    pub parent: Option<CatalogItemData>,
+    pub search_text: String,
+    pub total_record_count: usize,
+}
+
+impl PageSnapshot {
+    pub fn empty_home() -> Self {
+        Self {
+            title: "Home".into(),
+            items: Vec::new(),
+            sections: Vec::new(),
+            parent: None,
+            search_text: String::new(),
+            total_record_count: 0,
+        }
+    }
+
+    pub fn home(sections: &[CatalogSectionData]) -> Self {
+        let flattened = flatten_sections(sections);
+        let total_record_count = flattened.items.len();
+        Self {
+            title: "Home".into(),
+            items: flattened.items,
+            sections: flattened.sections,
+            parent: None,
+            search_text: String::new(),
+            total_record_count,
+        }
+    }
+
+    pub fn is_home_dashboard(&self) -> bool {
+        self.parent.is_none() && self.search_text.is_empty()
+    }
+}
+
+#[derive(Clone)]
+pub enum RetryAction {
+    Home,
+    Browse(CatalogItemData, bool),
+    Search(String),
+    Detail(DetailTarget),
+}
+
+pub struct AppState {
+    pub api: Option<JellyfinApi>,
+    pub account_name: String,
+    pub home: Vec<CatalogSectionData>,
+    pub current: PageSnapshot,
+    pub back_stack: Vec<PageSnapshot>,
+    pub detail: DetailModel,
+    pub detail_tracks: DetailTrackSelection,
+    pub retry: RetryAction,
+    pub catalog_sort: CatalogSort,
+    pub catalog_density: CatalogDensity,
+}
+
+#[derive(Clone, Default)]
+pub struct DetailTrackSelection {
+    pub audio_ids: Vec<i32>,
+    pub subtitle_ids: Vec<Option<i32>>,
+    pub audio_index: i32,
+    pub subtitle_index: i32,
+}
+
+#[derive(Default)]
+pub struct PlayerTrackState {
+    pub audio: Vec<PlayerTrack>,
+    pub subtitles: Vec<PlayerTrack>,
+    pub preference_key: Option<String>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            api: None,
+            account_name: String::new(),
+            home: Vec::new(),
+            current: PageSnapshot::empty_home(),
+            back_stack: Vec::new(),
+            detail: DetailModel::default(),
+            detail_tracks: DetailTrackSelection::default(),
+            retry: RetryAction::Home,
+            catalog_sort: CatalogSort::default(),
+            catalog_density: CatalogDensity::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AppContext {
+    pub ui: UiHandle,
+    pub runtime: tokio::runtime::Handle,
+    pub state: Arc<Mutex<AppState>>,
+    pub generation: Arc<AtomicU64>,
+    pub store: SessionStore,
+    pub settings_store: SettingsStore,
+    pub image_cache: PathBuf,
+    pub image_limit: Arc<tokio::sync::Semaphore>,
+    pub playback: Arc<Mutex<Option<PreparedPlayback>>>,
+    pub player_sender: std::sync::mpsc::Sender<PlayerCommand>,
+    pub player_tracks: Arc<Mutex<PlayerTrackState>>,
+    pub catalog_request: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
+}
+
+impl AppContext {
+    pub fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn current_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    pub fn is_current(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::Acquire) == generation
+    }
+
+    pub fn api(&self) -> Option<JellyfinApi> {
+        self.state.lock().ok()?.api.clone()
+    }
+}
+
+pub fn replace_catalog_request(context: &AppContext, request: tokio::task::AbortHandle) {
+    if let Ok(mut active) = context.catalog_request.lock()
+        && let Some(previous) = active.replace(request)
+    {
+        previous.abort();
+    }
+}
+
+pub fn cancel_catalog_request(context: &AppContext) {
+    if let Ok(mut active) = context.catalog_request.lock()
+        && let Some(request) = active.take()
+    {
+        request.abort();
+    }
+}

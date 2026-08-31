@@ -16,7 +16,7 @@ use url::Url;
 
 use crate::api;
 use crate::services::proxy::{PlaybackOrigin, ProxySession, start_proxy, strict_client};
-use crate::session::StoredSession;
+use crate::services::session::StoredSession;
 
 const SUBTITLE_DIRECTORY_PREFIX: &str = "jellybridge-subs-v1-";
 const SUBTITLE_MARKER: &str = ".jellybridge-subtitle-cache-v1";

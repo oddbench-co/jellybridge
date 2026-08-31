@@ -1,5 +1,10 @@
 use std::collections::HashMap;
 
+use crate::app::{AppContext, AppState, DetailTrackSelection, RetryAction, cancel_catalog_request};
+use crate::features::playback::{best_preference_match, clean_preference, playback_preference_key};
+use crate::services::session::{StoredPlaybackPreference, StoredSettings};
+use crate::ui;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DetailKind {
     Movie,
@@ -389,6 +394,228 @@ fn update_matching_items(
         if item.id == id {
             update(item);
         }
+    }
+}
+
+pub fn start_detail(context: &AppContext, target: DetailTarget) {
+    let Some(api) = context.api() else { return };
+    let generation = context.next_generation();
+    cancel_catalog_request(context);
+    if let Ok(mut state) = context.state.lock() {
+        state.retry = RetryAction::Detail(target.clone());
+        state.detail.update(DetailMessage::Open(target.clone()));
+    }
+    ui::set_screen_busy(context, "detail", true, "");
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        let result = api.detail_page(&target.id).await;
+        if !ctx.is_current(generation) {
+            return;
+        }
+        match result {
+            Ok(page) => {
+                let settings = ctx.settings_store.load().unwrap_or_default();
+                if let Ok(mut state) = ctx.state.lock() {
+                    state.detail.update(DetailMessage::Loaded(Box::new(page)));
+                    state.detail_tracks = detail_track_defaults(&state.detail, &settings);
+                }
+                ui::detail::present(&ctx, generation);
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if let Ok(mut state) = ctx.state.lock() {
+                    state
+                        .detail
+                        .update(DetailMessage::LoadFailed(message.clone()));
+                }
+                ui::detail::present(&ctx, generation);
+            }
+        }
+    });
+}
+
+pub fn update_detail_mutation(context: &AppContext, message: DetailMessage) {
+    let effects = context
+        .state
+        .lock()
+        .map(|mut state| state.detail.update(message))
+        .unwrap_or_default();
+    // Deliberately reuses the current generation rather than bumping it, so a
+    // watched/favorite refresh does not cancel in-flight artwork loads.
+    let generation = context.current_generation();
+    ui::detail::present(context, generation);
+    for effect in effects {
+        let (id, kind, future) = match effect {
+            DetailEffect::SetWatched { id, watched } => {
+                let Some(api) = context.api() else { continue };
+                let call_id = id.clone();
+                (
+                    id,
+                    DetailMutationKind::Watched,
+                    context.runtime.spawn(async move {
+                        api.set_watched(&call_id, watched)
+                            .await
+                            .map_err(|error| error.to_string())
+                    }),
+                )
+            }
+            DetailEffect::SetFavorite { id, favorite } => {
+                let Some(api) = context.api() else { continue };
+                let call_id = id.clone();
+                (
+                    id,
+                    DetailMutationKind::Favorite,
+                    context.runtime.spawn(async move {
+                        api.set_favorite(&call_id, favorite)
+                            .await
+                            .map_err(|error| error.to_string())
+                    }),
+                )
+            }
+            _ => continue,
+        };
+        let ctx = context.clone();
+        context.runtime.spawn(async move {
+            let error = match future.await {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(error) => Some(format!("detail update task failed: {error}")),
+            };
+            if let Ok(mut state) = ctx.state.lock() {
+                state
+                    .detail
+                    .update(DetailMessage::MutationFinished { id, kind, error });
+            }
+            if ctx.is_current(generation) {
+                ui::detail::present(&ctx, generation);
+            }
+        });
+    }
+}
+
+pub fn select_detail_track(context: &AppContext, index: i32, audio: bool) {
+    let preference = context.state.lock().ok().and_then(|mut state| {
+        if audio {
+            if usize::try_from(index)
+                .ok()
+                .is_none_or(|index| index >= state.detail_tracks.audio_ids.len())
+            {
+                return None;
+            }
+            state.detail_tracks.audio_index = index;
+        } else {
+            if usize::try_from(index)
+                .ok()
+                .is_none_or(|index| index >= state.detail_tracks.subtitle_ids.len())
+            {
+                return None;
+            }
+            state.detail_tracks.subtitle_index = index;
+        }
+        selected_detail_preference(&state)
+    });
+    let Some((key, preference)) = preference else {
+        return;
+    };
+    // The settings store does blocking file I/O, so persist off the UI thread.
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        let store = ctx.settings_store.clone();
+        let result =
+            tokio::task::spawn_blocking(move || store.save_playback_preference(&key, preference))
+                .await;
+        if !matches!(result, Ok(Ok(()))) {
+            tracing::warn!("playback preference could not be saved");
+            ui::set_message(&ctx, "Playback preference could not be saved");
+        }
+    });
+}
+
+fn selected_detail_preference(state: &AppState) -> Option<(String, StoredPlaybackPreference)> {
+    let item = &state.detail.snapshot().page?.item;
+    let settings = state.detail_tracks.clone();
+    let audio_stream = usize::try_from(settings.audio_index)
+        .ok()
+        .and_then(|index| settings.audio_ids.get(index))
+        .and_then(|selected| {
+            item.streams.iter().find(|stream| {
+                stream.kind.eq_ignore_ascii_case("audio") && stream.index == *selected
+            })
+        });
+    let subtitle_selection = usize::try_from(settings.subtitle_index)
+        .ok()
+        .and_then(|index| settings.subtitle_ids.get(index))
+        .copied()
+        .flatten();
+    let subtitle_stream = subtitle_selection.and_then(|selected| {
+        item.streams
+            .iter()
+            .find(|stream| stream.kind.eq_ignore_ascii_case("subtitle") && stream.index == selected)
+    });
+    Some((
+        playback_preference_key(item),
+        StoredPlaybackPreference {
+            audio_language: audio_stream.and_then(|stream| clean_preference(&stream.language)),
+            audio_title: audio_stream.and_then(|stream| clean_preference(&stream.title)),
+            subtitle_language: subtitle_stream
+                .and_then(|stream| clean_preference(&stream.language)),
+            subtitle_title: subtitle_stream.and_then(|stream| clean_preference(&stream.title)),
+            subtitles_disabled: subtitle_selection.is_none() && settings.subtitle_ids.len() > 1,
+        },
+    ))
+}
+
+pub fn detail_track_defaults(
+    model: &DetailModel,
+    settings: &StoredSettings,
+) -> DetailTrackSelection {
+    let Some(page) = model.snapshot().page else {
+        return DetailTrackSelection::default();
+    };
+    let audio = page
+        .item
+        .streams
+        .iter()
+        .filter(|stream| stream.kind.eq_ignore_ascii_case("audio"))
+        .collect::<Vec<_>>();
+    let subtitles = page
+        .item
+        .streams
+        .iter()
+        .filter(|stream| stream.kind.eq_ignore_ascii_case("subtitle"))
+        .collect::<Vec<_>>();
+    let preference = settings
+        .playback_preferences
+        .get(&playback_preference_key(&page.item));
+    let audio_index = preference
+        .and_then(|preference| {
+            best_preference_match(&audio, &preference.audio_language, &preference.audio_title)
+        })
+        .or_else(|| audio.iter().position(|stream| stream.is_default))
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(0);
+    let subtitle_default = if preference.is_some_and(|preference| preference.subtitles_disabled) {
+        0
+    } else {
+        preference
+            .and_then(|preference| {
+                best_preference_match(
+                    &subtitles,
+                    &preference.subtitle_language,
+                    &preference.subtitle_title,
+                )
+            })
+            .or_else(|| subtitles.iter().position(|stream| stream.is_default))
+            .and_then(|index| i32::try_from(index + 1).ok())
+            .unwrap_or(0)
+    };
+    DetailTrackSelection {
+        audio_ids: audio.iter().map(|stream| stream.index).collect(),
+        subtitle_ids: std::iter::once(None)
+            .chain(subtitles.iter().map(|stream| Some(stream.index)))
+            .collect(),
+        audio_index,
+        subtitle_index: subtitle_default,
     }
 }
 
