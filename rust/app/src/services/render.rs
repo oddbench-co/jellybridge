@@ -27,6 +27,8 @@ pub enum RenderError {
     NotNativeOpenGl,
     #[error("failed to load the platform OpenGL resolver")]
     Resolver,
+    // Only constructed on Linux, where display-handle resolution can fail.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[error("unsupported native display handle for libmpv hardware interop")]
     UnsupportedDisplay,
     #[error("libmpv render-context operation failed: {0}")]
@@ -37,7 +39,10 @@ pub enum RenderError {
     WakeThread(#[source] std::io::Error),
 }
 
+// The display variants are only constructed on Linux; other targets see them
+// as dead code but the mpv render-param match must still cover them.
 #[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum NativeDisplay {
     None,
     X11(*const c_void),

@@ -40,8 +40,6 @@ type ProxyBody = UnsyncBoxBody<Bytes, BoxError>;
 pub enum ProxyError {
     #[error("playback proxy only accepts GET and HEAD")]
     MethodNotAllowed,
-    #[error("playback proxy path is invalid")]
-    InvalidPath,
     #[error("upstream redirect is invalid")]
     InvalidRedirect,
     #[error("upstream redirect changed origin")]
@@ -182,7 +180,6 @@ async fn handle_request(
             tracing::warn!(error = %error, "playback proxy request rejected");
             let status = match error {
                 ProxyError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
-                ProxyError::InvalidPath => StatusCode::NOT_FOUND,
                 ProxyError::InvalidRedirect
                 | ProxyError::CrossOriginRedirect
                 | ProxyError::HttpsDowngrade
@@ -314,23 +311,13 @@ fn text_response(status: StatusCode, message: &'static str) -> Response<ProxyBod
         .expect("valid text response")
 }
 
+/// Builds one client for one playback origin.
 pub fn strict_client() -> Result<reqwest::Client, reqwest::Error> {
-    strict_client_with_extra_root(None)
-}
-
-/// Builds one client for one playback origin. An optional private CA is scoped
-/// to that client/session; it is never merged into a process-wide trust store.
-pub fn strict_client_with_extra_root(
-    extra_root_pem: Option<&[u8]>,
-) -> Result<reqwest::Client, reqwest::Error> {
-    let mut builder = reqwest::Client::builder()
+    reqwest::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(std::time::Duration::from_secs(10))
-        .read_timeout(std::time::Duration::from_secs(30));
-    if let Some(pem) = extra_root_pem {
-        builder = builder.add_root_certificate(reqwest::Certificate::from_pem(pem)?);
-    }
-    builder.build()
+        .read_timeout(std::time::Duration::from_secs(30))
+        .build()
 }
 
 #[cfg(test)]

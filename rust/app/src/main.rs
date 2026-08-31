@@ -22,7 +22,7 @@ use detail::{
     DetailPageData, DetailTarget, ImageRef,
 };
 use services::playback::{
-    JellyfinSliceConfig, PreparedJellyfinPlayback, prepare_jellyfin_playback,
+    PlaybackConfig, PreparedPlayback, prepare_playback,
 };
 use services::player::{
     PlayerCommand, PlayerEvent, PlayerSubtitleFile, PlayerTrack, create_player,
@@ -167,7 +167,7 @@ struct AppContext {
     settings_store: SettingsStore,
     image_cache: PathBuf,
     image_limit: Arc<tokio::sync::Semaphore>,
-    playback: Arc<Mutex<Option<PreparedJellyfinPlayback>>>,
+    playback: Arc<Mutex<Option<PreparedPlayback>>>,
     player_sender: std::sync::mpsc::Sender<PlayerCommand>,
     player_tracks: Arc<Mutex<PlayerTrackState>>,
     catalog_request: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
@@ -242,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let image_cache = cache_directory()?;
     let window = JellyBridgeWindow::new()?;
-    let playback = Arc::new(Mutex::new(None::<PreparedJellyfinPlayback>));
+    let playback = Arc::new(Mutex::new(None::<PreparedPlayback>));
     let player_tracks = Arc::new(Mutex::new(PlayerTrackState::default()));
     let event_playback = playback.clone();
     let event_tracks = player_tracks.clone();
@@ -718,13 +718,7 @@ fn start_playback_item(context: &AppContext, detail: DetailItemData) {
     let settings = context.settings_store.load().unwrap_or_default();
     let (audio_source_index, subtitle_source_index) = resolved_playback_sources(&detail, &settings);
     let preference_key = playback_preference_key(&detail);
-    let config = match JellyfinSliceConfig::from_session(
-        &session.server_url,
-        detail.id.clone(),
-        session.user_id,
-        session.token,
-        None,
-    ) {
+    let config = match PlaybackConfig::from_session(&session, detail.id.clone()) {
         Ok(config) => config,
         Err(error) => {
             set_message(context, &error.to_string());
@@ -739,7 +733,7 @@ fn start_playback_item(context: &AppContext, detail: DetailItemData) {
         if let Some(old) = old {
             old.shutdown().await;
         }
-        let prepared = prepare_jellyfin_playback(config).await;
+        let prepared = prepare_playback(config).await;
         if !ctx.is_current(generation) {
             if let Ok(prepared) = prepared {
                 prepared.shutdown().await;

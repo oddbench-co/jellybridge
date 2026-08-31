@@ -1,8 +1,9 @@
-//! Minimal Jellyfin contract used only by the embedded-player gate.
+//! Jellyfin playback preparation: resolves a raw direct-stream URL through
+//! PlaybackInfo, materializes authenticated external text subtitles, and
+//! starts the token-hiding loopback proxy mpv plays from.
 //!
-//! This intentionally does not implement browsing. It proves raw media playback
-//! through mpv, header-only credentials, authenticated subtitle materialization,
-//! and the loopback range proxy.
+//! Browsing lives in [`crate::api`]; this module reuses its server-URL
+//! normalization and client identity.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -13,7 +14,9 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::services::proxy::{PlaybackOrigin, ProxySession, start_proxy, strict_client_with_extra_root};
+use crate::api;
+use crate::services::proxy::{PlaybackOrigin, ProxySession, start_proxy, strict_client};
+use crate::session::StoredSession;
 
 const SUBTITLE_DIRECTORY_PREFIX: &str = "jellybridge-subs-v1-";
 const SUBTITLE_MARKER: &str = ".jellybridge-subtitle-cache-v1";
@@ -21,19 +24,11 @@ const MAX_SUBTITLE_BYTES: usize = 16 * 1024 * 1024;
 const TEXT_SUBTITLE_CODECS: &[&str] = &["srt", "subrip", "ass", "ssa", "vtt", "webvtt"];
 
 #[derive(Debug, thiserror::Error)]
-pub enum JellyfinSliceError {
+pub enum PlaybackError {
     #[error("the Jellyfin server URL is invalid")]
     InvalidServerUrl,
-    #[error("the token file must be a regular, owner-only file")]
-    UnsafeTokenFile,
-    #[error("the token file could not be read")]
-    TokenFile(#[source] std::io::Error),
-    #[error("the token file is empty or unreasonably large")]
+    #[error("the session token is empty or unreasonably large")]
     InvalidToken,
-    #[error("the private CA certificate must be a regular file of at most 1 MiB")]
-    InvalidCertificateFile,
-    #[error("the private CA certificate could not be read")]
-    CertificateFile(#[source] std::io::Error),
     #[error("the Jellyfin playback-info request failed")]
     PlaybackInfoRequest(#[source] reqwest::Error),
     #[error("Jellyfin returned playback-info status {0}")]
@@ -59,122 +54,39 @@ pub enum JellyfinSliceError {
 }
 
 #[derive(Clone)]
-pub struct JellyfinSliceConfig {
+pub struct PlaybackConfig {
     pub server: Url,
     pub item_id: String,
     pub user_id: String,
     token: String,
-    extra_root_pem: Option<Vec<u8>>,
 }
 
-impl JellyfinSliceConfig {
+impl PlaybackConfig {
     pub fn from_session(
-        server: &str,
+        session: &StoredSession,
         item_id: String,
-        user_id: String,
-        token: String,
-        extra_root_pem: Option<Vec<u8>>,
-    ) -> Result<Self, JellyfinSliceError> {
-        let mut server = Url::parse(server).map_err(|_| JellyfinSliceError::InvalidServerUrl)?;
-        if !matches!(server.scheme(), "http" | "https") || server.host_str().is_none() {
-            return Err(JellyfinSliceError::InvalidServerUrl);
-        }
-        server.set_query(None);
-        server.set_fragment(None);
-        if !server.path().ends_with('/') {
-            let path = format!("{}/", server.path());
-            server.set_path(&path);
-        }
-        let token = token.trim().to_owned();
+    ) -> Result<Self, PlaybackError> {
+        let server = api::normalize_server_url(&session.server_url)
+            .map_err(|_| PlaybackError::InvalidServerUrl)?;
+        let token = session.token.trim().to_owned();
         if token.is_empty() || token.len() > 64 * 1024 {
-            return Err(JellyfinSliceError::InvalidToken);
-        }
-        if extra_root_pem
-            .as_ref()
-            .is_some_and(|certificate| certificate.is_empty() || certificate.len() > 1024 * 1024)
-        {
-            return Err(JellyfinSliceError::InvalidCertificateFile);
+            return Err(PlaybackError::InvalidToken);
         }
         Ok(Self {
             server,
             item_id,
-            user_id,
+            user_id: session.user_id.clone(),
             token,
-            extra_root_pem,
         })
     }
 
-    pub fn from_token_file(
-        server: &str,
-        item_id: String,
-        user_id: String,
-        token_file: &Path,
-        ca_certificate: Option<&Path>,
-    ) -> Result<Self, JellyfinSliceError> {
-        let mut server = Url::parse(server).map_err(|_| JellyfinSliceError::InvalidServerUrl)?;
-        if !matches!(server.scheme(), "http" | "https") || server.host_str().is_none() {
-            return Err(JellyfinSliceError::InvalidServerUrl);
-        }
-        server.set_query(None);
-        server.set_fragment(None);
-        if !server.path().ends_with('/') {
-            let path = format!("{}/", server.path());
-            server.set_path(&path);
-        }
-
-        let metadata = fs::symlink_metadata(token_file).map_err(JellyfinSliceError::TokenFile)?;
-        if !metadata.file_type().is_file() {
-            return Err(JellyfinSliceError::UnsafeTokenFile);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if metadata.permissions().mode() & 0o077 != 0 {
-                return Err(JellyfinSliceError::UnsafeTokenFile);
-            }
-        }
-        if metadata.len() == 0 || metadata.len() > 64 * 1024 {
-            return Err(JellyfinSliceError::InvalidToken);
-        }
-        let token = fs::read_to_string(token_file)
-            .map_err(JellyfinSliceError::TokenFile)?
-            .trim()
-            .to_owned();
-        if token.is_empty() {
-            return Err(JellyfinSliceError::InvalidToken);
-        }
-
-        let extra_root_pem = ca_certificate.map(read_certificate_file).transpose()?;
-
-        Ok(Self {
-            server,
-            item_id,
-            user_id,
-            token,
-            extra_root_pem,
-        })
-    }
-
-    fn authorization(&self) -> Result<HeaderValue, JellyfinSliceError> {
-        let value = format!(
-            "MediaBrowser Client=\"JellyBridge\", Device=\"Desktop\", DeviceId=\"jellybridge-rust-slice\", Version=\"0.0.0\", Token=\"{}\"",
-            self.token.replace(['\\', '"'], "")
-        );
-        HeaderValue::from_str(&value).map_err(|_| JellyfinSliceError::InvalidToken)
+    fn authorization(&self) -> Result<HeaderValue, PlaybackError> {
+        api::authorization_value(&self.token).map_err(|_| PlaybackError::InvalidToken)
     }
 }
 
-fn read_certificate_file(path: &Path) -> Result<Vec<u8>, JellyfinSliceError> {
-    let metadata = fs::symlink_metadata(path).map_err(JellyfinSliceError::CertificateFile)?;
-    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 1024 * 1024 {
-        return Err(JellyfinSliceError::InvalidCertificateFile);
-    }
-    fs::read(path).map_err(JellyfinSliceError::CertificateFile)
-}
-
-pub struct PreparedJellyfinPlayback {
+pub struct PreparedPlayback {
     pub local_url: String,
-    pub subtitles: Vec<PathBuf>,
     pub subtitle_streams: Vec<PreparedSubtitle>,
     proxy: ProxySession,
     _temporary_subtitles: TemporarySubtitles,
@@ -188,18 +100,17 @@ pub struct PreparedSubtitle {
     pub title: Option<String>,
 }
 
-impl PreparedJellyfinPlayback {
+impl PreparedPlayback {
     pub async fn shutdown(self) {
         self.proxy.shutdown().await;
     }
 }
 
-pub async fn prepare_jellyfin_playback(
-    config: JellyfinSliceConfig,
-) -> Result<PreparedJellyfinPlayback, JellyfinSliceError> {
+pub async fn prepare_playback(
+    config: PlaybackConfig,
+) -> Result<PreparedPlayback, PlaybackError> {
     cleanup_stale_subtitles();
-    let client = strict_client_with_extra_root(config.extra_root_pem.as_deref())
-        .map_err(JellyfinSliceError::PlaybackInfoRequest)?;
+    let client = strict_client().map_err(PlaybackError::PlaybackInfoRequest)?;
     let authorization = config.authorization()?;
     let playback_info = request_playback_info(&client, &config, &authorization).await?;
     let source = select_raw_source(&playback_info)?;
@@ -207,7 +118,7 @@ pub async fn prepare_jellyfin_playback(
         .id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .ok_or(JellyfinSliceError::MissingMediaSourceId)?;
+        .ok_or(PlaybackError::MissingMediaSourceId)?;
 
     let mut temporary_subtitles = TemporarySubtitles::create()?;
     let mut subtitle_streams = Vec::new();
@@ -246,10 +157,8 @@ pub async fn prepare_jellyfin_playback(
     )
     .await?;
     let local_url = proxy.local_url().as_str().to_owned();
-    let subtitles = temporary_subtitles.files.clone();
-    Ok(PreparedJellyfinPlayback {
+    Ok(PreparedPlayback {
         local_url,
-        subtitles,
         subtitle_streams,
         proxy,
         _temporary_subtitles: temporary_subtitles,
@@ -258,16 +167,16 @@ pub async fn prepare_jellyfin_playback(
 
 async fn request_playback_info(
     client: &reqwest::Client,
-    config: &JellyfinSliceConfig,
+    config: &PlaybackConfig,
     authorization: &HeaderValue,
-) -> Result<PlaybackInfoResponse, JellyfinSliceError> {
+) -> Result<PlaybackInfoResponse, PlaybackError> {
     let mut url = config
         .server
         .join(&format!(
             "Items/{}/PlaybackInfo",
             encode_path_segment(&config.item_id)
         ))
-        .map_err(|_| JellyfinSliceError::InvalidServerUrl)?;
+        .map_err(|_| PlaybackError::InvalidServerUrl)?;
     url.query_pairs_mut().append_pair("UserId", &config.user_id);
     let response = client
         .post(url)
@@ -277,17 +186,17 @@ async fn request_playback_info(
         })
         .send()
         .await
-        .map_err(JellyfinSliceError::PlaybackInfoRequest)?;
+        .map_err(PlaybackError::PlaybackInfoRequest)?;
     if !response.status().is_success() {
-        return Err(JellyfinSliceError::PlaybackInfoStatus(response.status()));
+        return Err(PlaybackError::PlaybackInfoStatus(response.status()));
     }
     response
         .json()
         .await
-        .map_err(JellyfinSliceError::PlaybackInfoJson)
+        .map_err(PlaybackError::PlaybackInfoJson)
 }
 
-fn select_raw_source(response: &PlaybackInfoResponse) -> Result<&MediaSource, JellyfinSliceError> {
+fn select_raw_source(response: &PlaybackInfoResponse) -> Result<&MediaSource, PlaybackError> {
     let has_id =
         |source: &&MediaSource| source.id.as_deref().is_some_and(|id| !id.trim().is_empty());
     response
@@ -296,20 +205,20 @@ fn select_raw_source(response: &PlaybackInfoResponse) -> Result<&MediaSource, Je
         .filter(has_id)
         .find(|source| source.supports_direct_play)
         .or_else(|| response.media_sources.iter().find(has_id))
-        .ok_or(JellyfinSliceError::NoMediaSource)
+        .ok_or(PlaybackError::NoMediaSource)
 }
 
 fn raw_stream_url(
-    config: &JellyfinSliceConfig,
+    config: &PlaybackConfig,
     media_source_id: &str,
-) -> Result<Url, JellyfinSliceError> {
+) -> Result<Url, PlaybackError> {
     let mut url = config
         .server
         .join(&format!(
             "Videos/{}/stream",
             encode_path_segment(&config.item_id)
         ))
-        .map_err(|_| JellyfinSliceError::InvalidServerUrl)?;
+        .map_err(|_| PlaybackError::InvalidServerUrl)?;
     url.query_pairs_mut()
         .append_pair("static", "true")
         .append_pair("mediaSourceId", media_source_id);
@@ -317,15 +226,15 @@ fn raw_stream_url(
 }
 
 fn subtitle_url(
-    config: &JellyfinSliceConfig,
+    config: &PlaybackConfig,
     media_source_id: &str,
     stream: &MediaStream,
-) -> Result<Url, JellyfinSliceError> {
+) -> Result<Url, PlaybackError> {
     let mut url = if let Some(delivery_url) = stream.delivery_url.as_deref() {
         config
             .server
             .join(delivery_url)
-            .map_err(|_| JellyfinSliceError::InvalidServerUrl)?
+            .map_err(|_| PlaybackError::InvalidServerUrl)?
     } else {
         config
             .server
@@ -336,10 +245,10 @@ fn subtitle_url(
                 stream.index,
                 safe_extension(stream.codec.as_deref())
             ))
-            .map_err(|_| JellyfinSliceError::InvalidServerUrl)?
+            .map_err(|_| PlaybackError::InvalidServerUrl)?
     };
     if canonical_origin(&config.server) != canonical_origin(&url) {
-        return Err(JellyfinSliceError::CrossOriginSubtitle);
+        return Err(PlaybackError::CrossOriginSubtitle);
     }
     strip_query_credentials(&mut url);
     Ok(url)
@@ -501,10 +410,10 @@ struct TemporarySubtitles {
 }
 
 impl TemporarySubtitles {
-    fn create() -> Result<Self, JellyfinSliceError> {
+    fn create() -> Result<Self, PlaybackError> {
         let directory = std::env::temp_dir().join(format!(
             "{SUBTITLE_DIRECTORY_PREFIX}{}",
-            random_hex_256().map_err(JellyfinSliceError::SubtitleIo)?
+            random_hex_256().map_err(PlaybackError::SubtitleIo)?
         ));
         #[cfg(unix)]
         {
@@ -512,17 +421,17 @@ impl TemporarySubtitles {
             fs::DirBuilder::new()
                 .mode(0o700)
                 .create(&directory)
-                .map_err(JellyfinSliceError::SubtitleIo)?;
+                .map_err(PlaybackError::SubtitleIo)?;
         }
         #[cfg(not(unix))]
-        fs::create_dir(&directory).map_err(JellyfinSliceError::SubtitleIo)?;
+        fs::create_dir(&directory).map_err(PlaybackError::SubtitleIo)?;
 
         let marker_path = directory.join(SUBTITLE_MARKER);
         let mut marker = secure_create(&marker_path)?;
         marker
             .write_all(format!("{}\n", std::process::id()).as_bytes())
-            .map_err(JellyfinSliceError::SubtitleIo)?;
-        marker.sync_all().map_err(JellyfinSliceError::SubtitleIo)?;
+            .map_err(PlaybackError::SubtitleIo)?;
+        marker.sync_all().map_err(PlaybackError::SubtitleIo)?;
         Ok(Self {
             directory,
             files: Vec::new(),
@@ -535,21 +444,21 @@ impl TemporarySubtitles {
         url: Url,
         authorization: HeaderValue,
         extension: &str,
-    ) -> Result<PathBuf, JellyfinSliceError> {
+    ) -> Result<PathBuf, PlaybackError> {
         let response = client
             .get(url)
             .header("x-emby-authorization", authorization)
             .send()
             .await
-            .map_err(JellyfinSliceError::SubtitleRequest)?;
+            .map_err(PlaybackError::SubtitleRequest)?;
         if !response.status().is_success() {
-            return Err(JellyfinSliceError::SubtitleStatus(response.status()));
+            return Err(PlaybackError::SubtitleStatus(response.status()));
         }
         if response
             .content_length()
             .is_some_and(|length| length as usize > MAX_SUBTITLE_BYTES)
         {
-            return Err(JellyfinSliceError::SubtitleTooLarge);
+            return Err(PlaybackError::SubtitleTooLarge);
         }
 
         let path = self
@@ -559,16 +468,16 @@ impl TemporarySubtitles {
         let mut total = 0usize;
         let mut stream = response.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(JellyfinSliceError::SubtitleRequest)?;
+            let chunk = chunk.map_err(PlaybackError::SubtitleRequest)?;
             total = total.saturating_add(chunk.len());
             if total > MAX_SUBTITLE_BYTES {
                 let _ = fs::remove_file(&path);
-                return Err(JellyfinSliceError::SubtitleTooLarge);
+                return Err(PlaybackError::SubtitleTooLarge);
             }
             file.write_all(&chunk)
-                .map_err(JellyfinSliceError::SubtitleIo)?;
+                .map_err(PlaybackError::SubtitleIo)?;
         }
-        file.sync_all().map_err(JellyfinSliceError::SubtitleIo)?;
+        file.sync_all().map_err(PlaybackError::SubtitleIo)?;
         Ok(path)
     }
 }
@@ -583,7 +492,7 @@ impl Drop for TemporarySubtitles {
     }
 }
 
-fn secure_create(path: &Path) -> Result<File, JellyfinSliceError> {
+fn secure_create(path: &Path) -> Result<File, PlaybackError> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -591,7 +500,7 @@ fn secure_create(path: &Path) -> Result<File, JellyfinSliceError> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    options.open(path).map_err(JellyfinSliceError::SubtitleIo)
+    options.open(path).map_err(PlaybackError::SubtitleIo)
 }
 
 fn random_hex_256() -> Result<String, std::io::Error> {
@@ -774,27 +683,16 @@ mod tests {
     #[tokio::test]
     async fn prepares_authenticated_raw_playback_without_exposing_credentials() {
         let (address, upstream) = mock_jellyfin().await;
-        let token_path = std::env::temp_dir().join(format!(
-            "jellybridge-token-test-{}",
-            random_hex_256().unwrap()
-        ));
-        let mut token_file = secure_create(&token_path).unwrap();
-        token_file.write_all(b"test-token\n").unwrap();
-        token_file.sync_all().unwrap();
-        drop(token_file);
-
-        let config = JellyfinSliceConfig::from_token_file(
-            &format!("http://{address}/"),
-            "item".to_owned(),
-            "user".to_owned(),
-            &token_path,
-            None,
-        )
-        .unwrap();
-        let prepared = prepare_jellyfin_playback(config).await.unwrap();
+        let session = StoredSession {
+            server_url: format!("http://{address}/"),
+            token: "test-token".to_owned(),
+            user_id: "user".to_owned(),
+        };
+        let config = PlaybackConfig::from_session(&session, "item".to_owned()).unwrap();
+        let prepared = prepare_playback(config).await.unwrap();
         assert!(!prepared.local_url.contains("test-token"));
         assert!(!prepared.local_url.contains("api_key"));
-        assert_eq!(prepared.subtitles.len(), 1);
+        assert_eq!(prepared.subtitle_streams.len(), 1);
         assert_eq!(prepared.subtitle_streams[0].stream_index, 2);
         assert_eq!(
             prepared.subtitle_streams[0].language.as_deref(),
@@ -804,7 +702,7 @@ mod tests {
             prepared.subtitle_streams[0].title.as_deref(),
             Some("English Signs")
         );
-        let subtitle_path = prepared.subtitles[0].clone();
+        let subtitle_path = prepared.subtitle_streams[0].path.clone();
         assert!(
             fs::read_to_string(&subtitle_path)
                 .unwrap()
@@ -830,7 +728,6 @@ mod tests {
 
         prepared.shutdown().await;
         assert!(!subtitle_path.exists());
-        fs::remove_file(token_path).unwrap();
         upstream.abort();
     }
 

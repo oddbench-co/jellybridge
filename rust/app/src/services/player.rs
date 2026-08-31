@@ -62,7 +62,6 @@ pub enum HardwareDecodePath {
     Direct(String),
     CopyBack(String),
     Software,
-    Unknown,
 }
 
 impl std::fmt::Display for HardwareDecodePath {
@@ -71,7 +70,6 @@ impl std::fmt::Display for HardwareDecodePath {
             Self::Direct(name) => write!(formatter, "hardware/direct ({name})"),
             Self::CopyBack(name) => write!(formatter, "hardware/copy-back ({name})"),
             Self::Software => formatter.write_str("software"),
-            Self::Unknown => formatter.write_str("not classified"),
         }
     }
 }
@@ -135,12 +133,6 @@ pub enum PlayerCreateError {
 }
 
 impl PlayerWorker {
-    pub fn send(&self, command: PlayerCommand) -> Result<(), String> {
-        self.sender
-            .send(command)
-            .map_err(|_| "the player worker has stopped".to_owned())
-    }
-
     pub fn command_sender(&self) -> Sender<PlayerCommand> {
         self.sender.clone()
     }

@@ -524,17 +524,7 @@ impl JellyfinApi {
     }
 
     fn authorization(&self) -> Result<HeaderValue, ApiError> {
-        let token = self.session.token.replace(['\\', '"'], "");
-        let value = if token.is_empty() {
-            format!(
-                "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\""
-            )
-        } else {
-            format!(
-                "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\", Token=\"{token}\""
-            )
-        };
-        Ok(HeaderValue::from_str(&value)?)
+        Ok(authorization_value(&self.session.token)?)
     }
 
     async fn send_json<T: DeserializeOwned>(
@@ -609,6 +599,22 @@ fn append_optional_section(
         Ok(_) => {}
         Err(error) => tracing::warn!(%error, section = title, "dashboard section failed"),
     }
+}
+
+/// The one Jellyfin client identity this application reports, shared by the
+/// browsing client and the playback pipeline.
+pub fn authorization_value(token: &str) -> Result<HeaderValue, InvalidHeaderValue> {
+    let token = token.replace(['\\', '"'], "");
+    let value = if token.is_empty() {
+        format!(
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\""
+        )
+    } else {
+        format!(
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\", Token=\"{token}\""
+        )
+    };
+    HeaderValue::from_str(&value)
 }
 
 pub fn normalize_server_url(value: &str) -> Result<Url, ApiError> {
