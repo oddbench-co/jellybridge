@@ -155,9 +155,21 @@ export component PlayerScreen inherits Rectangle {
                     font-size: 12px;
                     vertical-alignment: center;
                 }
-                Rectangle {
+                timeline-area := Rectangle {
                     horizontal-stretch: 1;
                     background: transparent;
+
+                    // Time under the cursor, derived from the hover position.
+                    property <float> hover-ratio: clamp(timeline-touch.mouse-x / max(self.width, 1px), 0, 1);
+                    property <float> hover-time: self.hover-ratio * max(root.playback-duration, 1);
+                    property <int> hover-total: Math.round(self.hover-time);
+                    property <int> hover-hours: Math.floor(self.hover-total / 3600);
+                    property <int> hover-minutes: Math.floor(Math.mod(self.hover-total, 3600) / 60);
+                    property <int> hover-secs: Math.mod(self.hover-total, 60);
+                    property <string> hover-label:
+                        (self.hover-hours > 0 ? self.hover-hours + ":" + (self.hover-minutes < 10 ? "0" : "") : "")
+                        + self.hover-minutes + ":"
+                        + (self.hover-secs < 10 ? "0" : "") + self.hover-secs;
 
                     player-timeline := Slider {
                         width: 100%;
@@ -165,19 +177,9 @@ export component PlayerScreen inherits Rectangle {
                         minimum: 0;
                         maximum: max(root.playback-duration, 1);
                         value <=> root.timeline-position;
-                        changed(value) => {
-                            root.timeline-scrubbing = true;
-                        }
-                        released(value) => {
-                            root.player-activity();
-                            root.scrub-finished(value);
-                            root.seek-absolute(value);
-                        }
                     }
 
-                    // Chapter marks, like mpv's seekbar ticks. Plain
-                    // rectangles don't capture pointer events, so scrubbing
-                    // through them still reaches the slider; positions are
+                    // Chapter marks, like mpv's seekbar ticks. Positions are
                     // bindings, so they follow the duration when mpv reports
                     // it after the chapter list.
                     for chapter in root.chapters: Rectangle {
@@ -188,6 +190,52 @@ export component PlayerScreen inherits Rectangle {
                         border-radius: 1px;
                         background: Theme.text-bright.with-alpha(0.55);
                         visible: chapter.time > 0 && chapter.time < root.playback-duration;
+                    }
+
+                    // Owns all pointer interaction with the timeline: the
+                    // stock Slider exposes no hover position, so this layer
+                    // provides the finger cursor and hover time, and drives
+                    // scrubbing through the same timeline-position /
+                    // scrub-finished path the Slider's handlers used.
+                    timeline-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.move {
+                                root.player-activity();
+                                if self.pressed {
+                                    root.timeline-position = timeline-area.hover-time;
+                                }
+                            }
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                root.timeline-scrubbing = true;
+                                root.timeline-position = timeline-area.hover-time;
+                            }
+                            if event.kind == PointerEventKind.up && event.button == PointerEventButton.left {
+                                root.player-activity();
+                                root.scrub-finished(root.timeline-position);
+                                root.seek-absolute(root.timeline-position);
+                            }
+                        }
+                    }
+
+                    hover-tooltip := Rectangle {
+                        x: clamp(timeline-touch.mouse-x - self.width / 2, 0px, parent.width - self.width);
+                        y: -30px;
+                        width: hover-text.preferred-width + 14px;
+                        height: 24px;
+                        border-radius: Theme.radius-small;
+                        background: Theme.overlay-raised;
+                        border-color: Theme.border;
+                        border-width: 1px;
+                        visible: timeline-touch.has-hover || timeline-touch.pressed;
+
+                        hover-text := Text {
+                            text: timeline-area.hover-label;
+                            color: Theme.text-primary;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
                 }
                 Text {
