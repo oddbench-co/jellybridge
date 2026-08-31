@@ -14,6 +14,8 @@ use super::{JellyBridgeWindow, format_playback_time};
 use crate::app::{AppContext, PlayerTrackState};
 use crate::features;
 use crate::services::player::{PlayerCommand, PlayerEvent, RenderClient};
+
+use super::ChapterMarker;
 use crate::services::render::{RenderHost, native_display};
 
 /// Wires the player controls and hotkeys; returns the overlay/fullscreen UI
@@ -316,6 +318,16 @@ pub fn apply_player_event(
             window.set_audio_index(i32::try_from(selected_audio_index).unwrap_or(i32::MAX));
             window.set_subtitle_index(i32::try_from(selected_subtitle_index).unwrap_or(i32::MAX));
         }
+        PlayerEvent::Chapters(chapters) => {
+            let markers = chapters
+                .into_iter()
+                .map(|chapter| ChapterMarker {
+                    time: chapter.time as f32,
+                    title: chapter.title.unwrap_or_default().into(),
+                })
+                .collect::<Vec<_>>();
+            window.set_chapters(ModelRc::new(VecModel::from(markers)));
+        }
         PlayerEvent::HardwarePath(path) => {
             tracing::info!(decode_path = %path, "application playback decode path");
             window.set_player_status(format!("Decode path: {path}").into());
@@ -339,6 +351,9 @@ pub fn present_playback_started(
         window.set_detail_title(title.into());
         window.set_playback_position_label(format_playback_time(initial_position).into());
         window.set_playback_duration_label(format_playback_time(initial_duration).into());
+        // The previous item's chapter marks must not linger while the next
+        // stream loads; mpv reports the new list at FileLoaded.
+        window.set_chapters(ModelRc::new(VecModel::default()));
         window.set_paused(false);
         window.set_screen(super::Screen::Player);
         window.invoke_enter_player(initial_position as f32, initial_duration as f32);

@@ -57,6 +57,12 @@ pub struct PlayerSubtitleFile {
     pub title: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlayerChapter {
+    pub time: f64,
+    pub title: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub enum HardwareDecodePath {
     Direct(String),
@@ -89,6 +95,7 @@ pub enum PlayerEvent {
         selected_audio: Option<i64>,
         selected_subtitle: Option<i64>,
     },
+    Chapters(Vec<PlayerChapter>),
     HardwarePath(HardwareDecodePath),
     Ended,
     Error(String),
@@ -241,6 +248,7 @@ fn worker_loop(mpv: Mpv, receiver: Receiver<PlayerCommand>, event_sink: impl Fn(
                     event_sink(PlayerEvent::Loaded);
                     event_sink(PlayerEvent::HardwarePath(hardware));
                     event_sink(read_tracks(&mpv));
+                    event_sink(read_chapters(&mpv));
                 }
                 Ok(Event::PropertyChange {
                     name: "pause",
@@ -339,6 +347,27 @@ fn apply_command(
         PlayerCommand::Stop => mpv.command("stop", &[]),
         PlayerCommand::Shutdown => Ok(()),
     }
+}
+
+/// Reads the loaded file's chapter list through the same indexed
+/// sub-property mechanism as [`read_tracks`] (libmpv2 exposes no node API).
+fn read_chapters(mpv: &Mpv) -> PlayerEvent {
+    let count = mpv.get_property::<i64>("chapter-list/count").unwrap_or(0);
+    let mut chapters = Vec::new();
+    for index in 0..count.max(0) {
+        let Ok(time) = mpv.get_property::<f64>(&format!("chapter-list/{index}/time")) else {
+            continue;
+        };
+        if !time.is_finite() || time < 0.0 {
+            continue;
+        }
+        let title = mpv
+            .get_property::<String>(&format!("chapter-list/{index}/title"))
+            .ok();
+        chapters.push(PlayerChapter { time, title });
+    }
+    chapters.sort_by(|a, b| a.time.total_cmp(&b.time));
+    PlayerEvent::Chapters(chapters)
 }
 
 fn read_tracks(mpv: &Mpv) -> PlayerEvent {

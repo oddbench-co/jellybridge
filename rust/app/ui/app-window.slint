@@ -1,4 +1,4 @@
-import { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind } from "types.slint";
+import { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, Screen, DetailKind } from "types.slint";
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top-bar.slint";
 import { LoginScreen } from "features/login/login-screen.slint";
@@ -6,7 +6,7 @@ import { CatalogScreen } from "features/catalog/catalog-screen.slint";
 import { DetailScreen } from "features/detail/detail-screen.slint";
 import { PlayerScreen } from "features/player/player-screen.slint";
 
-export { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind }
+export { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, Screen, DetailKind }
 
 // Composition root: owns the Rust-facing property/callback boundary, the
 // screen switch, and global hotkey focus. Screens are implemented in
@@ -86,6 +86,7 @@ export component JellyBridgeWindow inherits Window {
     out property <float> timeline-display-position: root.timeline-position;
     in property <string> playback-position-label: "0:00";
     in property <string> playback-duration-label: "0:00";
+    in property <[ChapterMarker]> chapters;
     in property <[string]> audio-options;
     in property <[string]> subtitle-options;
     in-out property <int> audio-index: 0;
@@ -257,6 +258,7 @@ export component JellyBridgeWindow inherits Window {
             playback-position-label: root.playback-position-label;
             playback-duration-label: root.playback-duration-label;
             playback-duration: root.playback-duration;
+            chapters: root.chapters;
             audio-options: root.audio-options;
             subtitle-options: root.subtitle-options;
             audio-index <=> root.audio-index;

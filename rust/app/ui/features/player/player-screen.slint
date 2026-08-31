@@ -1,5 +1,6 @@
 import { Button, ComboBox, Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
+import { ChapterMarker } from "../../types.slint";
 
 export component PlayerScreen inherits Rectangle {
     in property <image> video-frame;
@@ -11,6 +12,7 @@ export component PlayerScreen inherits Rectangle {
     in property <string> playback-position-label;
     in property <string> playback-duration-label;
     in property <float> playback-duration;
+    in property <[ChapterMarker]> chapters;
     in property <[string]> audio-options;
     in property <[string]> subtitle-options;
     in-out property <int> audio-index;
@@ -153,18 +155,39 @@ export component PlayerScreen inherits Rectangle {
                     font-size: 12px;
                     vertical-alignment: center;
                 }
-                player-timeline := Slider {
-                    minimum: 0;
-                    maximum: max(root.playback-duration, 1);
-                    value <=> root.timeline-position;
+                Rectangle {
                     horizontal-stretch: 1;
-                    changed(value) => {
-                        root.timeline-scrubbing = true;
+                    background: transparent;
+
+                    player-timeline := Slider {
+                        width: 100%;
+                        height: 100%;
+                        minimum: 0;
+                        maximum: max(root.playback-duration, 1);
+                        value <=> root.timeline-position;
+                        changed(value) => {
+                            root.timeline-scrubbing = true;
+                        }
+                        released(value) => {
+                            root.player-activity();
+                            root.scrub-finished(value);
+                            root.seek-absolute(value);
+                        }
                     }
-                    released(value) => {
-                        root.player-activity();
-                        root.scrub-finished(value);
-                        root.seek-absolute(value);
+
+                    // Chapter marks, like mpv's seekbar ticks. Plain
+                    // rectangles don't capture pointer events, so scrubbing
+                    // through them still reaches the slider; positions are
+                    // bindings, so they follow the duration when mpv reports
+                    // it after the chapter list.
+                    for chapter in root.chapters: Rectangle {
+                        x: chapter.time / max(root.playback-duration, 1) * parent.width - self.width / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 2px;
+                        height: 8px;
+                        border-radius: 1px;
+                        background: Theme.text-bright.with-alpha(0.55);
+                        visible: chapter.time > 0 && chapter.time < root.playback-duration;
                     }
                 }
                 Text {
