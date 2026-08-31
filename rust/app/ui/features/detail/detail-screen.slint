@@ -67,6 +67,10 @@ export component DetailScreen inherits Rectangle {
     // Poster geometry: portrait card for most kinds, wide 16:9 still for
     // episodes; it floats over the hero/content boundary, Jellyfin-style.
     private property <bool> episode-page: root.detail-kind == DetailKind.episode;
+    // On episode and season pages the heading is the series name and
+    // navigates to the series.
+    private property <bool> heading-links: root.detail-series-id != ""
+        && (root.detail-kind == DetailKind.episode || root.detail-kind == DetailKind.season);
     private property <length> hero-height: 320px;
     private property <length> content-margin: 48px;
     private property <length> poster-width: root.episode-page
@@ -163,10 +167,20 @@ export component DetailScreen inherits Rectangle {
 
                                 heading-line := Text {
                                     text: root.detail-heading == "" ? root.detail-title : root.detail-heading;
-                                    color: Theme.text-bright;
+                                    color: heading-touch.has-hover && root.heading-links
+                                        ? Theme.accent-bright
+                                        : Theme.text-bright;
                                     font-size: 27px;
                                     font-weight: 800;
                                     overflow: elide;
+                                    heading-touch := TouchArea {
+                                        mouse-cursor: root.heading-links ? pointer : default;
+                                        clicked => {
+                                            if root.heading-links {
+                                                root.open-detail(root.detail-series-id, "Series");
+                                            }
+                                        }
+                                    }
                                 }
                                 if root.detail-subheading != "": Text {
                                     text: root.detail-subheading;
