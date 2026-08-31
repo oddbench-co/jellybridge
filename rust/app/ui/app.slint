@@ -1567,6 +1567,9 @@ export component JellyBridgeWindow inherits Window {
     in-out property <bool> controls-visible: true;
     in-out property <float> playback-position: 0;
     in-out property <float> playback-duration: 0;
+    property <float> timeline-position: 0;
+    property <bool> timeline-scrubbing: false;
+    out property <float> timeline-display-position: root.timeline-position;
     in-out property <string> playback-position-label: "0:00";
     in-out property <string> playback-duration-label: "0:00";
     in-out property <[string]> audio-options;
@@ -1603,6 +1606,27 @@ export component JellyBridgeWindow inherits Window {
     callback player-activity();
     callback leave-player();
     callback player-key-pressed(string, bool, bool, bool) -> bool;
+
+    public function enter-player(initial-position: float, initial-duration: float) {
+        root.playback-duration = max(initial-duration, 0);
+        root.playback-position = clamp(initial-position, 0, max(root.playback-duration, 1));
+        root.timeline-position = root.playback-position;
+        root.timeline-scrubbing = false;
+        root.screen = "player";
+        app-key-scope.focus();
+    }
+
+    changed playback-position => {
+        if !root.timeline-scrubbing {
+            root.timeline-position = clamp(root.playback-position, 0, max(root.playback-duration, 1));
+        }
+    }
+
+    changed playback-duration => {
+        if !root.timeline-scrubbing {
+            root.timeline-position = clamp(root.playback-position, 0, max(root.playback-duration, 1));
+        }
+    }
 
     forward-focus: app-key-scope;
 
@@ -2326,7 +2350,7 @@ export component JellyBridgeWindow inherits Window {
                 moved => { root.player-activity(); }
                 clicked => {
                     root.player-activity();
-                    single-click-timer.restart();
+                    single-click-timer.start();
                 }
                 double-clicked => {
                     single-click-timer.stop();
@@ -2392,13 +2416,18 @@ export component JellyBridgeWindow inherits Window {
                         font-size: 12px;
                         vertical-alignment: center;
                     }
-                    Slider {
+                    player-timeline := Slider {
                         minimum: 0;
                         maximum: max(root.playback-duration, 1);
-                        value: min(root.playback-position, self.maximum);
+                        value <=> root.timeline-position;
                         horizontal-stretch: 1;
+                        changed(value) => {
+                            root.timeline-scrubbing = true;
+                        }
                         released(value) => {
                             root.player-activity();
+                            root.playback-position = value;
+                            root.timeline-scrubbing = false;
                             root.seek-absolute(value);
                         }
                     }

@@ -709,6 +709,11 @@ fn start_playback_item(context: &AppContext, detail: DetailItemData) {
     if !detail.playable {
         return;
     }
+    let initial_position = detail.resume_seconds.max(0.0);
+    let initial_duration = detail
+        .runtime_seconds
+        .unwrap_or_default()
+        .max(initial_position);
     let settings = context.settings_store.load().unwrap_or_default();
     let (audio_source_index, subtitle_source_index) = resolved_playback_sources(&detail, &settings);
     let preference_key = playback_preference_key(&detail);
@@ -760,7 +765,7 @@ fn start_playback_item(context: &AppContext, detail: DetailItemData) {
                     .player_sender
                     .send(PlayerCommand::Load {
                         uri,
-                        start_seconds: detail.resume_seconds,
+                        start_seconds: initial_position,
                         subtitles,
                         audio_source_index,
                         subtitle_source_index,
@@ -779,7 +784,15 @@ fn start_playback_item(context: &AppContext, detail: DetailItemData) {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(window) = weak.upgrade() {
                         window.set_detail_title(title.into());
-                        window.set_screen("player".into());
+                        window.set_playback_position_label(
+                            format_playback_time(initial_position).into(),
+                        );
+                        window.set_playback_duration_label(
+                            format_playback_time(initial_duration).into(),
+                        );
+                        window.set_paused(false);
+                        window
+                            .invoke_enter_player(initial_position as f32, initial_duration as f32);
                         window.set_busy(false);
                         window.set_message("".into());
                         window.set_player_status("Loading media…".into());
@@ -2492,13 +2505,223 @@ fn show_catalog_error(context: &AppContext, message: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+    use slint::platform::{
+        Platform, PlatformError, PointerEventButton, WindowAdapter, WindowEvent,
+    };
+    use slint::{ComponentHandle, LogicalPosition, PhysicalSize};
+
     use super::{
-        EmptySearchDestination, PageSnapshot, StoredPlaybackPreference, StoredSettings,
-        detail::DetailItemData, detail::DetailKind, detail::DetailPageData, detail::StreamData,
-        detail_metadata_line, detail_progress_label, detail_season_summary,
+        EmptySearchDestination, JellyBridgeWindow, PageSnapshot, StoredPlaybackPreference,
+        StoredSettings, detail::DetailItemData, detail::DetailKind, detail::DetailPageData,
+        detail::StreamData, detail_metadata_line, detail_progress_label, detail_season_summary,
         detail_series_play_context, detail_series_summary, empty_search_destination,
         image_extension, playback_preference_key, resolved_playback_sources,
     };
+
+    thread_local! {
+        static TEST_WINDOW: Rc<MinimalSoftwareWindow> =
+            MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+    }
+
+    struct TestPlatform;
+
+    impl Platform for TestPlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
+            Ok(TEST_WINDOW.with(Clone::clone))
+        }
+    }
+
+    fn setup_test_window() -> Rc<MinimalSoftwareWindow> {
+        let _ = slint::platform::set_platform(Box::new(TestPlatform));
+        let window = TEST_WINDOW.with(Clone::clone);
+        window.set_size(PhysicalSize::new(1280, 800));
+        window
+    }
+
+    #[test]
+    fn player_entry_restores_hotkeys_after_detail_focus_is_removed() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen("detail".into());
+        ui.show().expect("show player UI");
+        platform_window.draw_if_needed(|_| {});
+
+        // Move focus from the root scope into a detail-page control, matching a user
+        // activating Play before that control disappears during the screen change.
+        let tab = char::from(slint::platform::Key::Tab).to_string().into();
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: tab });
+
+        let hotkey_count = Rc::new(Cell::new(0));
+        let observed_hotkeys = hotkey_count.clone();
+        ui.on_player_key_pressed(move |_, _, _, _| {
+            observed_hotkeys.set(observed_hotkeys.get() + 1);
+            true
+        });
+        ui.invoke_enter_player(0.0, 100.0);
+        platform_window.draw_if_needed(|_| {});
+        let player_keys = [
+            " ".to_owned(),
+            char::from(slint::platform::Key::LeftArrow).to_string(),
+            char::from(slint::platform::Key::RightArrow).to_string(),
+            char::from(slint::platform::Key::UpArrow).to_string(),
+            char::from(slint::platform::Key::DownArrow).to_string(),
+            char::from(slint::platform::Key::Home).to_string(),
+            char::from(slint::platform::Key::End).to_string(),
+            "m".to_owned(),
+            "f".to_owned(),
+            "a".to_owned(),
+            "j".to_owned(),
+        ];
+        for text in &player_keys {
+            ui.window().dispatch_event(WindowEvent::KeyPressed {
+                text: text.as_str().into(),
+            });
+        }
+        assert_eq!(
+            hotkey_count.get(),
+            player_keys.len(),
+            "player entry must restore keyboard focus for every player shortcut"
+        );
+    }
+
+    #[test]
+    fn timeline_keeps_following_player_events_after_scrubbing() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.invoke_enter_player(10.0, 100.0);
+        ui.show().expect("show player UI");
+        platform_window.draw_if_needed(|_| {});
+
+        let seek_value = Rc::new(Cell::new(None));
+        let observed_seek = seek_value.clone();
+        ui.on_seek_absolute(move |value| observed_seek.set(Some(value)));
+        let timeline_point = LogicalPosition::new(640.0, 666.0);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: timeline_point,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: timeline_point,
+            button: PointerEventButton::Left,
+        });
+        let sought = seek_value.get().expect("timeline release must seek");
+        assert!(
+            (40.0..=60.0).contains(&sought),
+            "unexpected seek value: {sought}"
+        );
+
+        ui.set_playback_position(25.0);
+        slint::platform::update_timers_and_animations();
+        platform_window.draw_if_needed(|_| {});
+        let displayed_position = ui.get_timeline_display_position();
+        assert!(
+            (displayed_position - 25.0).abs() < 0.5,
+            "timeline must resume following mpv position events after scrubbing; displayed {displayed_position}"
+        );
+
+        ui.set_playback_position(30.0);
+        slint::platform::update_timers_and_animations();
+        platform_window.draw_if_needed(|_| {});
+        assert!(
+            (ui.get_timeline_display_position() - 30.0).abs() < 0.5,
+            "programmatic timeline updates must not re-enter scrub mode"
+        );
+
+        ui.invoke_enter_player(5.0, 200.0);
+        assert_eq!(ui.get_playback_position(), 5.0);
+        assert_eq!(ui.get_playback_duration(), 200.0);
+        assert_eq!(ui.get_timeline_display_position(), 5.0);
+    }
+
+    #[test]
+    fn single_video_click_toggles_playback_after_double_click_window() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.invoke_enter_player(10.0, 100.0);
+        ui.show().expect("show player UI");
+        platform_window.draw_if_needed(|_| {});
+
+        let toggle_count = Rc::new(Cell::new(0));
+        let observed_toggles = toggle_count.clone();
+        ui.on_toggle_playback(move || observed_toggles.set(observed_toggles.get() + 1));
+        let activity_count = Rc::new(Cell::new(0));
+        let observed_activity = activity_count.clone();
+        ui.on_player_activity(move || observed_activity.set(observed_activity.get() + 1));
+
+        let video_center = LogicalPosition::new(640.0, 400.0);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: video_center,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: video_center,
+            button: PointerEventButton::Left,
+        });
+        assert_eq!(
+            activity_count.get(),
+            1,
+            "video surface must receive the click"
+        );
+        assert_eq!(
+            toggle_count.get(),
+            0,
+            "single click must wait for a possible double click"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            toggle_count.get(),
+            1,
+            "single video click must toggle playback exactly once"
+        );
+    }
+
+    #[test]
+    fn double_video_click_cancels_pause_and_requests_fullscreen() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.invoke_enter_player(10.0, 100.0);
+        ui.show().expect("show player UI");
+        platform_window.draw_if_needed(|_| {});
+
+        let toggle_count = Rc::new(Cell::new(0));
+        let observed_toggles = toggle_count.clone();
+        ui.on_toggle_playback(move || observed_toggles.set(observed_toggles.get() + 1));
+        let fullscreen_count = Rc::new(Cell::new(0));
+        let observed_fullscreen = fullscreen_count.clone();
+        ui.on_toggle_fullscreen(move || observed_fullscreen.set(observed_fullscreen.get() + 1));
+
+        let video_center = LogicalPosition::new(640.0, 400.0);
+        for _ in 0..2 {
+            ui.window().dispatch_event(WindowEvent::PointerPressed {
+                position: video_center,
+                button: PointerEventButton::Left,
+            });
+            ui.window().dispatch_event(WindowEvent::PointerReleased {
+                position: video_center,
+                button: PointerEventButton::Left,
+            });
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        slint::platform::update_timers_and_animations();
+        assert_eq!(
+            fullscreen_count.get(),
+            1,
+            "double click must request fullscreen once"
+        );
+        assert_eq!(
+            toggle_count.get(),
+            0,
+            "double click must not also toggle playback"
+        );
+    }
 
     #[test]
     fn custom_progress_fills_are_anchored_to_the_left_edge() {
