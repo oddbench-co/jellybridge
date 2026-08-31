@@ -1,0 +1,208 @@
+import { Button, ComboBox, Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+
+export component PlayerScreen inherits Rectangle {
+    in property <image> video-frame;
+    in property <string> title;
+    in property <string> player-status;
+    in property <bool> paused;
+    in property <bool> fullscreen-player;
+    in property <bool> controls-visible;
+    in property <string> playback-position-label;
+    in property <string> playback-duration-label;
+    in property <float> playback-duration;
+    in property <[string]> audio-options;
+    in property <[string]> subtitle-options;
+    in-out property <int> audio-index;
+    in-out property <int> subtitle-index;
+    in-out property <float> volume;
+    // Owned by the window, which synchronizes them with player events and
+    // enter-player; the timeline edits them while scrubbing.
+    in-out property <float> timeline-position;
+    in-out property <bool> timeline-scrubbing;
+
+    callback toggle-playback();
+    callback toggle-fullscreen();
+    callback seek-relative(seconds: float);
+    callback seek-absolute(seconds: float);
+    callback scrub-finished(seconds: float);
+    callback select-audio(index: int);
+    callback select-subtitle(index: int);
+    callback volume-changed(volume: float);
+    callback player-activity();
+    callback leave-player();
+
+    background: Theme.scrim;
+
+    player-surface := Rectangle {
+        width: parent.width;
+        height: parent.height;
+        background: Theme.video-bg;
+        clip: true;
+
+        Image {
+            source: root.video-frame;
+            width: 100%;
+            height: 100%;
+            image-fit: contain;
+        }
+
+        single-click-timer := Timer {
+            running: false;
+            interval: 220ms;
+            triggered => {
+                single-click-timer.stop();
+                root.toggle-playback();
+            }
+        }
+
+        player-pointer := TouchArea {
+            mouse-cursor: root.fullscreen-player && !root.controls-visible ? none : default;
+            moved => { root.player-activity(); }
+            clicked => {
+                root.player-activity();
+                single-click-timer.start();
+            }
+            double-clicked => {
+                single-click-timer.stop();
+                root.player-activity();
+                root.toggle-fullscreen();
+            }
+        }
+    }
+
+    Rectangle {
+        visible: !root.fullscreen-player || root.controls-visible;
+        x: root.fullscreen-player ? 24px : 0px;
+        y: root.fullscreen-player ? 24px : 0px;
+        width: root.fullscreen-player ? parent.width - 48px : parent.width;
+        height: 64px;
+        border-radius: root.fullscreen-player ? 10px : 0px;
+        background: Theme.bg.with-alpha(0.91);
+
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 12px;
+            Button {
+                text: "‹ Back";
+                clicked => { root.player-activity(); root.leave-player(); }
+            }
+            Text {
+                text: root.title;
+                color: Theme.text-primary;
+                font-size: 19px;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: root.player-status;
+                color: Theme.text-muted;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    Rectangle {
+        visible: !root.fullscreen-player || root.controls-visible;
+        x: root.fullscreen-player ? 24px : 0px;
+        y: parent.height - self.height - (root.fullscreen-player ? 24px : 0px);
+        width: root.fullscreen-player ? parent.width - 48px : parent.width;
+        height: 158px;
+        border-radius: root.fullscreen-player ? 10px : 0px;
+        background: Theme.bg.with-alpha(0.93);
+
+        VerticalLayout {
+            padding: 14px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 10px;
+                Text {
+                    text: root.playback-position-label;
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+                player-timeline := Slider {
+                    minimum: 0;
+                    maximum: max(root.playback-duration, 1);
+                    value <=> root.timeline-position;
+                    horizontal-stretch: 1;
+                    changed(value) => {
+                        root.timeline-scrubbing = true;
+                    }
+                    released(value) => {
+                        root.player-activity();
+                        root.scrub-finished(value);
+                        root.seek-absolute(value);
+                    }
+                }
+                Text {
+                    text: root.playback-duration-label;
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Button {
+                    text: root.paused ? "Play" : "Pause";
+                    clicked => { root.player-activity(); root.toggle-playback(); }
+                }
+                Button {
+                    text: "−10 s";
+                    clicked => { root.player-activity(); root.seek-relative(-10); }
+                }
+                Button {
+                    text: "+10 s";
+                    clicked => { root.player-activity(); root.seek-relative(10); }
+                }
+                Text { text: "Audio"; color: Theme.text-secondary; vertical-alignment: center; }
+                audio-combo := ComboBox {
+                    width: 180px;
+                    model: root.audio-options;
+                    current-index: root.audio-index;
+                    enabled: root.audio-options.length > 0;
+                    selected(_) => {
+                        root.player-activity();
+                        root.select-audio(self.current-index);
+                    }
+                }
+                Text { text: "Subtitles"; color: Theme.text-secondary; vertical-alignment: center; }
+                subtitle-combo := ComboBox {
+                    width: 180px;
+                    model: root.subtitle-options;
+                    current-index: root.subtitle-index;
+                    enabled: root.subtitle-options.length > 0;
+                    selected(_) => {
+                        root.player-activity();
+                        root.select-subtitle(self.current-index);
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: "Volume"; color: Theme.text-secondary; vertical-alignment: center; }
+                Slider {
+                    minimum: 0;
+                    maximum: 100;
+                    value: root.volume;
+                    width: 150px;
+                    changed(value) => {
+                        root.player-activity();
+                        root.volume = value;
+                        root.volume-changed(value);
+                    }
+                }
+                Button {
+                    text: root.fullscreen-player ? "Exit Fullscreen" : "Fullscreen";
+                    clicked => { root.player-activity(); root.toggle-fullscreen(); }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,267 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { DetailCard, DetailPerson, DetailKind } from "../../types.slint";
+import { DetailHero, SeasonDetailHeader, SeriesDetailHeader, MediaDetailHeader } from "detail-headers.slint";
+import { MediaInformationSection } from "media-info-section.slint";
+import { DetailSeasonShelf } from "season-shelf.slint";
+import { DetailEpisodeRow } from "episode-row.slint";
+import { DetailPeopleShelf } from "people-shelf.slint";
+
+export component DetailScreen inherits Rectangle {
+    in property <bool> busy;
+    in property <string> message;
+    in property <string> detail-id;
+    in property <string> detail-title;
+    in property <string> detail-subtitle;
+    in property <string> detail-overview;
+    in property <image> detail-artwork;
+    in property <image> detail-backdrop;
+    in property <image> detail-logo;
+    in property <DetailKind> detail-kind;
+    in property <string> detail-tagline;
+    in property <string> detail-genres;
+    in property <string> detail-studios;
+    in property <string> detail-media-info;
+    in property <string> detail-series-id;
+    in property <string> detail-series-name;
+    in property <string> detail-series-summary;
+    in property <string> detail-play-context;
+    in property <string> detail-season-id;
+    in property <string> detail-season-name;
+    in property <string> detail-season-summary;
+    in property <string> detail-play-label;
+    in property <float> detail-progress;
+    in property <string> detail-progress-label;
+    in property <bool> detail-playable;
+    in property <bool> detail-watched;
+    in property <bool> detail-favorite;
+    in property <bool> detail-wide-art;
+    in property <[DetailCard]> detail-seasons;
+    in property <[DetailCard]> detail-episodes;
+    in property <[DetailPerson]> detail-people;
+    in property <[string]> detail-audio-options;
+    in property <[string]> detail-subtitle-options;
+    in-out property <int> detail-audio-index;
+    in-out property <int> detail-subtitle-index;
+
+    callback play-current();
+    callback play-detail(id: string);
+    callback open-detail(id: string, kind: string);
+    callback set-detail-watched(id: string, watched: bool);
+    callback set-detail-favorite(id: string, favorite: bool);
+    callback detail-audio-selected(index: int);
+    callback detail-subtitle-selected(index: int);
+    callback retry();
+
+    background: Theme.bg;
+
+    ScrollView {
+      VerticalLayout {
+        spacing: 0px;
+        if root.detail-kind != DetailKind.series && root.detail-kind != DetailKind.season && root.detail-kind != DetailKind.movie && root.detail-kind != DetailKind.episode: DetailHero {
+            width: root.width;
+            height: 400px;
+            title: root.detail-title;
+            tagline: root.detail-tagline;
+            metadata: root.detail-subtitle;
+            overview: root.detail-overview;
+            genres: root.detail-genres;
+            studios: root.detail-studios;
+            media-info: root.detail-media-info;
+            series-id: root.detail-series-id;
+            series-name: root.detail-series-name;
+            season-id: root.detail-season-id;
+            season-name: root.detail-season-name;
+            poster: root.detail-artwork;
+            backdrop: root.detail-backdrop;
+            logo: root.detail-logo;
+            wide-art: root.detail-wide-art;
+            playable: root.detail-playable;
+            watched: root.detail-watched;
+            favorite: root.detail-favorite;
+            busy: root.busy;
+            audio-options: root.detail-audio-options;
+            subtitle-options: root.detail-subtitle-options;
+            audio-index <=> root.detail-audio-index;
+            subtitle-index <=> root.detail-subtitle-index;
+            play => { root.play-current(); }
+            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+            audio-selected(index) => { root.detail-audio-selected(index); }
+            subtitle-selected(index) => { root.detail-subtitle-selected(index); }
+            open-related(id, kind) => { root.open-detail(id, kind); }
+        }
+
+        if root.detail-kind == DetailKind.series: SeriesDetailHeader {
+            width: root.width;
+            title: root.detail-title;
+            tagline: root.detail-tagline;
+            metadata: root.detail-subtitle;
+            summary: root.detail-series-summary;
+            play-context: root.detail-play-context;
+            progress: root.detail-progress;
+            poster: root.detail-artwork;
+            backdrop: root.detail-backdrop;
+            play-label: root.detail-play-label;
+            playable: root.detail-playable;
+            watched: root.detail-watched;
+            favorite: root.detail-favorite;
+            busy: root.busy;
+            play => { root.play-current(); }
+            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+        }
+
+        if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaDetailHeader {
+            width: root.width;
+            title: root.detail-title;
+            tagline: root.detail-tagline;
+            metadata: root.detail-subtitle;
+            series-id: root.detail-series-id;
+            series-name: root.detail-series-name;
+            season-id: root.detail-season-id;
+            season-name: root.detail-season-name;
+            artwork: root.detail-artwork;
+            backdrop: root.detail-backdrop;
+            episode: root.detail-kind == DetailKind.episode;
+            play-label: root.detail-play-label;
+            progress: root.detail-progress;
+            progress-label: root.detail-progress-label;
+            playable: root.detail-playable;
+            watched: root.detail-watched;
+            favorite: root.detail-favorite;
+            busy: root.busy;
+            audio-options: root.detail-audio-options;
+            subtitle-options: root.detail-subtitle-options;
+            audio-index <=> root.detail-audio-index;
+            subtitle-index <=> root.detail-subtitle-index;
+            play => { root.play-current(); }
+            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+            audio-selected(index) => { root.detail-audio-selected(index); }
+            subtitle-selected(index) => { root.detail-subtitle-selected(index); }
+            open-related(id, kind) => { root.open-detail(id, kind); }
+        }
+
+        if root.detail-kind == DetailKind.season: SeasonDetailHeader {
+            width: root.width;
+            title: root.detail-title;
+            metadata: root.detail-subtitle;
+            summary: root.detail-season-summary;
+            overview: root.detail-overview;
+            series-id: root.detail-series-id;
+            series-name: root.detail-series-name;
+            poster: root.detail-artwork;
+            backdrop: root.detail-backdrop;
+            play-label: root.detail-play-label;
+            playable: root.detail-playable;
+            watched: root.detail-watched;
+            favorite: root.detail-favorite;
+            busy: root.busy;
+            play => { root.play-current(); }
+            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
+            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
+            open-series(id) => { root.open-detail(id, "Series"); }
+        }
+
+        if root.message != "": Rectangle {
+            width: root.width;
+            height: 38px; background: Theme.danger-surface;
+            Text { text: root.message; color: Theme.danger-text; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
+        }
+
+        if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaInformationSection {
+            width: root.width;
+            overview: root.detail-overview;
+            genres: root.detail-genres;
+            studios: root.detail-studios;
+            media-info: root.detail-media-info;
+        }
+
+        if root.detail-kind == DetailKind.series: DetailSeasonShelf {
+            width: root.width;
+            height: 360px;
+            seasons: root.detail-seasons;
+            summary: root.detail-series-summary;
+            failed: root.message != "";
+            open(id, kind) => { root.open-detail(id, kind); }
+        }
+
+        if root.detail-kind == DetailKind.series: MediaInformationSection {
+            width: root.width;
+            overview: root.detail-overview;
+            genres: root.detail-genres;
+            studios: root.detail-studios;
+            media-info: root.detail-media-info;
+        }
+
+        if root.detail-kind == DetailKind.season: VerticalLayout {
+            width: root.width;
+            padding-top: 20px;
+            padding-bottom: 28px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                height: 38px;
+                padding-left: max(28px, (root.width - 1180px) / 2);
+                padding-right: max(28px, (root.width - 1180px) / 2);
+                Text {
+                    text: "Episodes";
+                    color: Theme.text-primary;
+                    font-size: 22px;
+                    font-weight: 750;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                Text {
+                    text: root.detail-season-summary;
+                    color: Theme.text-faint;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    visible: root.detail-episodes.length > 0;
+                }
+            }
+
+            if root.detail-episodes.length == 0: HorizontalLayout {
+                height: 116px;
+                padding-left: max(28px, (root.width - 1180px) / 2);
+                padding-right: max(28px, (root.width - 1180px) / 2);
+                Rectangle {
+                    background: Theme.surface;
+                    border-color: Theme.surface-hover;
+                    border-width: 1px;
+                    border-radius: Theme.radius-medium;
+                    Text {
+                        text: root.message == "" ? "No episodes are available for this season." : "Episodes could not be loaded.";
+                        color: Theme.text-muted;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            for episode in root.detail-episodes: HorizontalLayout {
+                height: 142px;
+                padding-left: max(28px, (root.width - 1180px) / 2);
+                padding-right: max(28px, (root.width - 1180px) / 2);
+                DetailEpisodeRow {
+                    horizontal-stretch: 1;
+                    episode: episode;
+                    busy: root.busy;
+                    open(id, kind) => { root.open-detail(id, kind); }
+                    play(id) => { root.play-detail(id); }
+                    set-watched(id, watched) => { root.set-detail-watched(id, watched); }
+                }
+            }
+        }
+
+        if root.detail-people.length > 0: DetailPeopleShelf {
+            width: root.width;
+            height: 220px;
+            people: root.detail-people;
+        }
+      }
+    }
+}

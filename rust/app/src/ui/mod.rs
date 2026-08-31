@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn custom_progress_fills_are_anchored_to_the_left_edge() {
         let source = concat!(
-            include_str!("../../ui/app.slint"),
+            include_str!("../../ui/app-window.slint"),
             include_str!("../../ui/features/catalog/media-tile.slint"),
             include_str!("../../ui/features/detail/detail-headers.slint"),
             include_str!("../../ui/features/detail/episode-row.slint"),
