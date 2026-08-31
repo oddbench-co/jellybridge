@@ -44,8 +44,8 @@ identifier = "dev.nk.jellybridge.player-slice"
 category = "Video"
 before-packaging-command = "../../scripts/prepare-slice-package.sh"
 icons = [
-    "../../src/main/resources/icon.png",
-    "../../src/main/resources/icon.icns",
+    "../app/assets/icon.png",
+    "../app/assets/icon.icns",
 ]
 resources = [
     { src = "../../target/package-native/lib/*", target = "lib" },

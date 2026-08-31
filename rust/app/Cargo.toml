@@ -35,8 +35,8 @@ product-name = "JellyBridge"
 identifier = "dev.nk.jellybridge"
 category = "Video"
 icons = [
-    "../../src/main/resources/icon.png",
-    "../../src/main/resources/icon.icns",
+    "assets/icon.png",
+    "assets/icon.icns",
 ]
 formats = ["app", "dmg", "deb", "appimage"]
 
