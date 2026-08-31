@@ -104,7 +104,12 @@ pub fn present(context: &AppContext, message: &str) {
         window.set_page_title(title.into());
         window.set_catalog_summary(summary.into());
         window.set_catalog_home(home_dashboard);
-        window.set_search_text(search_text.into());
+        // Only write the search box when the value actually changed:
+        // rewriting it on every present resets the caret and clobbers
+        // whatever the user typed while the request was in flight.
+        if window.get_search_text().as_str() != search_text {
+            window.set_search_text(search_text.into());
+        }
         window.set_sort_options(ModelRc::new(VecModel::from(sort_options)));
         window.set_sort_index(sort.index());
         window.set_density_index(density.index());

@@ -54,9 +54,16 @@ export component CatalogScreen inherits VerticalLayout {
             font-size: 12px;
         }
 
+        // One-shot debounce: restarted on every keystroke, fires a single
+        // search 300 ms after typing pauses. Without the stop() the Timer
+        // would keep firing every interval.
         search-debounce := Timer {
+            running: false;
             interval: 300ms;
-            triggered => { root.search(root.search-text); }
+            triggered => {
+                self.stop();
+                root.search(root.search-text);
+            }
         }
 
         search-input := LineEdit {
