@@ -1,17 +1,60 @@
-import { Button, ScrollView } from "std-widgets.slint";
+import { Button, ComboBox, ScrollView } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
-import { DetailCard, DetailPerson, DetailKind } from "../../types.slint";
-import { DetailHeader } from "detail-header.slint";
-import { MediaInformationSection } from "media-info-section.slint";
+import { DetailCard, DetailPerson, ExternalLink, DetailKind } from "../../types.slint";
 import { DetailSeasonShelf } from "season-shelf.slint";
 import { DetailEpisodeRow } from "episode-row.slint";
+import { EpisodeShelf } from "episode-shelf.slint";
 import { DetailPeopleShelf } from "people-shelf.slint";
+
+// Round icon action button for the title strip (play, replay, watched, ...).
+component DetailIconButton inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> primary: false;
+    in property <bool> active: false;
+    in property <bool> enabled: true;
+    in property <string> tip;
+    callback clicked();
+
+    width: 44px;
+    height: 44px;
+    border-radius: 22px;
+    background: root.primary
+        ? (icon-touch.has-hover ? Theme.accent-bright : Theme.accent)
+        : root.active
+            ? Theme.accent-deep
+            : icon-touch.has-hover ? Theme.surface-hover : Theme.surface-raised;
+    border-color: root.primary || root.active ? transparent : Theme.border;
+    border-width: 1px;
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    Text {
+        text: root.glyph;
+        color: root.primary ? Theme.bg : root.active ? Theme.text-bright : Theme.text-secondary;
+        font-size: 19px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    icon-touch := TouchArea {
+        mouse-cursor: pointer;
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}
 
 export component DetailScreen inherits Rectangle {
     in property <bool> busy;
     in property <string> message;
     in property <string> detail-id;
     in property <string> detail-title;
+    in property <string> detail-heading;
+    in property <string> detail-subheading;
+    in property <string> detail-ends-at;
+    in property <string> detail-tags;
+    in property <[ExternalLink]> detail-links;
+    in property <string> detail-director;
+    in property <string> detail-writers;
+    in property <float> detail-star-rating;
+    in property <int> detail-critic-rating;
     in property <string> detail-subtitle;
     in property <string> detail-overview;
     in property <image> detail-artwork;
@@ -35,7 +78,6 @@ export component DetailScreen inherits Rectangle {
     in property <bool> detail-playable;
     in property <bool> detail-watched;
     in property <bool> detail-favorite;
-    in property <bool> detail-wide-art;
     in property <[DetailCard]> detail-seasons;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
@@ -45,154 +87,441 @@ export component DetailScreen inherits Rectangle {
     in-out property <int> detail-subtitle-index;
 
     callback play-current();
+    callback play-current-from-start();
     callback play-detail(id: string);
     callback open-detail(id: string, kind: string);
+    callback open-external-url(url: string);
     callback set-detail-watched(id: string, watched: bool);
     callback set-detail-favorite(id: string, favorite: bool);
     callback detail-audio-selected(index: int);
     callback detail-subtitle-selected(index: int);
     callback retry();
 
+    // Poster geometry: portrait card for most kinds, wide 16:9 still for
+    // episodes; it floats over the hero/content boundary, Jellyfin-style.
+    private property <bool> episode-page: root.detail-kind == DetailKind.episode;
+    private property <length> hero-height: 320px;
+    private property <length> content-margin: 48px;
+    private property <length> poster-width: root.episode-page
+        ? clamp(root.width * 0.30, 260px, 380px)
+        : clamp(root.width * 0.22, 220px, 300px);
+    private property <length> poster-height: root.episode-page
+        ? root.poster-width * 9 / 16
+        : root.poster-width * 1.5;
+    private property <length> poster-overlap: 96px;
+    private property <length> content-left: root.content-margin + root.poster-width + 40px;
+
     background: Theme.bg;
 
     ScrollView {
-      VerticalLayout {
-        spacing: 0px;
-        DetailHeader {
-            width: root.width;
-            kind: root.detail-kind;
-            title: root.detail-title;
-            tagline: root.detail-tagline;
-            metadata: root.detail-subtitle;
-            summary: root.detail-kind == DetailKind.season ? root.detail-season-summary : root.detail-series-summary;
-            overview: root.detail-overview;
-            genres: root.detail-genres;
-            studios: root.detail-studios;
-            media-info: root.detail-media-info;
-            series-id: root.detail-series-id;
-            series-name: root.detail-series-name;
-            season-id: root.detail-season-id;
-            season-name: root.detail-season-name;
-            poster: root.detail-artwork;
-            backdrop: root.detail-backdrop;
-            logo: root.detail-logo;
-            wide-art: root.detail-wide-art;
-            play-label: root.detail-play-label;
-            progress-text: root.detail-kind == DetailKind.series ? root.detail-play-context : root.detail-progress-label;
-            progress: root.detail-progress;
-            playable: root.detail-playable;
-            watched: root.detail-watched;
-            favorite: root.detail-favorite;
-            busy: root.busy;
-            audio-options: root.detail-audio-options;
-            subtitle-options: root.detail-subtitle-options;
-            audio-index <=> root.detail-audio-index;
-            subtitle-index <=> root.detail-subtitle-index;
-            play => { root.play-current(); }
-            set-watched(value) => { root.set-detail-watched(root.detail-id, value); }
-            set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
-            audio-selected(index) => { root.detail-audio-selected(index); }
-            subtitle-selected(index) => { root.detail-subtitle-selected(index); }
-            open-related(id, kind) => { root.open-detail(id, kind); }
-        }
+      content := Rectangle {
+        width: root.width;
 
-        if root.message != "": Rectangle {
-            width: root.width;
-            height: 38px; background: Theme.danger-surface;
-            Text { text: root.message; color: Theme.danger-text; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
-            Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
-        }
+        VerticalLayout {
+            spacing: 0px;
 
-        if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaInformationSection {
-            width: root.width;
-            overview: root.detail-overview;
-            genres: root.detail-genres;
-            studios: root.detail-studios;
-            media-info: root.detail-media-info;
-        }
+            // ── Hero: backdrop with the item logo centered on it ──────────
+            hero := Rectangle {
+                height: root.hero-height;
+                background: Theme.bg;
+                clip: true;
 
-        if root.detail-kind == DetailKind.series: DetailSeasonShelf {
-            width: root.width;
-            height: 360px;
-            seasons: root.detail-seasons;
-            summary: root.detail-series-summary;
-            failed: root.message != "";
-            open(id, kind) => { root.open-detail(id, kind); }
-        }
+                Image { source: root.detail-backdrop; width: 100%; height: 100%; image-fit: cover; }
+                Rectangle { background: Theme.scrim.with-alpha(0.44); }
+                Rectangle { background: @linear-gradient(180deg, Theme.bg.with-alpha(0.13) 0%, Theme.bg.with-alpha(0.86) 100%); }
 
-        if root.detail-kind == DetailKind.series: MediaInformationSection {
-            width: root.width;
-            overview: root.detail-overview;
-            genres: root.detail-genres;
-            studios: root.detail-studios;
-            media-info: root.detail-media-info;
-        }
-
-        if root.detail-kind == DetailKind.season: VerticalLayout {
-            width: root.width;
-            padding-top: 20px;
-            padding-bottom: 28px;
-            spacing: 10px;
-
-            HorizontalLayout {
-                height: 38px;
-                padding-left: max(28px, (root.width - 1180px) / 2);
-                padding-right: max(28px, (root.width - 1180px) / 2);
-                Text {
-                    text: "Episodes";
-                    color: Theme.text-primary;
-                    font-size: 22px;
-                    font-weight: 750;
-                    vertical-alignment: center;
-                }
-                Rectangle { horizontal-stretch: 1; }
-                Text {
-                    text: root.detail-season-summary;
-                    color: Theme.text-faint;
-                    font-size: 12px;
-                    vertical-alignment: center;
-                    visible: root.detail-episodes.length > 0;
+                Image {
+                    source: root.detail-logo;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2 - 10px;
+                    width: min(parent.width * 0.45, 460px);
+                    height: 130px;
+                    image-fit: contain;
+                    visible: root.detail-logo.width > 0;
                 }
             }
 
-            if root.detail-episodes.length == 0: HorizontalLayout {
-                height: 116px;
-                padding-left: max(28px, (root.width - 1180px) / 2);
-                padding-right: max(28px, (root.width - 1180px) / 2);
+            // Strip + info: kept at least as tall as the poster overhang so
+            // the shelves below never slide underneath the poster card.
+            VerticalLayout {
+                min-height: root.poster-height - root.poster-overlap + 24px;
+                spacing: 0px;
+
+                // ── Title strip ───────────────────────────────────────────
                 Rectangle {
-                    background: Theme.surface;
-                    border-color: Theme.surface-hover;
-                    border-width: 1px;
-                    border-radius: Theme.radius-medium;
-                    Text {
-                        text: root.message == "" ? "No episodes are available for this season." : "Episodes could not be loaded.";
-                        color: Theme.text-muted;
+                    background: Theme.surface-dim.with-alpha(0.85);
+
+                    VerticalLayout {
+                        padding-left: root.content-left;
+                        padding-right: root.content-margin;
+                        padding-top: 16px;
+                        padding-bottom: 16px;
+                        spacing: 6px;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+
+                            VerticalLayout {
+                                spacing: 5px;
+                                horizontal-stretch: 1;
+
+                                heading-line := Text {
+                                    text: root.detail-heading == "" ? root.detail-title : root.detail-heading;
+                                    color: Theme.text-bright;
+                                    font-size: 27px;
+                                    font-weight: 800;
+                                    overflow: elide;
+                                }
+                                if root.detail-subheading != "": Text {
+                                    text: root.detail-subheading;
+                                    color: subheading-touch.has-hover && root.detail-season-id != ""
+                                        ? Theme.accent-bright
+                                        : Theme.text-primary;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    overflow: elide;
+                                    subheading-touch := TouchArea {
+                                        mouse-cursor: root.detail-season-id != "" ? pointer : default;
+                                        clicked => {
+                                            if root.detail-season-id != "" {
+                                                root.open-detail(root.detail-season-id, "Season");
+                                            }
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 14px;
+                                    Text {
+                                        text: root.detail-subtitle;
+                                        color: Theme.text-secondary;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        visible: root.detail-subtitle != "";
+                                    }
+                                    Text {
+                                        text: "★ " + Math.round(root.detail-star-rating * 10) / 10;
+                                        color: Theme.rating-gold;
+                                        font-size: 13px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                        visible: root.detail-star-rating > 0;
+                                    }
+                                    Text {
+                                        text: "Critics " + root.detail-critic-rating + "%";
+                                        color: root.detail-critic-rating >= 60 ? #7ac96f : Theme.danger-text;
+                                        font-size: 13px;
+                                        font-weight: 650;
+                                        vertical-alignment: center;
+                                        visible: root.detail-critic-rating >= 0;
+                                    }
+                                    Text {
+                                        text: root.detail-ends-at;
+                                        color: Theme.text-muted;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                        visible: root.detail-ends-at != "";
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 9px;
+                                alignment: end;
+
+                                DetailIconButton {
+                                    glyph: "▶";
+                                    primary: true;
+                                    enabled: !root.busy;
+                                    visible: root.detail-playable;
+                                    clicked => { root.play-current(); }
+                                }
+                                DetailIconButton {
+                                    glyph: "↻";
+                                    enabled: !root.busy;
+                                    visible: root.detail-playable && root.detail-progress > 0 && root.detail-progress < 1;
+                                    clicked => { root.play-current-from-start(); }
+                                }
+                                DetailIconButton {
+                                    glyph: "✓";
+                                    active: root.detail-watched;
+                                    enabled: !root.busy;
+                                    clicked => { root.set-detail-watched(root.detail-id, !root.detail-watched); }
+                                }
+                                DetailIconButton {
+                                    glyph: "♥";
+                                    active: root.detail-favorite;
+                                    enabled: !root.busy;
+                                    clicked => { root.set-detail-favorite(root.detail-id, !root.detail-favorite); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.message != "": Rectangle {
+                    height: 38px;
+                    background: Theme.danger-surface;
+                    Text { text: root.message; color: Theme.danger-text; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                    Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
+                }
+
+                // ── Info block ────────────────────────────────────────────
+                VerticalLayout {
+                    padding-left: root.content-left;
+                    padding-right: root.content-margin;
+                    padding-top: 18px;
+                    padding-bottom: 24px;
+                    spacing: 12px;
+
+                    if root.detail-progress > 0 && root.detail-progress < 1: HorizontalLayout {
+                        height: 18px;
+                        spacing: 10px;
+                        Text {
+                            text: root.detail-kind == DetailKind.series ? root.detail-play-context : root.detail-progress-label;
+                            color: Theme.text-muted;
+                            font-size: 11px;
+                            vertical-alignment: center;
+                        }
+                        Rectangle {
+                            y: (parent.height - self.height) / 2;
+                            height: 5px;
+                            width: min(parent.width * 0.4, 300px);
+                            background: Theme.surface-hover;
+                            border-radius: 2px;
+                            Rectangle {
+                                x: 0px;
+                                width: parent.width * root.detail-progress;
+                                height: 100%;
+                                background: Theme.accent;
+                                border-radius: 2px;
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    if root.detail-media-info != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Video"; width: 86px; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
+                        Text { text: root.detail-media-info; color: Theme.text-primary; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                    }
+                    if root.detail-audio-options.length > 1: HorizontalLayout {
+                        height: 34px;
+                        spacing: 12px;
+                        Text { text: "Audio"; width: 86px; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
+                        ComboBox {
+                            width: min(520px, root.width - root.content-left - root.content-margin - 98px);
+                            model: root.detail-audio-options;
+                            current-index: root.detail-audio-index;
+                            selected(_) => {
+                                root.detail-audio-index = self.current-index;
+                                root.detail-audio-selected(self.current-index);
+                            }
+                        }
+                    }
+                    if root.detail-subtitle-options.length > 1: HorizontalLayout {
+                        height: 34px;
+                        spacing: 12px;
+                        Text { text: "Subtitles"; width: 86px; color: Theme.text-muted; font-size: 13px; vertical-alignment: center; }
+                        ComboBox {
+                            width: min(520px, root.width - root.content-left - root.content-margin - 98px);
+                            model: root.detail-subtitle-options;
+                            current-index: root.detail-subtitle-index;
+                            selected(_) => {
+                                root.detail-subtitle-index = self.current-index;
+                                root.detail-subtitle-selected(self.current-index);
+                            }
+                        }
+                    }
+
+                    if root.detail-tagline != "": Text {
+                        text: root.detail-tagline;
+                        color: Theme.text-primary;
+                        font-size: 16px;
+                        wrap: word-wrap;
+                    }
+                    if root.detail-overview != "": Text {
+                        text: root.detail-overview;
+                        color: Theme.text-secondary;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                    if root.detail-kind == DetailKind.series && root.detail-series-summary != "": Text {
+                        text: root.detail-series-summary;
+                        color: Theme.accent-bright;
                         font-size: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
+                        font-weight: 650;
+                    }
+                    if root.detail-kind == DetailKind.season && root.detail-season-summary != "": Text {
+                        text: root.detail-season-summary;
+                        color: Theme.accent-bright;
+                        font-size: 13px;
+                        font-weight: 650;
+                    }
+
+                    if root.detail-tags != "": HorizontalLayout {
+                        spacing: 6px;
+                        Text { text: "Tags:"; color: Theme.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text {
+                            text: root.detail-tags;
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                    }
+                    if root.detail-links.length > 0: HorizontalLayout {
+                        spacing: 14px;
+                        for link in root.detail-links: Text {
+                            text: link.name;
+                            color: link-touch.has-hover ? Theme.accent-bright : Theme.text-secondary;
+                            font-size: 13px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            link-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-external-url(link.url); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    if root.detail-genres != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Genres"; width: 86px; color: Theme.text-muted; font-size: 13px; }
+                        Text { text: root.detail-genres; color: Theme.text-primary; font-size: 13px; font-weight: 650; wrap: word-wrap; horizontal-stretch: 1; }
+                    }
+                    if root.detail-director != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Director"; width: 86px; color: Theme.text-muted; font-size: 13px; }
+                        Text { text: root.detail-director; color: Theme.text-primary; font-size: 13px; font-weight: 650; wrap: word-wrap; horizontal-stretch: 1; }
+                    }
+                    if root.detail-writers != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Writers"; width: 86px; color: Theme.text-muted; font-size: 13px; }
+                        Text { text: root.detail-writers; color: Theme.text-primary; font-size: 13px; font-weight: 650; wrap: word-wrap; horizontal-stretch: 1; }
+                    }
+                    if root.detail-studios != "": HorizontalLayout {
+                        spacing: 12px;
+                        Text { text: "Studios"; width: 86px; color: Theme.text-muted; font-size: 13px; }
+                        Text { text: root.detail-studios; color: Theme.text-primary; font-size: 13px; font-weight: 650; wrap: word-wrap; horizontal-stretch: 1; }
                     }
                 }
             }
 
-            for episode in root.detail-episodes: HorizontalLayout {
-                height: 142px;
-                padding-left: max(28px, (root.width - 1180px) / 2);
-                padding-right: max(28px, (root.width - 1180px) / 2);
-                DetailEpisodeRow {
-                    horizontal-stretch: 1;
-                    episode: episode;
-                    busy: root.busy;
-                    open(id, kind) => { root.open-detail(id, kind); }
-                    play(id) => { root.play-detail(id); }
-                    set-watched(id, watched) => { root.set-detail-watched(id, watched); }
+            // ── Kind-specific shelves ─────────────────────────────────────
+            if root.detail-kind == DetailKind.series: DetailSeasonShelf {
+                width: root.width;
+                height: 360px;
+                seasons: root.detail-seasons;
+                summary: root.detail-series-summary;
+                failed: root.message != "";
+                open(id, kind) => { root.open-detail(id, kind); }
+            }
+
+            if root.detail-kind == DetailKind.season: VerticalLayout {
+                width: root.width;
+                padding-top: 20px;
+                padding-bottom: 28px;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    height: 38px;
+                    padding-left: max(28px, (root.width - 1180px) / 2);
+                    padding-right: max(28px, (root.width - 1180px) / 2);
+                    Text {
+                        text: "Episodes";
+                        color: Theme.text-primary;
+                        font-size: 22px;
+                        font-weight: 750;
+                        vertical-alignment: center;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Text {
+                        text: root.detail-season-summary;
+                        color: Theme.text-faint;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        visible: root.detail-episodes.length > 0;
+                    }
                 }
+
+                if root.detail-episodes.length == 0: HorizontalLayout {
+                    height: 116px;
+                    padding-left: max(28px, (root.width - 1180px) / 2);
+                    padding-right: max(28px, (root.width - 1180px) / 2);
+                    Rectangle {
+                        background: Theme.surface;
+                        border-color: Theme.surface-hover;
+                        border-width: 1px;
+                        border-radius: Theme.radius-medium;
+                        Text {
+                            text: root.message == "" ? "No episodes are available for this season." : "Episodes could not be loaded.";
+                            color: Theme.text-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                for episode in root.detail-episodes: HorizontalLayout {
+                    height: 142px;
+                    padding-left: max(28px, (root.width - 1180px) / 2);
+                    padding-right: max(28px, (root.width - 1180px) / 2);
+                    DetailEpisodeRow {
+                        horizontal-stretch: 1;
+                        episode: episode;
+                        busy: root.busy;
+                        open(id, kind) => { root.open-detail(id, kind); }
+                        play(id) => { root.play-detail(id); }
+                        set-watched(id, watched) => { root.set-detail-watched(id, watched); }
+                    }
+                }
+            }
+
+            if root.episode-page && root.detail-episodes.length > 0: EpisodeShelf {
+                width: root.width;
+                episodes: root.detail-episodes;
+                heading: root.detail-season-name == "" ? "More from this season" : "More from " + root.detail-season-name;
+                current-id: root.detail-id;
+                open(id, kind) => { root.open-detail(id, kind); }
+            }
+
+            if root.detail-people.length > 0: DetailPeopleShelf {
+                width: root.width;
+                height: 220px;
+                people: root.detail-people;
             }
         }
 
-        if root.detail-people.length > 0: DetailPeopleShelf {
-            width: root.width;
-            height: 220px;
-            people: root.detail-people;
+        // ── Poster / episode still, floating over the hero boundary ──────
+        poster-card := Rectangle {
+            x: root.content-margin;
+            y: root.hero-height - root.poster-overlap;
+            width: root.poster-width;
+            height: root.poster-height;
+            background: Theme.surface;
+            border-radius: Theme.radius-medium;
+            border-color: Theme.border;
+            border-width: 1px;
+            clip: true;
+            drop-shadow-color: Theme.scrim.with-alpha(0.63);
+            drop-shadow-blur: 22px;
+            drop-shadow-offset-y: 6px;
+
+            Text {
+                text: root.detail-title;
+                color: Theme.border-strong;
+                font-size: 15px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Image { source: root.detail-artwork; width: 100%; height: 100%; image-fit: cover; }
         }
       }
     }

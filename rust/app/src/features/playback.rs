@@ -8,7 +8,7 @@ use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
 use crate::services::session::{SettingsStore, StoredSettings};
 use crate::ui;
 
-pub fn start_playback(context: &AppContext) {
+pub fn start_playback(context: &AppContext, from_start: bool) {
     let detail = context.state.lock().ok().and_then(|mut state| {
         let id = state
             .detail
@@ -21,10 +21,10 @@ pub fn start_playback(context: &AppContext) {
         state.detail.item_by_id(&id)
     });
     let Some(detail) = detail else { return };
-    start_playback_item(context, detail);
+    start_playback_item(context, detail, from_start);
 }
 
-pub fn start_playback_item(context: &AppContext, detail: DetailItemData) {
+pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_start: bool) {
     let Some(session) = context
         .state
         .lock()
@@ -36,7 +36,11 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData) {
     if !detail.playable {
         return;
     }
-    let initial_position = detail.resume_seconds.max(0.0);
+    let initial_position = if from_start {
+        0.0
+    } else {
+        detail.resume_seconds.max(0.0)
+    };
     let initial_duration = detail
         .runtime_seconds
         .unwrap_or_default()

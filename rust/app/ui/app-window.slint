@@ -1,4 +1,4 @@
-import { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, Screen, DetailKind } from "types.slint";
+import { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, ExternalLink, Screen, DetailKind } from "types.slint";
 import { Theme } from "theme.slint";
 import { TopBar } from "components/top-bar.slint";
 import { LoginScreen } from "features/login/login-screen.slint";
@@ -6,7 +6,7 @@ import { CatalogScreen } from "features/catalog/catalog-screen.slint";
 import { DetailScreen } from "features/detail/detail-screen.slint";
 import { PlayerScreen } from "features/player/player-screen.slint";
 
-export { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, Screen, DetailKind }
+export { CatalogSection, CatalogItem, DetailCard, DetailPerson, ChapterMarker, ExternalLink, Screen, DetailKind }
 
 // Composition root: owns the Rust-facing property/callback boundary, the
 // screen switch, and global hotkey focus. Screens are implemented in
@@ -41,6 +41,15 @@ export component JellyBridgeWindow inherits Window {
 
     in property <string> detail-id: "";
     in property <string> detail-title: "";
+    in property <string> detail-heading: "";
+    in property <string> detail-subheading: "";
+    in property <string> detail-ends-at: "";
+    in property <string> detail-tags: "";
+    in property <[ExternalLink]> detail-links;
+    in property <string> detail-director: "";
+    in property <string> detail-writers: "";
+    in property <float> detail-star-rating: 0;
+    in property <int> detail-critic-rating: -1;
     in property <string> detail-subtitle: "";
     in property <string> detail-overview: "";
     in property <image> detail-artwork;
@@ -64,7 +73,6 @@ export component JellyBridgeWindow inherits Window {
     in property <bool> detail-playable: false;
     in property <bool> detail-watched: false;
     in property <bool> detail-favorite: false;
-    in property <bool> detail-wide-art: false;
     in property <[DetailCard]> detail-seasons;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
@@ -104,6 +112,8 @@ export component JellyBridgeWindow inherits Window {
     callback go-home();
     callback go-back();
     callback play-current();
+    callback play-current-from-start();
+    callback open-external-url(string);
     callback open-detail(string, string);
     callback play-detail(string);
     callback set-detail-watched(string, bool);
@@ -206,6 +216,15 @@ export component JellyBridgeWindow inherits Window {
                 message: root.message;
                 detail-id: root.detail-id;
                 detail-title: root.detail-title;
+                detail-heading: root.detail-heading;
+                detail-subheading: root.detail-subheading;
+                detail-ends-at: root.detail-ends-at;
+                detail-tags: root.detail-tags;
+                detail-links: root.detail-links;
+                detail-director: root.detail-director;
+                detail-writers: root.detail-writers;
+                detail-star-rating: root.detail-star-rating;
+                detail-critic-rating: root.detail-critic-rating;
                 detail-subtitle: root.detail-subtitle;
                 detail-overview: root.detail-overview;
                 detail-artwork: root.detail-artwork;
@@ -229,7 +248,6 @@ export component JellyBridgeWindow inherits Window {
                 detail-playable: root.detail-playable;
                 detail-watched: root.detail-watched;
                 detail-favorite: root.detail-favorite;
-                detail-wide-art: root.detail-wide-art;
                 detail-seasons: root.detail-seasons;
                 detail-episodes: root.detail-episodes;
                 detail-people: root.detail-people;
@@ -238,6 +256,8 @@ export component JellyBridgeWindow inherits Window {
                 detail-audio-index <=> root.detail-audio-index;
                 detail-subtitle-index <=> root.detail-subtitle-index;
                 play-current => { root.play-current(); }
+                play-current-from-start => { root.play-current-from-start(); }
+                open-external-url(url) => { root.open-external-url(url); }
                 play-detail(id) => { root.play-detail(id); }
                 open-detail(id, kind) => { root.open-detail(id, kind); }
                 set-detail-watched(id, watched) => { root.set-detail-watched(id, watched); }

@@ -25,7 +25,12 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
     });
 
     let ctx = context.clone();
-    window.on_play_current(move || features::playback::start_playback(&ctx));
+    window.on_play_current(move || features::playback::start_playback(&ctx, false));
+
+    let ctx = context.clone();
+    window.on_play_current_from_start(move || features::playback::start_playback(&ctx, true));
+
+    window.on_open_external_url(move |url| open_in_browser(url.as_str()));
 
     let ctx = context.clone();
     window.on_play_detail(move |id| {
@@ -35,7 +40,7 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
             .ok()
             .and_then(|state| state.detail.item_by_id(id.as_str()));
         if let Some(item) = item {
-            features::playback::start_playback_item(&ctx, item);
+            features::playback::start_playback_item(&ctx, item, false);
         }
     });
 
@@ -94,6 +99,15 @@ pub fn present(context: &AppContext, generation: u64) {
             window.set_can_go_back(can_go_back);
             window.set_detail_id("".into());
             window.set_detail_title("".into());
+            window.set_detail_heading("".into());
+            window.set_detail_subheading("".into());
+            window.set_detail_ends_at("".into());
+            window.set_detail_tags("".into());
+            window.set_detail_links(ModelRc::new(VecModel::default()));
+            window.set_detail_director("".into());
+            window.set_detail_writers("".into());
+            window.set_detail_star_rating(0.0);
+            window.set_detail_critic_rating(-1);
             window.set_detail_series_id("".into());
             window.set_detail_series_name("".into());
             window.set_detail_season_id("".into());
@@ -132,7 +146,6 @@ pub fn present(context: &AppContext, generation: u64) {
     let playable = page.item.playable || !page.episodes.is_empty();
     let watched = page.item.watched;
     let favorite = page.item.favorite;
-    let wide_art = page.item.kind == DetailKind::Episode;
     let series_summary = detail_series_summary(&page);
     let season_summary = detail_season_summary(&page);
     let play_label = page.primary_play_label().unwrap_or_default().to_owned();
@@ -168,6 +181,18 @@ pub fn present(context: &AppContext, generation: u64) {
         .collect::<Vec<_>>();
     let audio_index = tracks.audio_index;
     let subtitle_index = tracks.subtitle_index;
+    let (heading, subheading) = detail_headings(&page.item);
+    let ends_at = ends_at_label(&page.item);
+    let tags_line = page.item.tags.join(", ");
+    let links = page.item.external_urls.clone();
+    let director = page.item.directors.join(", ");
+    let writers_line = page.item.writers.join(", ");
+    let star_rating = page.item.community_rating.unwrap_or(0.0);
+    let critic_rating = page
+        .item
+        .critic_rating
+        .map(|value| value.round() as i32)
+        .unwrap_or(-1);
     let hero_poster_key = primary_card_image(&page.item).map(image_key);
     let hero_backdrop_key = page.item.backdrop.as_ref().map(image_key);
     let hero_logo_key = page.item.logo.as_ref().map(image_key);
@@ -197,6 +222,23 @@ pub fn present(context: &AppContext, generation: u64) {
         window.set_message(message.into());
         window.set_detail_id(detail_id.into());
         window.set_detail_title(title.into());
+        window.set_detail_heading(heading.into());
+        window.set_detail_subheading(subheading.into());
+        window.set_detail_ends_at(ends_at.into());
+        window.set_detail_tags(tags_line.into());
+        window.set_detail_links(ModelRc::new(VecModel::from(
+            links
+                .into_iter()
+                .map(|(name, url)| super::ExternalLink {
+                    name: name.into(),
+                    url: url.into(),
+                })
+                .collect::<Vec<_>>(),
+        )));
+        window.set_detail_director(director.into());
+        window.set_detail_writers(writers_line.into());
+        window.set_detail_star_rating(star_rating);
+        window.set_detail_critic_rating(critic_rating);
         window.set_detail_subtitle(subtitle.into());
         window.set_detail_overview(overview.into());
         window.set_detail_kind(kind);
@@ -217,7 +259,6 @@ pub fn present(context: &AppContext, generation: u64) {
         window.set_detail_playable(playable);
         window.set_detail_watched(watched);
         window.set_detail_favorite(favorite);
-        window.set_detail_wide_art(wide_art);
         window.set_detail_artwork(hero_image(hero_poster_key));
         window.set_detail_backdrop(hero_image(hero_backdrop_key));
         window.set_detail_logo(hero_image(hero_logo_key));
@@ -312,6 +353,91 @@ fn detail_stream_label(stream: &StreamData, fallback: &str, index: usize) -> Str
     }
 }
 
+/// Opens an external metadata link (IMDb, TMDB, ...) in the default browser.
+fn open_in_browser(url: &str) {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    let launcher = "open";
+    #[cfg(not(target_os = "macos"))]
+    let launcher = "xdg-open";
+    if let Err(error) = std::process::Command::new(launcher).arg(url).spawn() {
+        tracing::warn!(%error, url, "external link could not be opened");
+    }
+}
+
+/// "Ends at 4:47 PM" for the remaining runtime, in local time. Empty when
+/// the item has no known runtime or is not playable.
+fn ends_at_label(item: &DetailItemData) -> String {
+    let Some(runtime) = item.runtime_seconds.filter(|seconds| *seconds > 0.0) else {
+        return String::new();
+    };
+    if !item.playable {
+        return String::new();
+    }
+    let resume = if item.resume_seconds > 0.0 && item.resume_seconds < runtime && !item.watched {
+        item.resume_seconds
+    } else {
+        0.0
+    };
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return String::new();
+    };
+    let end_epoch = now.as_secs() as i64 + (runtime - resume).round() as i64;
+    // libc::localtime_r converts the epoch using the local timezone; the
+    // struct tm is fully written by the call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let time: libc::time_t = end_epoch;
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return String::new();
+    }
+    let (hour, meridiem) = match tm.tm_hour {
+        0 => (12, "AM"),
+        1..=11 => (tm.tm_hour, "AM"),
+        12 => (12, "PM"),
+        hour => (hour - 12, "PM"),
+    };
+    format!("Ends at {}:{:02} {}", hour, tm.tm_min, meridiem)
+}
+
+/// Title strip heading/subheading: episodes and seasons lead with the series
+/// name and describe themselves on the second line, like Jellyfin.
+fn detail_headings(item: &DetailItemData) -> (String, String) {
+    match item.kind {
+        DetailKind::Episode => {
+            let heading = item
+                .series_name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| item.title.clone());
+            let episode_part = match item.index_number {
+                Some(number) => format!("{number}. {}", item.title),
+                None => item.title.clone(),
+            };
+            let subheading = match item.parent_index_number {
+                Some(season) => format!("Season {season} - {episode_part}"),
+                None => episode_part,
+            };
+            (heading, subheading)
+        }
+        DetailKind::Season => {
+            let heading = item
+                .series_name
+                .clone()
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| item.title.clone());
+            let subheading = if heading == item.title {
+                String::new()
+            } else {
+                item.title.clone()
+            };
+            (heading, subheading)
+        }
+        _ => (item.title.clone(), String::new()),
+    }
+}
+
 fn to_ui_kind(kind: DetailKind) -> super::DetailKind {
     match kind {
         DetailKind::Movie => super::DetailKind::Movie,
@@ -346,14 +472,13 @@ fn detail_metadata_line(item: &DetailItemData) -> String {
         DetailKind::Episode => detail_episode_number(item),
         _ => Some(detail_kind_name(item.kind).to_owned()),
     };
+    // Community/critic ratings render as dedicated colored elements in the
+    // title strip, not as part of this line.
     [
         leading_label,
         item.production_year.map(|year| year.to_string()),
         item.official_rating.clone(),
         runtime,
-        item.community_rating.map(|rating| format!("★ {rating:.1}")),
-        item.critic_rating
-            .map(|rating| format!("Critics {rating:.0}%")),
     ]
     .into_iter()
     .flatten()

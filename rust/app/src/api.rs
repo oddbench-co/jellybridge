@@ -14,7 +14,7 @@ const CLIENT_VERSION: &str = "0.1.0-rust";
 const DEVICE_NAME: &str = "Desktop";
 const DEVICE_ID: &str = "jellybridge-rust-desktop";
 const ITEM_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,Overview,RunTimeTicks,MediaStreams,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
-const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
+const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -219,6 +219,15 @@ impl JellyfinApi {
             DetailKind::Season => match self.episodes(item_id, false).await {
                 Ok(episodes) => (Vec::new(), episodes, None),
                 Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
+            },
+            // An episode page shows its season's episodes ("More from
+            // Season N"); failure only degrades the shelf.
+            DetailKind::Episode => match item.season_id.as_deref() {
+                Some(season_id) => match self.episodes(season_id, false).await {
+                    Ok(episodes) => (Vec::new(), episodes, None),
+                    Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
+                },
+                None => (Vec::new(), Vec::new(), None),
             },
             _ => (Vec::new(), Vec::new(), None),
         };
@@ -711,6 +720,8 @@ impl From<LibraryItem> for DetailItemData {
                 is_default: stream.is_default,
             })
             .collect();
+        let directors = person_names(&item.people, "Director");
+        let writers = person_names(&item.people, "Writer");
         let people = item
             .people
             .into_iter()
@@ -760,6 +771,15 @@ impl From<LibraryItem> for DetailItemData {
                 .run_time_ticks
                 .map(|ticks| ticks.max(0) as f64 / 10_000_000.0),
             genres: item.genres,
+            tags: item.tags,
+            external_urls: item
+                .external_urls
+                .into_iter()
+                .filter(|link| !link.name.is_empty() && !link.url.is_empty())
+                .map(|link| (link.name, link.url))
+                .collect(),
+            directors,
+            writers,
             studios: item
                 .studios
                 .into_iter()
@@ -788,6 +808,15 @@ impl From<LibraryItem> for DetailItemData {
             streams,
         }
     }
+}
+
+fn person_names(people: &[BaseItemPerson], kind: &str) -> Vec<String> {
+    people
+        .iter()
+        .filter(|person| person.kind.eq_ignore_ascii_case(kind))
+        .map(|person| person.name.clone())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 fn own_image(item: &LibraryItem, key: &str, image_type: ImageType) -> Option<ImageRef> {
@@ -1013,6 +1042,10 @@ struct LibraryItem {
     taglines: Vec<String>,
     #[serde(rename = "Genres", default)]
     genres: Vec<String>,
+    #[serde(rename = "Tags", default)]
+    tags: Vec<String>,
+    #[serde(rename = "ExternalUrls", default)]
+    external_urls: Vec<ExternalUrl>,
     #[serde(rename = "Studios", default)]
     studios: Vec<NameGuidPair>,
     #[serde(rename = "People", default)]
@@ -1059,6 +1092,14 @@ struct UserData {
     is_favorite: bool,
     #[serde(rename = "UnplayedItemCount")]
     unplayed_item_count: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct ExternalUrl {
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "Url", default)]
+    url: String,
 }
 
 #[derive(Deserialize)]
