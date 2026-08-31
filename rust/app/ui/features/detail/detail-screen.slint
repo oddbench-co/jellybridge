@@ -94,6 +94,25 @@ export component DetailScreen inherits Rectangle {
         width: root.width;
         height: page-layout.preferred-height;
 
+        // Vertical wheel handling for the whole page, same mechanism as the
+        // shelves (which provably works): move the viewport ourselves
+        // instead of relying on the Flickable's own wheel acceptance.
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            scroll-event(event) => {
+                if abs(event.delta-y) > abs(event.delta-x) && content.height > scroller.visible-height {
+                    scroller.viewport-y = clamp(
+                        scroller.viewport-y + event.delta-y,
+                        scroller.visible-height - content.height,
+                        0px
+                    );
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
         page-layout := VerticalLayout {
             spacing: 0px;
 
