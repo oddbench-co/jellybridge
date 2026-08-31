@@ -14,7 +14,7 @@ use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
 use crate::app::AppContext;
 use crate::features;
-use crate::features::detail::{DetailItemData, DetailKind, ImageRef};
+use crate::features::detail::{DetailItemData, DetailKind as ModelDetailKind, ImageRef};
 
 slint::include_modules!();
 
@@ -62,8 +62,7 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
     detail::connect(window, context);
 }
 
-pub fn set_screen_busy(context: &AppContext, screen: &str, busy: bool, message: &str) {
-    let screen: SharedString = screen.into();
+pub fn set_screen_busy(context: &AppContext, screen: Screen, busy: bool, message: &str) {
     let message: SharedString = message.into();
     context.ui.update(move |window| {
         window.set_screen(screen);
@@ -80,12 +79,12 @@ pub fn set_message(context: &AppContext, message: &str) {
 }
 
 pub fn show_login(context: &AppContext, message: &str) {
-    set_screen_busy(context, "login", false, message);
+    set_screen_busy(context, Screen::Login, false, message);
 }
 
 pub fn show_catalog_error(context: &AppContext, message: String) {
     context.ui.update(move |window| {
-        window.set_screen("catalog".into());
+        window.set_screen(Screen::Catalog);
         window.set_busy(false);
         window.set_message(message.into());
         window.set_catalog_items(ModelRc::new(VecModel::<CatalogItem>::default()));
@@ -143,7 +142,7 @@ fn catalog_image_key(image_item_id: &str, tag: &str) -> String {
 /// widescreen thumbnail. Fetchers and presenters must agree on this choice so
 /// cache lookups hit.
 fn primary_card_image(item: &DetailItemData) -> Option<&ImageRef> {
-    if item.kind == DetailKind::Episode {
+    if item.kind == ModelDetailKind::Episode {
         item.thumbnail.as_ref().or(item.poster.as_ref())
     } else {
         item.poster.as_ref()
@@ -200,7 +199,7 @@ mod tests {
     };
     use slint::{ComponentHandle, LogicalPosition, PhysicalSize};
 
-    use super::JellyBridgeWindow;
+    use super::{JellyBridgeWindow, Screen};
 
     thread_local! {
         static TEST_WINDOW: Rc<MinimalSoftwareWindow> =
@@ -226,7 +225,7 @@ mod tests {
     fn player_entry_restores_hotkeys_after_detail_focus_is_removed() {
         let platform_window = setup_test_window();
         let ui = JellyBridgeWindow::new().expect("create player UI");
-        ui.set_screen("detail".into());
+        ui.set_screen(Screen::Detail);
         ui.show().expect("show player UI");
         platform_window.draw_if_needed(|_| {});
 
@@ -242,6 +241,7 @@ mod tests {
             observed_hotkeys.set(observed_hotkeys.get() + 1);
             true
         });
+        ui.set_screen(Screen::Player);
         ui.invoke_enter_player(0.0, 100.0);
         platform_window.draw_if_needed(|_| {});
         let player_keys = [
@@ -273,6 +273,7 @@ mod tests {
     fn timeline_keeps_following_player_events_after_scrubbing() {
         let platform_window = setup_test_window();
         let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
         ui.invoke_enter_player(10.0, 100.0);
         ui.show().expect("show player UI");
         platform_window.draw_if_needed(|_| {});
@@ -312,6 +313,7 @@ mod tests {
             "programmatic timeline updates must not re-enter scrub mode"
         );
 
+        ui.set_screen(Screen::Player);
         ui.invoke_enter_player(5.0, 200.0);
         assert_eq!(ui.get_playback_position(), 5.0);
         assert_eq!(ui.get_playback_duration(), 200.0);
@@ -322,6 +324,7 @@ mod tests {
     fn single_video_click_toggles_playback_after_double_click_window() {
         let platform_window = setup_test_window();
         let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
         ui.invoke_enter_player(10.0, 100.0);
         ui.show().expect("show player UI");
         platform_window.draw_if_needed(|_| {});
@@ -366,6 +369,7 @@ mod tests {
     fn double_video_click_cancels_pause_and_requests_fullscreen() {
         let platform_window = setup_test_window();
         let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
         ui.invoke_enter_player(10.0, 100.0);
         ui.show().expect("show player UI");
         platform_window.draw_if_needed(|_| {});

@@ -88,7 +88,7 @@ pub fn present(context: &AppContext, generation: u64) {
     };
     let Some(page) = page else {
         context.ui.update(move |window| {
-            window.set_screen("detail".into());
+            window.set_screen(super::Screen::Detail);
             window.set_busy(false);
             window.set_message(error.into());
             window.set_can_go_back(can_go_back);
@@ -114,7 +114,7 @@ pub fn present(context: &AppContext, generation: u64) {
     let title = page.item.title.clone();
     let subtitle = detail_metadata_line(&page.item);
     let overview = page.item.overview.clone();
-    let kind = detail_kind_name(page.item.kind).to_owned();
+    let kind = to_ui_kind(page.item.kind);
     let tagline = page.item.tagline.clone();
     let genres = page.item.genres.join(" • ");
     let studios = page.item.studios.join(" • ");
@@ -192,14 +192,14 @@ pub fn present(context: &AppContext, generation: u64) {
                     .unwrap_or_default(),
             })
             .collect::<Vec<_>>();
-        window.set_screen("detail".into());
+        window.set_screen(super::Screen::Detail);
         window.set_busy(false);
         window.set_message(message.into());
         window.set_detail_id(detail_id.into());
         window.set_detail_title(title.into());
         window.set_detail_subtitle(subtitle.into());
         window.set_detail_overview(overview.into());
-        window.set_detail_kind(kind.into());
+        window.set_detail_kind(kind);
         window.set_detail_tagline(tagline.into());
         window.set_detail_genres(genres.into());
         window.set_detail_studios(studios.into());
@@ -309,6 +309,16 @@ fn detail_stream_label(stream: &StreamData, fallback: &str, index: usize) -> Str
         codec.to_uppercase()
     } else {
         format!("{fallback} {}", index + 1)
+    }
+}
+
+fn to_ui_kind(kind: DetailKind) -> super::DetailKind {
+    match kind {
+        DetailKind::Movie => super::DetailKind::Movie,
+        DetailKind::Series => super::DetailKind::Series,
+        DetailKind::Season => super::DetailKind::Season,
+        DetailKind::Episode => super::DetailKind::Episode,
+        DetailKind::Other => super::DetailKind::Other,
     }
 }
 

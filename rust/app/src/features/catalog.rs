@@ -185,7 +185,7 @@ pub fn start_home_load(context: &AppContext) {
         return;
     };
     let generation = context.next_generation();
-    ui::set_screen_busy(context, "catalog", true, "");
+    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     if let Ok(mut state) = context.state.lock() {
         state.retry = RetryAction::Home;
     }
@@ -285,7 +285,7 @@ pub fn start_browse_request(context: &AppContext, item: CatalogItemData, push_hi
     if let Ok(mut state) = context.state.lock() {
         state.retry = RetryAction::Browse(item.clone(), push_history);
     }
-    ui::set_screen_busy(context, "catalog", true, "");
+    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     let ctx = context.clone();
     let task = context.runtime.spawn(async move {
         let result = api.browse(&item, sort).await;
@@ -345,7 +345,7 @@ pub fn start_search(context: &AppContext, term: String) {
         state.retry = RetryAction::Search(term.clone());
         state.current.search_text.clone_from(&term);
     }
-    ui::set_screen_busy(context, "catalog", true, "");
+    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     let ctx = context.clone();
     let task = context.runtime.spawn(async move {
         let result = api

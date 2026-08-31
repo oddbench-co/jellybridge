@@ -148,9 +148,9 @@ pub fn connect(
                 .lock()
                 .is_ok_and(|state| state.detail.snapshot().page.is_some())
             {
-                window.set_screen("detail".into());
+                window.set_screen(super::Screen::Detail);
             } else {
-                window.set_screen("catalog".into());
+                window.set_screen(super::Screen::Catalog);
             }
         }
     });
@@ -320,6 +320,7 @@ pub fn present_playback_started(
         window.set_playback_position_label(format_playback_time(initial_position).into());
         window.set_playback_duration_label(format_playback_time(initial_duration).into());
         window.set_paused(false);
+        window.set_screen(super::Screen::Player);
         window.invoke_enter_player(initial_position as f32, initial_duration as f32);
         window.set_busy(false);
         window.set_message("".into());
@@ -365,7 +366,7 @@ pub fn install_renderer(
                 RenderingState::RenderingSetup => native_display(window.window())
                     .and_then(|display| render_host.setup(graphics_api, display))
                     .map(|()| None),
-                RenderingState::BeforeRendering if window.get_screen().as_str() == "player" => {
+                RenderingState::BeforeRendering if window.get_screen() == super::Screen::Player => {
                     let scale = window.window().scale_factor();
                     let width = (window.get_video_logical_width().max(1.0) * scale).round() as u32;
                     let height =
@@ -374,7 +375,7 @@ pub fn install_renderer(
                 }
                 RenderingState::BeforeRendering => Ok(None),
                 RenderingState::AfterRendering => {
-                    if window.get_screen().as_str() == "player" {
+                    if window.get_screen() == super::Screen::Player {
                         let actual_fullscreen = window.window().is_fullscreen();
                         if player_ui.borrow().fullscreen != actual_fullscreen {
                             player_ui.borrow_mut().set_fullscreen(actual_fullscreen);

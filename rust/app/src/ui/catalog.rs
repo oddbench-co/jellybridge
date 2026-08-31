@@ -98,7 +98,7 @@ pub fn present(context: &AppContext, message: &str) {
         .collect::<Vec<_>>();
     let message = message.to_owned();
     context.ui.update(move |window| {
-        window.set_screen("catalog".into());
+        window.set_screen(super::Screen::Catalog);
         window.set_busy(false);
         window.set_message(message.into());
         window.set_page_title(title.into());

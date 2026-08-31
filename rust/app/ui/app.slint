@@ -1,45 +1,7 @@
 import { Button, ComboBox, LineEdit, ListView, ScrollView, Slider } from "std-widgets.slint";
+import { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind } from "types.slint";
 
-export struct CatalogSection {
-    id: string,
-    title: string,
-    start-index: int,
-    count: int,
-}
-
-export struct CatalogItem {
-    id: string,
-    title: string,
-    subtitle: string,
-    kind: string,
-    kind-label: string,
-    placeholder: string,
-    artwork: image,
-    watched: bool,
-    progress: float,
-    is-container: bool,
-    playable: bool,
-}
-
-export struct DetailCard {
-    id: string,
-    title: string,
-    subtitle: string,
-    overview: string,
-    kind: string,
-    artwork: image,
-    watched: bool,
-    favorite: bool,
-    progress: float,
-    unplayed-count: int,
-}
-
-export struct DetailPerson {
-    id: string,
-    name: string,
-    role: string,
-    artwork: image,
-}
+export { CatalogSection, CatalogItem, DetailCard, DetailPerson, Screen, DetailKind }
 
 component DetailHero inherits Rectangle {
     in property <string> title;
@@ -1502,22 +1464,24 @@ export component JellyBridgeWindow inherits Window {
     min-height: 520px;
     background: #0f1214;
 
-    in-out property <string> screen: "login";
-    in-out property <bool> busy: false;
-    in-out property <string> message: "";
-    in-out property <string> page-title: "Home";
-    in-out property <string> account-name: "";
-    in-out property <string> account-initial: "?";
-    in-out property <bool> can-go-back: false;
-    in-out property <[CatalogSection]> sections;
-    in-out property <[CatalogItem]> catalog-items;
-    in-out property <string> catalog-summary: "";
-    in-out property <bool> catalog-home: false;
+    // `in`: Rust owns it. `in-out`: genuinely edited from both sides.
+    // `private`: nobody outside this component should know it exists.
+    in property <Screen> screen: Screen.login;
+    in property <bool> busy: false;
+    in property <string> message: "";
+    in property <string> page-title: "Home";
+    in property <string> account-name: "";
+    in property <string> account-initial: "?";
+    in property <bool> can-go-back: false;
+    in property <[CatalogSection]> sections;
+    in property <[CatalogItem]> catalog-items;
+    in property <string> catalog-summary: "";
+    in property <bool> catalog-home: false;
     in-out property <string> search-text: "";
-    in-out property <[string]> sort-options;
+    in property <[string]> sort-options;
     in-out property <int> sort-index: 0;
     in-out property <int> density-index: 1;
-    in-out property <float> tile-target-width: 260;
+    in property <float> tile-target-width: 260;
     property <int> grid-columns: max(1, floor((root.width / 1px - 48 + 18) / (root.tile-target-width + 18)));
     property <length> grid-card-width: (root.width - 48px - (root.grid-columns - 1) * 18px) / root.grid-columns;
     property <int> grid-row-count: ceil(root.catalog-items.length / root.grid-columns);
@@ -1525,55 +1489,55 @@ export component JellyBridgeWindow inherits Window {
     property <length> home-scroll-y: root.home-scroll-target-y;
     animate home-scroll-y { duration: 220ms; easing: ease-out; }
 
-    in-out property <string> detail-id: "";
-    in-out property <string> detail-title: "";
-    in-out property <string> detail-subtitle: "";
-    in-out property <string> detail-overview: "";
-    in-out property <image> detail-artwork;
-    in-out property <image> detail-backdrop;
-    in-out property <image> detail-logo;
-    in-out property <string> detail-kind: "";
-    in-out property <string> detail-tagline: "";
-    in-out property <string> detail-genres: "";
-    in-out property <string> detail-studios: "";
-    in-out property <string> detail-media-info: "";
-    in-out property <string> detail-series-id: "";
-    in-out property <string> detail-series-name: "";
-    in-out property <string> detail-series-summary: "";
-    in-out property <string> detail-play-context: "";
-    in-out property <string> detail-season-id: "";
-    in-out property <string> detail-season-name: "";
-    in-out property <string> detail-season-summary: "";
-    in-out property <string> detail-play-label: "";
-    in-out property <float> detail-progress: 0;
-    in-out property <string> detail-progress-label: "";
-    in-out property <bool> detail-playable: false;
-    in-out property <bool> detail-watched: false;
-    in-out property <bool> detail-favorite: false;
-    in-out property <bool> detail-wide-art: false;
-    in-out property <[DetailCard]> detail-seasons;
-    in-out property <[DetailCard]> detail-episodes;
-    in-out property <[DetailPerson]> detail-people;
-    in-out property <[string]> detail-audio-options;
-    in-out property <[string]> detail-subtitle-options;
+    in property <string> detail-id: "";
+    in property <string> detail-title: "";
+    in property <string> detail-subtitle: "";
+    in property <string> detail-overview: "";
+    in property <image> detail-artwork;
+    in property <image> detail-backdrop;
+    in property <image> detail-logo;
+    in property <DetailKind> detail-kind: DetailKind.other;
+    in property <string> detail-tagline: "";
+    in property <string> detail-genres: "";
+    in property <string> detail-studios: "";
+    in property <string> detail-media-info: "";
+    in property <string> detail-series-id: "";
+    in property <string> detail-series-name: "";
+    in property <string> detail-series-summary: "";
+    in property <string> detail-play-context: "";
+    in property <string> detail-season-id: "";
+    in property <string> detail-season-name: "";
+    in property <string> detail-season-summary: "";
+    in property <string> detail-play-label: "";
+    in property <float> detail-progress: 0;
+    in property <string> detail-progress-label: "";
+    in property <bool> detail-playable: false;
+    in property <bool> detail-watched: false;
+    in property <bool> detail-favorite: false;
+    in property <bool> detail-wide-art: false;
+    in property <[DetailCard]> detail-seasons;
+    in property <[DetailCard]> detail-episodes;
+    in property <[DetailPerson]> detail-people;
+    in property <[string]> detail-audio-options;
+    in property <[string]> detail-subtitle-options;
     in-out property <int> detail-audio-index: 0;
     in-out property <int> detail-subtitle-index: 0;
 
-    in-out property <image> video-frame;
-    in-out property <string> player-status: "Preparing playback…";
-    in-out property <bool> paused: false;
+    in property <image> video-frame;
+    in property <string> player-status: "Preparing playback…";
+    in property <bool> paused: false;
     in-out property <float> volume: 100;
-    in-out property <bool> fullscreen-player: false;
-    in-out property <bool> controls-visible: true;
+    in property <bool> fullscreen-player: false;
+    in property <bool> controls-visible: true;
     in-out property <float> playback-position: 0;
     in-out property <float> playback-duration: 0;
-    property <float> timeline-position: 0;
-    property <bool> timeline-scrubbing: false;
+    private property <float> timeline-position: 0;
+    private property <bool> timeline-scrubbing: false;
     out property <float> timeline-display-position: root.timeline-position;
-    in-out property <string> playback-position-label: "0:00";
-    in-out property <string> playback-duration-label: "0:00";
-    in-out property <[string]> audio-options;
-    in-out property <[string]> subtitle-options;
+    in property <string> playback-position-label: "0:00";
+    in property <string> playback-duration-label: "0:00";
+    in property <[string]> audio-options;
+    in property <[string]> subtitle-options;
     in-out property <int> audio-index: 0;
     in-out property <int> subtitle-index: 0;
     out property <float> video-logical-width: root.width / 1px;
@@ -1607,12 +1571,14 @@ export component JellyBridgeWindow inherits Window {
     callback leave-player();
     callback player-key-pressed(string, bool, bool, bool) -> bool;
 
+    // Initializes the timeline and grabs hotkey focus. Rust sets `screen` to
+    // Screen.player itself before invoking this — a component cannot assign
+    // its own `in` property.
     public function enter-player(initial-position: float, initial-duration: float) {
         root.playback-duration = max(initial-duration, 0);
         root.playback-position = clamp(initial-position, 0, max(root.playback-duration, 1));
         root.timeline-position = root.playback-position;
         root.timeline-scrubbing = false;
-        root.screen = "player";
         app-key-scope.focus();
     }
 
@@ -1632,7 +1598,7 @@ export component JellyBridgeWindow inherits Window {
 
     app-key-scope := FocusScope {
         capture-key-pressed(event) => {
-            if root.screen == "player" && root.player-key-pressed(
+            if root.screen == Screen.player && root.player-key-pressed(
                 event.text,
                 event.repeat,
                 event.modifiers.shift,
@@ -1643,7 +1609,7 @@ export component JellyBridgeWindow inherits Window {
             return reject;
         }
 
-    if root.screen == "login": Rectangle {
+    if root.screen == Screen.login: Rectangle {
         background: @linear-gradient(180deg, #0f1214 0%, #151b1e 100%);
 
         Rectangle {
@@ -1748,7 +1714,7 @@ export component JellyBridgeWindow inherits Window {
         }
     }
 
-    if root.screen == "catalog" || root.screen == "detail": VerticalLayout {
+    if root.screen == Screen.catalog || root.screen == Screen.detail: VerticalLayout {
         spacing: 0px;
 
         Rectangle {
@@ -1775,7 +1741,7 @@ export component JellyBridgeWindow inherits Window {
                     background: back-touch.has-hover ? #283338 : #1b2428;
                     border-color: #344147;
                     border-width: 1px;
-                    visible: root.can-go-back || root.screen == "detail";
+                    visible: root.can-go-back || root.screen == Screen.detail;
                     Text {
                         text: "‹";
                         color: #f2f6f7;
@@ -1828,12 +1794,12 @@ export component JellyBridgeWindow inherits Window {
                 Rectangle {
                     width: 70px;
                     border-radius: 9px;
-                    background: root.catalog-home && root.screen == "catalog"
+                    background: root.catalog-home && root.screen == Screen.catalog
                         ? #123746
                         : home-touch.has-hover ? #202a2e : transparent;
                     Text {
                         text: "Home";
-                        color: root.catalog-home && root.screen == "catalog" ? #50c9f2 : #bac5c9;
+                        color: root.catalog-home && root.screen == Screen.catalog ? #50c9f2 : #bac5c9;
                         font-size: 13px;
                         font-weight: 650;
                         horizontal-alignment: center;
@@ -1847,7 +1813,7 @@ export component JellyBridgeWindow inherits Window {
 
                 Text {
                     horizontal-stretch: 1;
-                    text: root.screen == "detail" ? root.detail-title : root.page-title;
+                    text: root.screen == Screen.detail ? root.detail-title : root.page-title;
                     color: #7f9097;
                     font-size: 12px;
                     horizontal-alignment: center;
@@ -1912,7 +1878,7 @@ export component JellyBridgeWindow inherits Window {
             }
         }
 
-        if root.screen == "catalog": VerticalLayout {
+        if root.screen == Screen.catalog: VerticalLayout {
             spacing: 0px;
 
             Rectangle {
@@ -2105,14 +2071,14 @@ export component JellyBridgeWindow inherits Window {
             }
         }
 
-        if root.screen == "detail": Rectangle {
+        if root.screen == Screen.detail: Rectangle {
             vertical-stretch: 1;
             background: #0f1214;
 
             ScrollView {
               VerticalLayout {
                 spacing: 0px;
-                if root.detail-kind != "Series" && root.detail-kind != "Season" && root.detail-kind != "Movie" && root.detail-kind != "Episode": DetailHero {
+                if root.detail-kind != DetailKind.series && root.detail-kind != DetailKind.season && root.detail-kind != DetailKind.movie && root.detail-kind != DetailKind.episode: DetailHero {
                     width: root.width;
                     height: 400px;
                     title: root.detail-title;
@@ -2146,7 +2112,7 @@ export component JellyBridgeWindow inherits Window {
                     open-related(id, kind) => { root.open-detail(id, kind); }
                 }
 
-                if root.detail-kind == "Series": SeriesDetailHeader {
+                if root.detail-kind == DetailKind.series: SeriesDetailHeader {
                     width: root.width;
                     title: root.detail-title;
                     tagline: root.detail-tagline;
@@ -2166,7 +2132,7 @@ export component JellyBridgeWindow inherits Window {
                     set-favorite(value) => { root.set-detail-favorite(root.detail-id, value); }
                 }
 
-                if root.detail-kind == "Movie" || root.detail-kind == "Episode": MediaDetailHeader {
+                if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaDetailHeader {
                     width: root.width;
                     title: root.detail-title;
                     tagline: root.detail-tagline;
@@ -2177,7 +2143,7 @@ export component JellyBridgeWindow inherits Window {
                     season-name: root.detail-season-name;
                     artwork: root.detail-artwork;
                     backdrop: root.detail-backdrop;
-                    episode: root.detail-kind == "Episode";
+                    episode: root.detail-kind == DetailKind.episode;
                     play-label: root.detail-play-label;
                     progress: root.detail-progress;
                     progress-label: root.detail-progress-label;
@@ -2197,7 +2163,7 @@ export component JellyBridgeWindow inherits Window {
                     open-related(id, kind) => { root.open-detail(id, kind); }
                 }
 
-                if root.detail-kind == "Season": SeasonDetailHeader {
+                if root.detail-kind == DetailKind.season: SeasonDetailHeader {
                     width: root.width;
                     title: root.detail-title;
                     metadata: root.detail-subtitle;
@@ -2225,7 +2191,7 @@ export component JellyBridgeWindow inherits Window {
                     Button { x: parent.width - 92px; y: 4px; width: 80px; height: 30px; text: "Retry"; clicked => { root.retry(); } }
                 }
 
-                if root.detail-kind == "Movie" || root.detail-kind == "Episode": MediaInformationSection {
+                if root.detail-kind == DetailKind.movie || root.detail-kind == DetailKind.episode: MediaInformationSection {
                     width: root.width;
                     overview: root.detail-overview;
                     genres: root.detail-genres;
@@ -2233,7 +2199,7 @@ export component JellyBridgeWindow inherits Window {
                     media-info: root.detail-media-info;
                 }
 
-                if root.detail-kind == "Series": DetailSeasonShelf {
+                if root.detail-kind == DetailKind.series: DetailSeasonShelf {
                     width: root.width;
                     height: 360px;
                     seasons: root.detail-seasons;
@@ -2242,7 +2208,7 @@ export component JellyBridgeWindow inherits Window {
                     open(id, kind) => { root.open-detail(id, kind); }
                 }
 
-                if root.detail-kind == "Series": MediaInformationSection {
+                if root.detail-kind == DetailKind.series: MediaInformationSection {
                     width: root.width;
                     overview: root.detail-overview;
                     genres: root.detail-genres;
@@ -2250,7 +2216,7 @@ export component JellyBridgeWindow inherits Window {
                     media-info: root.detail-media-info;
                 }
 
-                if root.detail-kind == "Season": VerticalLayout {
+                if root.detail-kind == DetailKind.season: VerticalLayout {
                     width: root.width;
                     padding-top: 20px;
                     padding-bottom: 28px;
@@ -2321,7 +2287,7 @@ export component JellyBridgeWindow inherits Window {
         }
     }
 
-    if root.screen == "player": Rectangle {
+    if root.screen == Screen.player: Rectangle {
         background: #000000;
         player-surface := Rectangle {
             width: parent.width;

@@ -32,7 +32,7 @@ pub fn restore_session(context: &AppContext) {
 
 pub fn start_login(context: &AppContext, server: String, username: String, password: String) {
     let generation = context.next_generation();
-    ui::set_screen_busy(context, "login", true, "");
+    ui::set_screen_busy(context, ui::Screen::Login, true, "");
     let ctx = context.clone();
     context.runtime.spawn(async move {
         let result = async {

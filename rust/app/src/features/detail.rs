@@ -405,7 +405,7 @@ pub fn start_detail(context: &AppContext, target: DetailTarget) {
         state.retry = RetryAction::Detail(target.clone());
         state.detail.update(DetailMessage::Open(target.clone()));
     }
-    ui::set_screen_busy(context, "detail", true, "");
+    ui::set_screen_busy(context, ui::Screen::Detail, true, "");
     let ctx = context.clone();
     context.runtime.spawn(async move {
         let result = api.detail_page(&target.id).await;

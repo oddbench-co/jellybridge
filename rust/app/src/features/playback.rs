@@ -50,7 +50,7 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData) {
         }
     };
     let generation = context.next_generation();
-    ui::set_screen_busy(context, "detail", true, "Preparing authenticated playback…");
+    ui::set_screen_busy(context, ui::Screen::Detail, true, "Preparing authenticated playback…");
     let ctx = context.clone();
     context.runtime.spawn(async move {
         // Settings are read here, off the UI thread, because the store does
