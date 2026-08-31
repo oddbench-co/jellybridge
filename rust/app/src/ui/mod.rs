@@ -345,9 +345,10 @@ mod tests {
             position: video_center,
             button: PointerEventButton::Left,
         });
-        assert_eq!(
-            activity_count.get(),
-            1,
+        // Pointer entry synthesizes a hover move, which also (deliberately)
+        // counts as activity now, so the click yields at least one report.
+        assert!(
+            activity_count.get() >= 1,
             "video surface must receive the click"
         );
         assert_eq!(

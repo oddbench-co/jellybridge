@@ -58,7 +58,14 @@ export component PlayerScreen inherits Rectangle {
 
         player-pointer := TouchArea {
             mouse-cursor: root.fullscreen-player && !root.controls-visible ? none : default;
-            moved => { root.player-activity(); }
+            // `moved` only fires while a button is pressed; hover movement
+            // arrives as pointer-event move, which is what should reveal the
+            // overlay like in other players.
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.move {
+                    root.player-activity();
+                }
+            }
             clicked => {
                 root.player-activity();
                 single-click-timer.start();
@@ -79,6 +86,17 @@ export component PlayerScreen inherits Rectangle {
         height: 64px;
         border-radius: root.fullscreen-player ? 10px : 0px;
         background: Theme.bg.with-alpha(0.91);
+
+        // Hovering the bar counts as activity so the overlay stays up, and
+        // clicks on its empty background don't fall through to the video
+        // surface (where they would toggle playback).
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.move {
+                    root.player-activity();
+                }
+            }
+        }
 
         HorizontalLayout {
             padding-left: 14px;
@@ -114,6 +132,14 @@ export component PlayerScreen inherits Rectangle {
         height: 158px;
         border-radius: root.fullscreen-player ? 10px : 0px;
         background: Theme.bg.with-alpha(0.93);
+
+        TouchArea {
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.move {
+                    root.player-activity();
+                }
+            }
+        }
 
         VerticalLayout {
             padding: 14px;
