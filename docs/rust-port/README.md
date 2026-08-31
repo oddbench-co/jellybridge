@@ -1,10 +1,21 @@
 # JellyBridge Rust Port
 
-Status: **baseline and vertical slice authorized; browser/core implementation locked**.
+Status: **the Rust/Slint application is the production client.** The original
+Kotlin/Compose implementation was removed from the working tree in August 2026
+(it remains in git history) after the Rust rewrite reached feature parity for
+browsing and playback. The former "vertical slice" feasibility crate was
+absorbed into `rust/app/src/services/`.
 
-The Rust work runs alongside the Kotlin application. The Kotlin implementation
-remains the behavioral reference and may not be removed until the physical
-player, packaging, parity, and performance gates pass.
+## Known parity gaps
+
+Tracked in `parity-matrix.md`. The most significant one: **playback progress
+reporting to Jellyfin** (`/Sessions/Playing`, `/Sessions/Playing/Progress`,
+`/Sessions/Playing/Stopped`) is not yet ported. The reference implementation
+lived in the Kotlin tree at
+`src/main/kotlin/dev/nk/jellybridge/api/JellyfinClient.kt` and
+`playback/PlaybackController.kt` (see git history before the Kotlin removal).
+Also missing relative to the matrix: media-type/status filters, pagination,
+chapter navigation, and auto-play-next.
 
 ## Fixed targets
 
@@ -19,20 +30,12 @@ player, packaging, parity, and performance gates pass.
 
 ## Gate artifacts
 
-- `parity-matrix.md`: frozen Kotlin behavior inventory.
+- `parity-matrix.md`: frozen Kotlin behavior inventory (historical reference).
 - `fixture-provenance.md`: fixture sources, versions, and redaction rules.
 - `performance-protocol.md`: repeatable startup and RSS measurements.
 - `native-dependency-policy.md`: release linkage and licensing requirements.
-- `packaging.md`: audited native-bundle contract and reproducible package commands.
-- `gate-report.md`: physical-machine evidence and final go/no-go decision.
-
-Until `gate-report.md` records a passing result for physical macOS arm64,
-Ubuntu 22.04 X11, and Ubuntu 22.04 Wayland, the Rust work is a feasibility
-prototype and must not grow into the replacement browser.
-
-The stress runner never manipulates the desktop by default. Resize/fullscreen
-stress requires the explicit `JELLYBRIDGE_STRESS_UI=1` opt-in and should run
-only on a dedicated certification machine.
+- `packaging.md`: packaging commands and the audited native-bundle contract.
+- `gate-report.md`: physical-machine evidence from the feasibility gate.
 
 ## Development checks
 
@@ -40,10 +43,9 @@ Use the runner so the exact Rust toolchain and development libmpv lookup are
 consistent:
 
 ```bash
-scripts/run-rust-slice.sh clippy -p jellybridge-vertical-slice --all-targets -- -D warnings
-scripts/run-rust-slice.sh test -p jellybridge-vertical-slice
-scripts/run-rust-slice.sh check -p jellybridge-vertical-slice \
-  --no-default-features --features renderer-skia-opengl --locked
+scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings
+scripts/cargo-env.sh test --locked
+scripts/cargo-env.sh check --no-default-features --features renderer-skia-opengl --locked
 ```
 
 macOS uses the Homebrew development mpv graph by default. Linux uses the

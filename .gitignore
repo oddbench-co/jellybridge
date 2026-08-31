@@ -1,20 +1,14 @@
-# Gradle / Kotlin build output
-.gradle/
-.kotlin/
-build/
-out/
+# Build output
 target/
 
-# IntelliJ / Android Studio project state
+# IDE project state
 .idea/
-*.iml
 
 # Local machine and assistant state
 .gitdata/
 .claude/
 .codex/
 .agents/
-local.properties
 
 # Logs and temporary files
 *.log

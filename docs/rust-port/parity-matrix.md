@@ -4,6 +4,14 @@ Captured from revision `b81ea06453fa` plus the user-owned working-tree package
 and icon changes present on 2026-08-30. This inventory freezes observable
 behavior; the Rust UI may change layout but not silently lose these behaviors.
 
+> The Kotlin tree was removed from the working copy after the Rust rewrite
+> became the production client; consult git history before that removal for
+> the reference implementation. Known rows still un-ported to Rust: playback
+> progress reporting (`/Sessions/Playing`, `/Progress`, `/Stopped` — formerly
+> `api/JellyfinClient.kt` and `playback/PlaybackController.kt`), media-type
+> and watched/favorite filters, pagination, chapter navigation, and
+> auto-play-next.
+
 Legend: `K` verified in Kotlin source, `T` covered by an automated Kotlin test,
 `M` requires manual characterization, `R` required of Rust before cutover.
 

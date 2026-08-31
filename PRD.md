@@ -1,5 +1,9 @@
 # JellyBridge — Product Requirements Document
 
+> Historical note: this PRD predates the August 2026 rewrite. The product is
+> now implemented in Rust with Slint and embedded libmpv; the requirements
+> below otherwise still describe the intended product.
+
 ## Overview
 
 A native desktop Jellyfin client built with Kotlin and Compose Multiplatform, using MPV as the video playback engine. The goal is to replace the existing Electron-based Jellyfin Media Player with a lightweight, native alternative that avoids transcoding entirely by relying on MPV's broad codec support.
