@@ -91,7 +91,15 @@ pub fn connect(
         move || {
             timer_state.borrow_mut().auto_hide_overlay();
             if let Some(window) = timer_weak.upgrade() {
-                window.set_controls_visible(timer_state.borrow().overlay_visible);
+                let overlay_visible = timer_state.borrow().overlay_visible;
+                window.set_controls_visible(overlay_visible);
+                // The declarative mouse-cursor binding only takes effect on
+                // the next pointer event, and any pointer event re-shows the
+                // overlay — so the cursor must be hidden imperatively when
+                // the overlay times out.
+                if !overlay_visible {
+                    set_cursor_visible(&window, false);
+                }
             }
         },
     );
@@ -106,6 +114,7 @@ pub fn connect(
             fullscreen_state.borrow_mut().set_fullscreen(fullscreen);
             window.set_fullscreen_player(fullscreen);
             window.set_controls_visible(true);
+            set_cursor_visible(&window, true);
             window.window().set_fullscreen(fullscreen);
             if fullscreen {
                 fullscreen_timer.restart();
@@ -121,6 +130,7 @@ pub fn connect(
         activity_state.borrow_mut().pointer_activity();
         if let Some(window) = weak.upgrade() {
             window.set_controls_visible(true);
+            set_cursor_visible(&window, true);
             if activity_state.borrow().fullscreen {
                 activity_timer.restart();
             }
@@ -143,6 +153,7 @@ pub fn connect(
             window.window().set_fullscreen(false);
             window.set_fullscreen_player(false);
             window.set_controls_visible(true);
+            set_cursor_visible(&window, true);
             if ctx
                 .state
                 .lock()
@@ -219,6 +230,15 @@ pub fn connect(
         true
     });
     player_ui
+}
+
+/// Shows or hides the OS cursor. Goes through the winit window because the
+/// declarative TouchArea cursor binding is only applied on pointer events.
+fn set_cursor_visible(window: &JellyBridgeWindow, visible: bool) {
+    use i_slint_backend_winit::WinitWindowAccessor;
+    window
+        .window()
+        .with_winit_window(|winit_window| winit_window.set_cursor_visible(visible));
 }
 
 /// The settings store does blocking file I/O, so track preferences are

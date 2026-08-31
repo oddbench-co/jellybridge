@@ -19,6 +19,7 @@ glow = "=0.18.0"
 http-body-util = "=0.1.5"
 hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
+i-slint-backend-winit = { version = "=1.17.1", default-features = false }
 libc = "=0.2.189"
 libloading = "=0.8.9"
 libmpv2 = "=6.0.0"

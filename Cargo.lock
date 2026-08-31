@@ -2666,6 +2666,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "i-slint-backend-winit",
  "libc",
  "libloading",
  "libmpv2",
