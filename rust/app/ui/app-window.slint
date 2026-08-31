@@ -100,6 +100,9 @@ export component JellyBridgeWindow inherits Window {
     in property <[string]> subtitle-options;
     in-out property <int> audio-index: 0;
     in-out property <int> subtitle-index: 0;
+    // Test probes forwarded from the detail screen (see ui window tests).
+    out property <length> detail-page-height;
+    out property <length> detail-page-scroll-y;
     out property <float> video-logical-width: root.width / 1px;
     out property <float> video-logical-height: max(root.height - 112px, 1px) / 1px;
 
@@ -213,6 +216,9 @@ export component JellyBridgeWindow inherits Window {
 
             if root.screen == Screen.detail: DetailScreen {
                 vertical-stretch: 1;
+                init => { root.detail-page-height = self.page-height; }
+                changed page-height => { root.detail-page-height = self.page-height; }
+                changed page-scroll-y => { root.detail-page-scroll-y = self.page-scroll-y; }
                 busy: root.busy;
                 message: root.message;
                 detail-id: root.detail-id;

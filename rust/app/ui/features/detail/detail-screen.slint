@@ -78,9 +78,18 @@ export component DetailScreen inherits Rectangle {
     private property <length> poster-overlap: 96px;
     private property <length> content-left: root.content-margin + root.poster-width + 40px;
 
+    // Test probes: scrollability of the page is asserted by a window test.
+    out property <length> page-height: content.height;
+    out property <length> page-scroll-y: scroller.viewport-y;
     background: Theme.bg;
 
-    ScrollView {
+    scroller := ScrollView {
+      // An explicit-size child does not populate the Flickable's viewport
+      // geometry (only layout children do), and the Flickable rejects wheel
+      // events unless viewport-height exceeds its height — bind it directly.
+      viewport-width: root.width;
+      viewport-height: page-layout.preferred-height;
+
       content := Rectangle {
         width: root.width;
         height: page-layout.preferred-height;

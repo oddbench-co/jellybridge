@@ -221,6 +221,59 @@ mod tests {
         window
     }
 
+
+    #[test]
+    fn season_page_scrolls_with_the_wheel() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Detail);
+        ui.set_detail_kind(super::DetailKind::Season);
+        let episodes = (0..30)
+            .map(|i| super::DetailCard {
+                id: format!("e{i}").into(),
+                title: format!("Episode {i}").into(),
+                subtitle: "40 min".into(),
+                overview: "An overview line that wraps a little bit.".into(),
+                kind: "Episode".into(),
+                artwork: Default::default(),
+                watched: false,
+                favorite: false,
+                progress: 0.4,
+                unplayed_count: 0,
+                rating: 6.4,
+                ends_at: "Ends at 4:00 PM".into(),
+                index_label: format!("{i}.").into(),
+            })
+            .collect::<Vec<_>>();
+        ui.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
+        ui.show().expect("show");
+        platform_window.draw_if_needed(|_| {});
+        assert!(
+            ui.get_detail_page_height() > 2000.0,
+            "the episode rows must grow the page beyond the viewport"
+        );
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(640.0, 400.0),
+        });
+        platform_window.draw_if_needed(|_| {});
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position: LogicalPosition::new(640.0, 400.0),
+            delta_x: 0.0,
+            delta_y: -240.0,
+        });
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            slint::platform::update_timers_and_animations();
+            platform_window.draw_if_needed(|_| {});
+        }
+        assert!(
+            ui.get_detail_page_scroll_y() < -1.0,
+            "wheel scrolling over the episode list must scroll the page; viewport stayed at {}",
+            ui.get_detail_page_scroll_y()
+        );
+    }
+
     #[test]
     fn player_entry_restores_hotkeys_after_detail_focus_is_removed() {
         let platform_window = setup_test_window();
