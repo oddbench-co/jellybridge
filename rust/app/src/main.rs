@@ -6,11 +6,7 @@ mod services;
 mod session;
 
 use std::cell::{Cell, RefCell};
-use std::collections::hash_map::DefaultHasher;
-use std::fs::{self, File, OpenOptions};
-use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,6 +17,7 @@ use detail::{
     DetailEffect, DetailItemData, DetailKind, DetailMessage, DetailModel, DetailMutationKind,
     DetailPageData, DetailTarget, ImageRef,
 };
+use services::artwork::{existing_cached_image, image_cache_path, write_cached_image};
 use services::playback::{
     PlaybackConfig, PreparedPlayback, prepare_playback,
 };
@@ -1620,6 +1617,7 @@ fn logout(context: &AppContext) {
     if let Ok(mut tracks) = context.player_tracks.lock() {
         *tracks = PlayerTrackState::default();
     }
+    let _ = slint::invoke_from_event_loop(clear_image_cache);
     show_login(context, message.as_deref().unwrap_or(""));
 }
 
@@ -1707,9 +1705,10 @@ fn show_current_catalog(context: &AppContext, message: &str) {
             window.set_account_initial(account_initial.into());
             window.set_can_go_back(can_go_back);
             window.set_sections(ModelRc::new(VecModel::from(ui_sections)));
-            window.set_catalog_items(ModelRc::new(VecModel::from(
-                ui_item_data.into_iter().map(to_ui_item).collect::<Vec<_>>(),
-            )));
+            let items = ui_item_data.into_iter().map(to_ui_item).collect::<Vec<_>>();
+            if !patch_rows(&window.get_catalog_items(), &items, |a, b| a.id == b.id) {
+                window.set_catalog_items(ModelRc::new(VecModel::from(items)));
+            }
         }
     });
     load_artwork(context, generation, artwork_items);
@@ -1813,26 +1812,31 @@ fn show_current_detail(context: &AppContext, generation: u64) {
         .collect::<Vec<_>>();
     let audio_index = tracks.audio_index;
     let subtitle_index = tracks.subtitle_index;
+    let hero_poster_key = primary_card_image(&page.item).map(image_key);
+    let hero_backdrop_key = page.item.backdrop.as_ref().map(image_key);
+    let hero_logo_key = page.item.logo.as_ref().map(image_key);
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(window) = weak.upgrade() {
-            let same_item = window.get_detail_id().as_str() == detail_id;
-            let poster = same_item.then(|| window.get_detail_artwork());
-            let backdrop = same_item.then(|| window.get_detail_backdrop());
-            let logo = same_item.then(|| window.get_detail_logo());
-            let mut seasons = seasons.iter().map(to_detail_card).collect::<Vec<_>>();
-            let mut episodes = episodes.iter().map(to_detail_card).collect::<Vec<_>>();
-            let mut people = people
+            let hero_image = |key: Option<String>| {
+                key.as_deref()
+                    .and_then(cached_image)
+                    .unwrap_or_default()
+            };
+            let seasons = seasons.iter().map(to_detail_card).collect::<Vec<_>>();
+            let episodes = episodes.iter().map(to_detail_card).collect::<Vec<_>>();
+            let people = people
                 .iter()
                 .map(|person| DetailPerson {
                     id: person.id.as_deref().unwrap_or_default().into(),
                     name: person.name.as_str().into(),
                     role: person.role.as_str().into(),
-                    artwork: Image::default(),
+                    artwork: person
+                        .image
+                        .as_ref()
+                        .and_then(|image| cached_image(&image_key(image)))
+                        .unwrap_or_default(),
                 })
                 .collect::<Vec<_>>();
-            preserve_detail_card_artwork(&window.get_detail_seasons(), &mut seasons);
-            preserve_detail_card_artwork(&window.get_detail_episodes(), &mut episodes);
-            preserve_detail_people_artwork(&window.get_detail_people(), &mut people);
             window.set_screen("detail".into());
             window.set_busy(false);
             window.set_message(message.into());
@@ -1859,12 +1863,20 @@ fn show_current_detail(context: &AppContext, generation: u64) {
             window.set_detail_watched(watched);
             window.set_detail_favorite(favorite);
             window.set_detail_wide_art(wide_art);
-            window.set_detail_artwork(poster.unwrap_or_default());
-            window.set_detail_backdrop(backdrop.unwrap_or_default());
-            window.set_detail_logo(logo.unwrap_or_default());
-            window.set_detail_seasons(ModelRc::new(VecModel::from(seasons)));
-            window.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
-            window.set_detail_people(ModelRc::new(VecModel::from(people)));
+            window.set_detail_artwork(hero_image(hero_poster_key));
+            window.set_detail_backdrop(hero_image(hero_backdrop_key));
+            window.set_detail_logo(hero_image(hero_logo_key));
+            if !patch_rows(&window.get_detail_seasons(), &seasons, |a, b| a.id == b.id) {
+                window.set_detail_seasons(ModelRc::new(VecModel::from(seasons)));
+            }
+            if !patch_rows(&window.get_detail_episodes(), &episodes, |a, b| a.id == b.id) {
+                window.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
+            }
+            if !patch_rows(&window.get_detail_people(), &people, |a, b| {
+                a.id == b.id && a.name == b.name
+            }) {
+                window.set_detail_people(ModelRc::new(VecModel::from(people)));
+            }
             window.set_detail_audio_options(ModelRc::new(VecModel::from(
                 audio_options
                     .into_iter()
@@ -1885,28 +1897,6 @@ fn show_current_detail(context: &AppContext, generation: u64) {
     load_detail_artwork(context, generation, &page);
 }
 
-fn preserve_detail_card_artwork(model: &ModelRc<DetailCard>, rows: &mut [DetailCard]) {
-    for row in rows {
-        if let Some(previous) = (0..model.row_count())
-            .filter_map(|index| model.row_data(index))
-            .find(|previous| previous.id == row.id)
-        {
-            row.artwork = previous.artwork;
-        }
-    }
-}
-
-fn preserve_detail_people_artwork(model: &ModelRc<DetailPerson>, rows: &mut [DetailPerson]) {
-    for row in rows {
-        if let Some(previous) = (0..model.row_count())
-            .filter_map(|index| model.row_data(index))
-            .find(|previous| previous.id == row.id && previous.name == row.name)
-        {
-            row.artwork = previous.artwork;
-        }
-    }
-}
-
 fn to_detail_card(item: &DetailItemData) -> DetailCard {
     DetailCard {
         id: item.id.as_str().into(),
@@ -1914,7 +1904,9 @@ fn to_detail_card(item: &DetailItemData) -> DetailCard {
         subtitle: detail_card_subtitle(item).into(),
         overview: item.overview.as_str().into(),
         kind: detail_kind_name(item.kind).into(),
-        artwork: Image::default(),
+        artwork: primary_card_image(item)
+            .and_then(|image| cached_image(&image_key(image)))
+            .unwrap_or_default(),
         watched: item.watched,
         favorite: item.favorite,
         progress: item.progress,
@@ -2101,6 +2093,87 @@ fn detail_season_summary(page: &DetailPageData) -> String {
     }
 }
 
+// UI-thread cache of loaded artwork, keyed by the image identity. Presenters
+// populate rows from it at construction time, so replacing a model never
+// loses already-loaded images; fetch tasks insert into it even when their
+// navigation generation has gone stale, because a fetched image stays valid.
+thread_local! {
+    static IMAGE_CACHE: RefCell<std::collections::HashMap<String, Image>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+const IMAGE_CACHE_CAP: usize = 1024;
+
+fn cached_image(key: &str) -> Option<Image> {
+    IMAGE_CACHE.with(|cache| cache.borrow().get(key).cloned())
+}
+
+fn store_cached_image(key: String, image: Image) {
+    IMAGE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= IMAGE_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(key, image);
+    });
+}
+
+fn clear_image_cache() {
+    IMAGE_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+fn image_key(image: &ImageRef) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        image.item_id,
+        image.image_type.jellyfin_name(),
+        image.index.unwrap_or(0),
+        image.tag
+    )
+}
+
+fn catalog_image_key(image_item_id: &str, tag: &str) -> String {
+    format!("{image_item_id}:Primary:0:{tag}")
+}
+
+/// The image shown on a card (and the detail hero): episodes prefer their
+/// widescreen thumbnail. Fetchers and presenters must agree on this choice so
+/// cache lookups hit.
+fn primary_card_image(item: &DetailItemData) -> Option<&ImageRef> {
+    if item.kind == DetailKind::Episode {
+        item.thumbnail.as_ref().or(item.poster.as_ref())
+    } else {
+        item.poster.as_ref()
+    }
+}
+
+/// Updates only the rows that changed when the new rows describe the same
+/// item sequence as the current model; returns false when the caller should
+/// replace the model wholesale (different items, order, or length).
+fn patch_rows<T: Clone + PartialEq + 'static>(
+    model: &ModelRc<T>,
+    rows: &[T],
+    same_identity: impl Fn(&T, &T) -> bool,
+) -> bool {
+    if model.row_count() != rows.len() {
+        return false;
+    }
+    let aligned = rows.iter().enumerate().all(|(index, row)| {
+        model
+            .row_data(index)
+            .is_some_and(|previous| same_identity(&previous, row))
+    });
+    if !aligned {
+        return false;
+    }
+    for (index, row) in rows.iter().enumerate() {
+        if model.row_data(index).as_ref() != Some(row) {
+            model.set_row_data(index, row.clone());
+        }
+    }
+    true
+}
+
 #[derive(Clone)]
 enum DetailArtworkTarget {
     HeroPoster(String),
@@ -2124,15 +2197,7 @@ enum DetailArtworkTarget {
 fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageData) {
     let item_id = page.item.id.clone();
     let mut requests = Vec::new();
-    let hero_poster = if page.item.kind == DetailKind::Episode {
-        page.item
-            .thumbnail
-            .clone()
-            .or_else(|| page.item.poster.clone())
-    } else {
-        page.item.poster.clone()
-    };
-    if let Some(image) = hero_poster {
+    if let Some(image) = primary_card_image(&page.item).cloned() {
         requests.push((DetailArtworkTarget::HeroPoster(item_id.clone()), image));
     }
     if let Some(image) = page.item.backdrop.clone() {
@@ -2142,7 +2207,7 @@ fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageD
         requests.push((DetailArtworkTarget::HeroLogo(item_id), image));
     }
     requests.extend(page.seasons.iter().enumerate().filter_map(|(index, item)| {
-        item.poster.clone().map(|image| {
+        primary_card_image(item).cloned().map(|image| {
             (
                 DetailArtworkTarget::Season {
                     index,
@@ -2157,18 +2222,15 @@ fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageD
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
-                item.thumbnail
-                    .clone()
-                    .or_else(|| item.poster.clone())
-                    .map(|image| {
-                        (
-                            DetailArtworkTarget::Episode {
-                                index,
-                                id: item.id.clone(),
-                            },
-                            image,
-                        )
-                    })
+                primary_card_image(item).cloned().map(|image| {
+                    (
+                        DetailArtworkTarget::Episode {
+                            index,
+                            id: item.id.clone(),
+                        },
+                        image,
+                    )
+                })
             }),
     );
     requests.extend(
@@ -2237,16 +2299,20 @@ fn load_detail_image(
                 Err(error) => Err(error.to_string()),
             }
         };
-        if !ctx.is_current(generation) {
-            return;
-        }
         if let Ok(path) = result {
             let weak = ctx.window.clone();
+            let key = image_key(&image);
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(window) = weak.upgrade() else { return };
                 let Ok(image) = Image::load_from_path(&path) else {
                     return;
                 };
+                // A fetched image stays valid regardless of navigation, so it
+                // is cached even when this request's generation went stale.
+                store_cached_image(key, image.clone());
+                if !ctx.is_current(generation) {
+                    return;
+                }
                 match target {
                     DetailArtworkTarget::HeroPoster(id)
                         if window.get_detail_id().as_str() == id =>
@@ -2325,17 +2391,19 @@ fn load_artwork(context: &AppContext, generation: u64, items: Vec<CatalogItemDat
                     Err(error) => Err(error.to_string()),
                 }
             };
-            if !ctx.is_current(generation) {
-                return;
-            }
             if let Ok(path) = result {
                 let weak = ctx.window.clone();
                 let item_id = item.id;
+                let key = catalog_image_key(&item.image_item_id, &tag);
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(window) = weak.upgrade() else { return };
                     let Ok(image) = Image::load_from_path(&path) else {
                         return;
                     };
+                    store_cached_image(key, image.clone());
+                    if !ctx.is_current(generation) {
+                        return;
+                    }
                     let model = window.get_catalog_items();
                     if let Some(mut row) = model.row_data(index)
                         && row.id.as_str() == item_id
@@ -2347,84 +2415,6 @@ fn load_artwork(context: &AppContext, generation: u64, items: Vec<CatalogItemDat
             }
         });
     }
-}
-
-fn image_cache_path(directory: &Path, server: &str, item_id: &str, tag: &str) -> PathBuf {
-    let mut hasher = DefaultHasher::new();
-    server.hash(&mut hasher);
-    item_id.hash(&mut hasher);
-    tag.hash(&mut hasher);
-    directory.join(format!("{:016x}.jpg", hasher.finish()))
-}
-
-fn existing_cached_image(path: &Path) -> Option<PathBuf> {
-    for extension in ["jpg", "png", "webp", "gif"] {
-        let candidate = path.with_extension(extension);
-        if !candidate.is_file() {
-            continue;
-        }
-        let mut header = [0_u8; 12];
-        let read = File::open(&candidate)
-            .and_then(|mut file| file.read(&mut header))
-            .ok()?;
-        let corrected = path.with_extension(image_extension(&header[..read]));
-        if corrected == candidate {
-            return Some(candidate);
-        }
-        if corrected.is_file() || fs::rename(&candidate, &corrected).is_ok() {
-            return Some(corrected);
-        }
-    }
-    None
-}
-
-fn image_extension(data: &[u8]) -> &'static str {
-    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "png"
-    } else if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-        "gif"
-    } else if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
-        "webp"
-    } else {
-        "jpg"
-    }
-}
-
-fn write_cached_image(path: &Path, data: &[u8]) -> Result<PathBuf, String> {
-    let path = path.with_extension(image_extension(data));
-    let parent = path.parent().ok_or("image cache has no parent")?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temporary = parent.join(format!(
-        ".image-{}-{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    let result = (|| -> Result<(), String> {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temporary)
-            .map_err(|error| error.to_string())?;
-        file.write_all(data).map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-        fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
-    }
-    result.map(|()| path)
 }
 
 fn to_ui_item(item: CatalogItemData) -> CatalogItem {
@@ -2442,7 +2432,11 @@ fn to_ui_item(item: CatalogItemData) -> CatalogItem {
         kind_label: catalog_kind_label(&item.kind).into(),
         kind: item.kind.into(),
         placeholder: placeholder.into(),
-        artwork: Image::default(),
+        artwork: item
+            .image_tag
+            .as_deref()
+            .and_then(|tag| cached_image(&catalog_image_key(&item.image_item_id, tag)))
+            .unwrap_or_default(),
         watched: item.watched,
         progress: item.progress,
         is_container: item.is_container,
@@ -2514,7 +2508,7 @@ mod tests {
         StoredSettings, detail::DetailItemData, detail::DetailKind, detail::DetailPageData,
         detail::StreamData, detail_metadata_line, detail_progress_label, detail_season_summary,
         detail_series_play_context, detail_series_summary, empty_search_destination,
-        image_extension, playback_preference_key, resolved_playback_sources,
+        playback_preference_key, resolved_playback_sources,
     };
 
     thread_local! {
@@ -2847,13 +2841,6 @@ mod tests {
         );
 
         assert_eq!(resolved_playback_sources(&movie, &settings).1, Some(-1));
-    }
-
-    #[test]
-    fn cached_images_keep_their_encoded_format() {
-        assert_eq!(image_extension(b"\x89PNG\r\n\x1a\nrest"), "png");
-        assert_eq!(image_extension(b"\xff\xd8\xffrest"), "jpg");
-        assert_eq!(image_extension(b"RIFF1234WEBPrest"), "webp");
     }
 
     #[test]
