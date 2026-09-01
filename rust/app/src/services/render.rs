@@ -39,10 +39,11 @@ pub enum RenderError {
     WakeThread(#[source] std::io::Error),
 }
 
-// The display variants are only constructed on Linux; other targets see them
-// as dead code but the mpv render-param match must still cover them.
+// Every target constructs only a subset of these -- X11/Wayland on Linux,
+// None everywhere else -- but the mpv render-param match must still cover
+// them all, so the unused ones are dead code on any single target.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[allow(dead_code)]
 pub enum NativeDisplay {
     None,
     X11(*const c_void),
@@ -52,11 +53,11 @@ pub enum NativeDisplay {
 pub fn native_display(window: &slint::Window) -> Result<NativeDisplay, RenderError> {
     #[cfg(target_os = "linux")]
     {
-        let handle = window
-            .window_handle()
+        let window_handle = window.window_handle();
+        let handle = window_handle
             .display_handle()
             .map_err(|_| RenderError::UnsupportedDisplay)?;
-        return match handle.as_raw() {
+        match handle.as_raw() {
             RawDisplayHandle::Xlib(display) => display
                 .display
                 .map(|pointer| NativeDisplay::X11(pointer.as_ptr()))
@@ -65,7 +66,7 @@ pub fn native_display(window: &slint::Window) -> Result<NativeDisplay, RenderErr
                 Ok(NativeDisplay::Wayland(display.display.as_ptr()))
             }
             _ => Err(RenderError::UnsupportedDisplay),
-        };
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
