@@ -85,6 +85,9 @@ export component DetailScreen inherits Rectangle {
     // Test probes: scrollability of the page is asserted by a window test.
     out property <length> page-height: content.height;
     out property <length> page-scroll-y: scroller.viewport-y;
+    // The cast shelf lives inside an `if`, so it cannot be named from here;
+    // it pushes its offset out through a changed handler instead.
+    out property <length> people-scroll-x;
     background: Theme.bg;
 
     scroller := ScrollView {
@@ -511,6 +514,7 @@ export component DetailScreen inherits Rectangle {
                 width: root.width;
                 height: 220px;
                 people: root.detail-people;
+                changed offset-x => { root.people-scroll-x = self.offset-x; }
             }
         }
 

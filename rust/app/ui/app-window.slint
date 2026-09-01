@@ -103,6 +103,8 @@ export component JellyBridgeWindow inherits Window {
     // Test probes forwarded from the detail screen (see ui window tests).
     out property <length> detail-page-height;
     out property <length> detail-page-scroll-y;
+    out property <length> detail-people-scroll-x;
+    out property <length> catalog-home-scroll-y;
     out property <float> video-logical-width: root.width / 1px;
     out property <float> video-logical-height: max(root.height - 112px, 1px) / 1px;
 
@@ -195,6 +197,7 @@ export component JellyBridgeWindow inherits Window {
             }
 
             if root.screen == Screen.catalog: CatalogScreen {
+                changed home-scroll-y => { root.catalog-home-scroll-y = self.home-scroll-y; }
                 busy: root.busy;
                 message: root.message;
                 page-title: root.page-title;
@@ -219,6 +222,7 @@ export component JellyBridgeWindow inherits Window {
                 init => { root.detail-page-height = self.page-height; }
                 changed page-height => { root.detail-page-height = self.page-height; }
                 changed page-scroll-y => { root.detail-page-scroll-y = self.page-scroll-y; }
+                changed people-scroll-x => { root.detail-people-scroll-x = self.people-scroll-x; }
                 busy: root.busy;
                 message: root.message;
                 detail-id: root.detail-id;

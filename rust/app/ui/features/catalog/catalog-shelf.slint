@@ -8,6 +8,7 @@ export component CatalogShelf inherits Rectangle {
     in property <[CatalogItem]> items;
     in property <length> card-width: 176px;
     callback open-item(string, string, bool, bool);
+    callback vertical-scroll(delta-y: length);
     property <length> content-width: root.section.count * (root.card-width + 16px) - 16px;
     property <length> shelf-offset-x: 0px;
     property <length> minimum-shelf-offset: min(0px, shelf.width - root.content-width);
@@ -17,6 +18,22 @@ export component CatalogShelf inherits Rectangle {
 
     height: card-width * 1.5 + 112px;
     background: transparent;
+
+    // Fallback scroll layer for the whole shelf. The enclosing ListView's own
+    // wheel handling does not reach every part of a shelf: the section title,
+    // the gaps, the 24px side margins, and above all the empty space to the
+    // right of the last card. That space is small in a narrow window and huge
+    // in a wide one -- a two-card Libraries row leaves ~2000px of it once the
+    // window fills the workspace -- which is why the page went unscrollable
+    // only after the window was made full-size. Declared first so it sits
+    // behind the cards and the shelf's own horizontal scroll layer, which keep
+    // priority for their own gestures.
+    TouchArea {
+        scroll-event(event) => {
+            root.vertical-scroll(event.delta-y);
+            return accept;
+        }
+    }
 
     Text {
         x: 24px;

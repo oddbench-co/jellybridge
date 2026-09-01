@@ -274,6 +274,451 @@ mod tests {
         );
     }
 
+    /// Drives the window through the event loop so scroll animations settle.
+    fn settle(platform_window: &Rc<MinimalSoftwareWindow>) {
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            slint::platform::update_timers_and_animations();
+            platform_window.draw_if_needed(|_| {});
+        }
+    }
+
+    fn season_episodes(count: usize) -> Vec<super::DetailCard> {
+        (0..count)
+            .map(|i| super::DetailCard {
+                id: format!("e{i}").into(),
+                title: format!("Episode {i}").into(),
+                subtitle: "40 min".into(),
+                overview: "An overview line that wraps a little bit.".into(),
+                kind: "Episode".into(),
+                artwork: Default::default(),
+                watched: false,
+                favorite: false,
+                progress: 0.4,
+                unplayed_count: 0,
+                rating: 6.4,
+                ends_at: "Ends at 4:00 PM".into(),
+                index_label: format!("{i}.").into(),
+            })
+            .collect()
+    }
+
+    /// A scroll offset is only clamped where it is written, against the bounds
+    /// in force at that moment. Growing the window shrinks the scrollable
+    /// range, so an offset captured while the window was small is left out of
+    /// range -- the page renders scrolled past its own end and looks stuck.
+    #[test]
+    fn detail_page_scroll_is_reclamped_when_the_window_grows() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Detail);
+        ui.set_detail_kind(super::DetailKind::Season);
+        ui.set_detail_episodes(ModelRc::new(VecModel::from(season_episodes(30))));
+        ui.show().expect("show");
+        platform_window.draw_if_needed(|_| {});
+
+        // Scroll to the bottom of a page that is far taller than the viewport.
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(640.0, 400.0),
+        });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..12 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: LogicalPosition::new(640.0, 400.0),
+                delta_x: 0.0,
+                delta_y: -480.0,
+            });
+            settle(&platform_window);
+        }
+        let scrolled = ui.get_detail_page_scroll_y();
+        assert!(
+            scrolled < -1.0,
+            "precondition: the page must be scrolled before the resize, was {scrolled}"
+        );
+
+        // Grow the window past the full page height: nothing is scrollable any
+        // more, so the only valid offset is 0.
+        let page_height = ui.get_detail_page_height();
+        platform_window.set_size(PhysicalSize::new(1280, page_height as u32 + 400));
+        settle(&platform_window);
+
+        assert!(
+            ui.get_detail_page_scroll_y().abs() < 1.0,
+            "a viewport taller than the page must reset the scroll offset; it stayed at {} \
+             (page height {page_height})",
+            ui.get_detail_page_scroll_y()
+        );
+    }
+
+    /// Same defect on the horizontal axis: the shared ShelfScrollArea clamps
+    /// offset-x only inside its own scroll-event, so widening the window leaves
+    /// the shelf scrolled past its new end, showing blank space after the last
+    /// card until the next wheel tick snaps it back.
+    #[test]
+    fn shelf_offset_is_reclamped_when_the_window_grows() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        platform_window.set_size(PhysicalSize::new(700, 800));
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Detail);
+        ui.set_detail_kind(super::DetailKind::Movie);
+        // Cards are 112px + 14px of spacing and the shelf viewport is capped at
+        // 1180px (people-shelf.slint), so keep the cast narrow enough to fit
+        // inside that cap once the window is wide -- otherwise the shelf stays
+        // legitimately scrollable and there is nothing to reset to zero.
+        let people = (0..8)
+            .map(|i| super::DetailPerson {
+                id: format!("p{i}").into(),
+                name: format!("Performer {i}").into(),
+                role: format!("Role {i}").into(),
+                artwork: Default::default(),
+            })
+            .collect::<Vec<_>>();
+        ui.set_detail_people(ModelRc::new(VecModel::from(people)));
+        ui.show().expect("show");
+        settle(&platform_window);
+
+        // Scroll the cast shelf to its right-hand end. The shelf sits below the
+        // hero, so aim at the lower half of the page.
+        let cast_y = 700.0;
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: LogicalPosition::new(350.0, cast_y),
+        });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..12 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: LogicalPosition::new(350.0, cast_y),
+                delta_x: -400.0,
+                delta_y: 0.0,
+            });
+            settle(&platform_window);
+        }
+        let scrolled = ui.get_detail_people_scroll_x();
+        assert!(
+            scrolled < -1.0,
+            "precondition: the cast shelf must be scrolled before the resize, was {scrolled}"
+        );
+
+        // Widen past the full content width: the cast now fits inside the
+        // shelf's 1180px viewport cap, so the only valid offset is 0.
+        platform_window.set_size(PhysicalSize::new(4000, 800));
+        settle(&platform_window);
+
+        assert!(
+            ui.get_detail_people_scroll_x().abs() < 1.0,
+            "a viewport wider than the shelf must reset its offset; it stayed at {}",
+            ui.get_detail_people_scroll_x()
+        );
+    }
+
+    /// Reproduces the reported failure: the app starts on half a screen, is
+    /// moved to a monitor where it fills the workspace, and the wheel stops
+    /// scrolling the home page.
+    #[test]
+    fn home_still_scrolls_after_the_window_is_enlarged() {
+        let platform_window = setup_test_window();
+        // Half of a 2560x1440 workspace, roughly what the app starts on.
+        platform_window.set_size(PhysicalSize::new(1280, 1400));
+        let ui = JellyBridgeWindow::new().expect("create window");
+        show_home(&ui, &platform_window);
+
+        // Scrolling works at the starting size.
+        let scrolled_small = scroll_home(&ui, &platform_window);
+        assert!(
+            scrolled_small < -1.0,
+            "precondition: the home page must scroll at the starting size, was {scrolled_small}"
+        );
+
+        // Move to the big monitor: the window now fills a 2560x1440 workspace.
+        platform_window.set_size(PhysicalSize::new(2560, 1440));
+        settle(&platform_window);
+
+        let before = ui.get_catalog_home_scroll_y();
+        let scrolled_large = scroll_home(&ui, &platform_window);
+        assert!(
+            scrolled_large < before - 1.0,
+            "the home page must still scroll after the window is enlarged; \
+             offset went {before} -> {scrolled_large}"
+        );
+    }
+
+    /// Builds a home page of ten six-card shelves and shows it.
+    fn show_home(ui: &JellyBridgeWindow, platform_window: &Rc<MinimalSoftwareWindow>) {
+        use slint::{ModelRc, VecModel};
+        ui.set_screen(Screen::Catalog);
+        ui.set_catalog_home(true);
+        ui.set_tile_target_width(176.0);
+        let items = (0..100)
+            .map(|i| super::CatalogItem {
+                id: format!("i{i}").into(),
+                title: format!("Title {i}").into(),
+                subtitle: "2024".into(),
+                kind_label: "Movie".into(),
+                kind: "Movie".into(),
+                placeholder: "T".into(),
+                artwork: Default::default(),
+                watched: false,
+                progress: 0.0,
+                is_container: false,
+                playable: true,
+            })
+            .collect::<Vec<_>>();
+        let sections = (0..10)
+            .map(|s| super::CatalogSection {
+                id: format!("s{s}").into(),
+                title: format!("Section {s}").into(),
+                start_index: s * 10,
+                count: 10,
+            })
+            .collect::<Vec<_>>();
+        ui.set_catalog_items(ModelRc::new(VecModel::from(items)));
+        ui.set_sections(ModelRc::new(VecModel::from(sections)));
+        ui.show().expect("show");
+        settle(platform_window);
+    }
+
+    /// The reported failure. A shelf locks the gesture axis to horizontal while
+    /// the window is narrow enough for its cards to overflow. Moving the window
+    /// to an empty workspace retiles it full-width, so the shelf now fits and
+    /// can no longer scroll horizontally -- but the stale lock keeps swallowing
+    /// vertical wheel events, and because every event restarts the 200ms
+    /// release timer, scrolling without pausing keeps the lock alive forever.
+    /// The page comes back only once the user stops scrolling long enough for
+    /// the timer to fire, which is why it "fixed itself after a while".
+    ///
+    /// No sleeping here: the wheel ticks arrive back to back exactly as they do
+    /// from a real wheel, so the release timer never gets its 200ms.
+    #[test]
+    fn home_still_scrolls_when_a_stale_shelf_lock_survives_widening() {
+        let platform_window = setup_test_window();
+        // Tiled to half of the 3840x2160 workspace (scale 1.5 => 2560x1440
+        // logical), so a six-card shelf overflows its viewport.
+        platform_window.set_size(PhysicalSize::new(1280, 1440));
+        let ui = JellyBridgeWindow::new().expect("create window");
+        show_home(&ui, &platform_window);
+
+        // Scroll a shelf sideways: the axis locks to horizontal.
+        let position = LogicalPosition::new(640.0, 400.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        platform_window.draw_if_needed(|_| {});
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position,
+            delta_x: -120.0,
+            delta_y: -8.0,
+        });
+        platform_window.draw_if_needed(|_| {});
+
+        // Moved to the empty workspace: full width, every shelf now fits.
+        platform_window.set_size(PhysicalSize::new(2560, 1440));
+        platform_window.draw_if_needed(|_| {});
+
+        // Keep scrolling vertically, back to back, as a frustrated user would.
+        let before = ui.get_catalog_home_scroll_y();
+        let position = LogicalPosition::new(1280.0, 400.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..8 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position,
+                delta_x: 0.0,
+                delta_y: -240.0,
+            });
+            platform_window.draw_if_needed(|_| {});
+        }
+
+        assert!(
+            ui.get_catalog_home_scroll_y() < before - 1.0,
+            "a shelf that no longer overflows must not swallow the page's \
+             vertical scrolling; offset stayed at {}",
+            ui.get_catalog_home_scroll_y()
+        );
+    }
+
+    /// Every point of a full-width home page must scroll it. The wheel used to
+    /// be dropped wherever the enclosing ListView did not handle it -- section
+    /// titles, gaps, side margins, and the empty space right of the last card,
+    /// which is ~2000px wide on a two-card row once the window fills the
+    /// workspace. That is why the page went unscrollable only at full size.
+    #[test]
+    fn home_scrolls_from_every_point_at_full_width() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        platform_window.set_size(PhysicalSize::new(2560, 1440));
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Catalog);
+        ui.set_catalog_home(true);
+        ui.set_tile_target_width(176.0);
+        // Realistic home: a 2-card "Libraries" row first, then full rows.
+        let items = (0..62)
+            .map(|i| super::CatalogItem {
+                id: format!("i{i}").into(),
+                title: format!("Title {i}").into(),
+                subtitle: "2024".into(),
+                kind_label: "Movie".into(),
+                kind: "Movie".into(),
+                placeholder: "T".into(),
+                artwork: Default::default(),
+                watched: false,
+                progress: 0.0,
+                is_container: false,
+                playable: true,
+            })
+            .collect::<Vec<_>>();
+        let mut sections = vec![super::CatalogSection {
+            id: "lib".into(),
+            title: "Libraries".into(),
+            start_index: 0,
+            count: 2,
+        }];
+        for s in 0..10 {
+            sections.push(super::CatalogSection {
+                id: format!("s{s}").into(),
+                title: format!("Section {s}").into(),
+                start_index: 2 + s * 6,
+                count: 6,
+            });
+        }
+        ui.set_catalog_items(ModelRc::new(VecModel::from(items)));
+        ui.set_sections(ModelRc::new(VecModel::from(sections)));
+        ui.show().expect("show");
+        settle(&platform_window);
+
+        // Park the page mid-scroll so both directions are available.
+        let start = LogicalPosition::new(1280.0, 180.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position: start });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..4 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: start,
+                delta_x: 0.0,
+                delta_y: -240.0,
+            });
+            settle(&platform_window);
+        }
+        assert!(
+            ui.get_catalog_home_scroll_y() < -1.0,
+            "precondition: the home page must be parked mid-scroll"
+        );
+
+        let mut dead = Vec::new();
+        // Sample the title strip, the card row, the gap below it, and the
+        // margins/empty space either side of a short row.
+        for y in [170.0, 230.0, 400.0, 560.0, 700.0] {
+            for x in [12.0, 600.0, 2200.0, 2550.0] {
+                let position = LogicalPosition::new(x, y);
+                ui.window()
+                    .dispatch_event(WindowEvent::PointerMoved { position });
+                platform_window.draw_if_needed(|_| {});
+                let before = ui.get_catalog_home_scroll_y();
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: -240.0,
+                });
+                settle(&platform_window);
+                let moved = ui.get_catalog_home_scroll_y() < before - 0.5;
+                // Undo, so the page cannot creep to its end and read DEAD
+                // simply because there is nothing left to scroll.
+                ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                    position,
+                    delta_x: 0.0,
+                    delta_y: 240.0,
+                });
+                settle(&platform_window);
+                if !moved {
+                    dead.push(format!("({x}, {y})"));
+                }
+            }
+        }
+        assert!(
+            dead.is_empty(),
+            "the wheel must scroll the home page everywhere; dead at: {}",
+            dead.join(", ")
+        );
+    }
+
+    /// The detail page hand-rolls its wheel handling, so it gets the same
+    /// enlarge-the-window check as home.
+    #[test]
+    fn detail_still_scrolls_after_the_window_is_enlarged() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        platform_window.set_size(PhysicalSize::new(1280, 1400));
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Detail);
+        ui.set_detail_kind(super::DetailKind::Season);
+        ui.set_detail_episodes(ModelRc::new(VecModel::from(season_episodes(40))));
+        ui.show().expect("show");
+        settle(&platform_window);
+
+        let position = LogicalPosition::new(640.0, 700.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        platform_window.draw_if_needed(|_| {});
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position,
+            delta_x: 0.0,
+            delta_y: -240.0,
+        });
+        settle(&platform_window);
+        assert!(
+            ui.get_detail_page_scroll_y() < -1.0,
+            "precondition: the detail page must scroll at the starting size"
+        );
+
+        // Fill a 2560x1440 workspace. 40 episodes still overflow it.
+        platform_window.set_size(PhysicalSize::new(2560, 1440));
+        settle(&platform_window);
+        assert!(
+            ui.get_detail_page_height() > 1440.0,
+            "precondition: the page must still overflow the enlarged viewport, was {}",
+            ui.get_detail_page_height()
+        );
+
+        let before = ui.get_detail_page_scroll_y();
+        let position = LogicalPosition::new(1280.0, 700.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..3 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position,
+                delta_x: 0.0,
+                delta_y: -240.0,
+            });
+            settle(&platform_window);
+        }
+        assert!(
+            ui.get_detail_page_scroll_y() < before - 1.0,
+            "the detail page must still scroll after the window is enlarged; \
+             offset went {before} -> {}",
+            ui.get_detail_page_scroll_y()
+        );
+    }
+
+    /// Sends a few wheel ticks over the middle of the home page and returns the
+    /// resulting scroll offset.
+    fn scroll_home(ui: &JellyBridgeWindow, platform_window: &Rc<MinimalSoftwareWindow>) -> f32 {
+        let width = ui.get_video_logical_width();
+        let position = LogicalPosition::new(width / 2.0, 500.0);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        platform_window.draw_if_needed(|_| {});
+        for _ in 0..3 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position,
+                delta_x: 0.0,
+                delta_y: -240.0,
+            });
+            settle(platform_window);
+        }
+        ui.get_catalog_home_scroll_y()
+    }
+
     #[test]
     fn player_entry_restores_hotkeys_after_detail_focus_is_removed() {
         let platform_window = setup_test_window();
