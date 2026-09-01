@@ -60,13 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let store = SessionStore::for_current_user()?;
     let settings_store = SettingsStore::for_current_user()?;
-    let stored_settings = match settings_store.load() {
-        Ok(settings) => settings,
-        Err(error) => {
-            tracing::warn!(%error, "catalog settings could not be loaded");
-            StoredSettings::default()
-        }
-    };
+    let stored_settings = settings_store.load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "catalog settings could not be loaded");
+        StoredSettings::default()
+    });
     let app_state = AppState {
         catalog_sort: CatalogSort::from_key(stored_settings.library_sort_key.as_deref()),
         catalog_density: CatalogDensity::from_card_width(stored_settings.card_width_dp),
