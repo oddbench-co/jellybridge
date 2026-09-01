@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::api::{CatalogItemData, CatalogSectionData, JellyfinApi};
 use crate::features::catalog::{CatalogDensity, CatalogSort, CatalogSectionRange, flatten_sections};
 use crate::features::detail::{DetailModel, DetailTarget};
+use crate::features::progress::PlaybackReporter;
 use crate::services::playback::PreparedPlayback;
 use crate::services::player::{PlayerCommand, PlayerTrack};
 use crate::services::session::{SessionStore, SettingsStore};
@@ -117,6 +118,8 @@ pub struct AppContext {
     pub image_cache: PathBuf,
     pub image_limit: Arc<tokio::sync::Semaphore>,
     pub playback: Arc<Mutex<Option<PreparedPlayback>>>,
+    /// Tracks what is playing so progress can be reported to the server.
+    pub reporter: Arc<Mutex<PlaybackReporter>>,
     pub player_sender: std::sync::mpsc::Sender<PlayerCommand>,
     pub player_tracks: Arc<Mutex<PlayerTrackState>>,
     pub catalog_request: Arc<Mutex<Option<tokio::task::AbortHandle>>>,

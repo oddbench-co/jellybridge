@@ -7,6 +7,7 @@ use crate::features::catalog::CatalogSort;
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageRef, ImageType, PersonData, StreamData,
 };
+use crate::features::progress::{ReportTarget, position_ticks};
 use crate::services::session::StoredSession;
 
 const CLIENT_NAME: &str = "JellyBridge";
@@ -237,6 +238,64 @@ impl JellyfinApi {
             episodes: episodes.into_iter().map(Into::into).collect(),
             children_error,
         })
+    }
+
+    /// Tells the server playback began, which makes this client the item's
+    /// active session so other clients see what is playing.
+    pub async fn report_playback_start(
+        &self,
+        target: &ReportTarget,
+        position_seconds: f64,
+    ) -> Result<(), ApiError> {
+        self.report(
+            "Sessions/Playing",
+            PlaybackReportBody::playing(target, position_seconds, false, None),
+            "reporting playback start",
+        )
+        .await
+    }
+
+    /// Heartbeats the current position so the server's resume point tracks the
+    /// player rather than only updating when playback stops.
+    pub async fn report_playback_progress(
+        &self,
+        target: &ReportTarget,
+        position_seconds: f64,
+        paused: bool,
+    ) -> Result<(), ApiError> {
+        let event = if paused { "pause" } else { "timeupdate" };
+        self.report(
+            "Sessions/Playing/Progress",
+            PlaybackReportBody::playing(target, position_seconds, paused, Some(event)),
+            "reporting playback progress",
+        )
+        .await
+    }
+
+    /// Ends the session and commits the final position. Jellyfin decides from
+    /// this whether the item counts as watched.
+    pub async fn report_playback_stopped(
+        &self,
+        target: &ReportTarget,
+        position_seconds: f64,
+    ) -> Result<(), ApiError> {
+        self.report(
+            "Sessions/Playing/Stopped",
+            PlaybackReportBody::stopped(target, position_seconds),
+            "reporting playback stop",
+        )
+        .await
+    }
+
+    async fn report(
+        &self,
+        path: &str,
+        body: PlaybackReportBody<'_>,
+        operation: &'static str,
+    ) -> Result<(), ApiError> {
+        let response = self.request(Method::POST, path)?.json(&body).send().await?;
+        check_status(response, operation)?;
+        Ok(())
     }
 
     pub async fn set_watched(&self, item_id: &str, watched: bool) -> Result<(), ApiError> {
@@ -543,6 +602,63 @@ impl JellyfinApi {
     ) -> Result<T, ApiError> {
         let response = check_status(request.send().await?, operation)?;
         Ok(response.json().await?)
+    }
+}
+
+/// Body shared by the three `Sessions/Playing` endpoints. Fields that do not
+/// apply to a given endpoint are omitted rather than sent as defaults.
+#[derive(Serialize)]
+struct PlaybackReportBody<'a> {
+    #[serde(rename = "ItemId")]
+    item_id: &'a str,
+    #[serde(rename = "MediaSourceId")]
+    media_source_id: &'a str,
+    #[serde(rename = "PlaySessionId", skip_serializing_if = "Option::is_none")]
+    play_session_id: Option<&'a str>,
+    #[serde(rename = "PositionTicks")]
+    position_ticks: i64,
+    #[serde(rename = "IsPaused", skip_serializing_if = "Option::is_none")]
+    is_paused: Option<bool>,
+    #[serde(rename = "CanSeek", skip_serializing_if = "Option::is_none")]
+    can_seek: Option<bool>,
+    #[serde(rename = "PlayMethod", skip_serializing_if = "Option::is_none")]
+    play_method: Option<&'static str>,
+    #[serde(rename = "EventName", skip_serializing_if = "Option::is_none")]
+    event_name: Option<&'static str>,
+}
+
+impl<'a> PlaybackReportBody<'a> {
+    fn playing(
+        target: &'a ReportTarget,
+        position_seconds: f64,
+        paused: bool,
+        event_name: Option<&'static str>,
+    ) -> Self {
+        Self {
+            item_id: &target.item_id,
+            media_source_id: &target.media_source_id,
+            play_session_id: target.play_session_id.as_deref(),
+            position_ticks: position_ticks(position_seconds),
+            is_paused: Some(paused),
+            can_seek: Some(true),
+            // The proxy hands mpv the untranscoded source, so every session is
+            // a direct play as far as the server is concerned.
+            play_method: Some("DirectPlay"),
+            event_name,
+        }
+    }
+
+    fn stopped(target: &'a ReportTarget, position_seconds: f64) -> Self {
+        Self {
+            item_id: &target.item_id,
+            media_source_id: &target.media_source_id,
+            play_session_id: target.play_session_id.as_deref(),
+            position_ticks: position_ticks(position_seconds),
+            is_paused: None,
+            can_seek: None,
+            play_method: None,
+            event_name: None,
+        }
     }
 }
 
@@ -1299,4 +1415,62 @@ mod tests {
 
         assert_eq!(visible_ids, ["movies", "shows"]);
     }
+    /// Jellyfin ignores fields it does not recognise and still answers 204, so
+    /// a misspelled key would leave reporting silently doing nothing. Pin the
+    /// exact wire shape of all three endpoints' bodies.
+    #[test]
+    fn playback_reports_serialize_to_the_field_names_jellyfin_expects() {
+        let target = ReportTarget {
+            item_id: "item-1".into(),
+            media_source_id: "source-1".into(),
+            play_session_id: Some("session-1".into()),
+        };
+
+        let start = serde_json::to_value(PlaybackReportBody::playing(&target, 0.0, false, None))
+            .expect("serialize start");
+        assert_eq!(start["ItemId"], "item-1");
+        assert_eq!(start["MediaSourceId"], "source-1");
+        assert_eq!(start["PlaySessionId"], "session-1");
+        assert_eq!(start["PositionTicks"], 0);
+        assert_eq!(start["IsPaused"], false);
+        assert_eq!(start["CanSeek"], true);
+        assert_eq!(start["PlayMethod"], "DirectPlay");
+        assert!(start.get("EventName").is_none());
+
+        let progress = serde_json::to_value(PlaybackReportBody::playing(
+            &target,
+            61.5,
+            true,
+            Some("pause"),
+        ))
+        .expect("serialize progress");
+        assert_eq!(progress["PositionTicks"], 615_000_000i64);
+        assert_eq!(progress["IsPaused"], true);
+        assert_eq!(progress["EventName"], "pause");
+
+        // The stop body carries only what the endpoint uses; the playing-only
+        // fields are omitted rather than sent as misleading defaults.
+        let stopped =
+            serde_json::to_value(PlaybackReportBody::stopped(&target, 61.5)).expect("serialize stop");
+        assert_eq!(stopped["PositionTicks"], 615_000_000i64);
+        for absent in ["IsPaused", "CanSeek", "PlayMethod", "EventName"] {
+            assert!(
+                stopped.get(absent).is_none(),
+                "{absent} must not be sent on a stop report"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_play_session_id_is_omitted_rather_than_sent_as_null() {
+        let target = ReportTarget {
+            item_id: "item-1".into(),
+            media_source_id: "source-1".into(),
+            play_session_id: None,
+        };
+        let body = serde_json::to_value(PlaybackReportBody::playing(&target, 1.0, false, None))
+            .expect("serialize");
+        assert!(body.get("PlaySessionId").is_none());
+    }
+
 }

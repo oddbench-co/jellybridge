@@ -88,6 +88,9 @@ impl PlaybackConfig {
 pub struct PreparedPlayback {
     pub local_url: String,
     pub subtitle_streams: Vec<PreparedSubtitle>,
+    /// Identifies the stream to the server when reporting playback progress.
+    pub media_source_id: String,
+    pub play_session_id: Option<String>,
     proxy: ProxySession,
     _temporary_subtitles: TemporarySubtitles,
 }
@@ -160,6 +163,11 @@ pub async fn prepare_playback(
     Ok(PreparedPlayback {
         local_url,
         subtitle_streams,
+        media_source_id: media_source_id.to_owned(),
+        play_session_id: playback_info
+            .play_session_id
+            .clone()
+            .filter(|id| !id.is_empty()),
         proxy,
         _temporary_subtitles: temporary_subtitles,
     })
@@ -349,6 +357,11 @@ fn mpv_device_profile() -> DeviceProfile {
 struct PlaybackInfoResponse {
     #[serde(rename = "MediaSources", default)]
     media_sources: Vec<MediaSource>,
+    // Jellyfin ties every Sessions/Playing report back to the session it
+    // issued here; without it the server cannot match a report to the play it
+    // authorized.
+    #[serde(rename = "PlaySessionId", default)]
+    play_session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

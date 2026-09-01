@@ -9,9 +9,11 @@ use slint::ComponentHandle;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use app::{AppContext, AppState, PlayerTrackState};
 use features::catalog::{CatalogDensity, CatalogSort};
+use features::progress::PlaybackReporter;
 use services::player::{PlayerEvent, create_player};
 use services::playback::PreparedPlayback;
 use services::session::{SessionStore, SettingsStore, StoredSettings, cache_directory};
@@ -33,7 +35,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "jellybridge_app=info".into()),
+                // The crate is jellybridge-app but the [[bin]] is jellybridge,
+                // and tracing targets are module paths rooted at the binary's
+                // name -- so a jellybridge_app filter matched nothing and the
+                // app's own logging never reached the terminal.
+                .unwrap_or_else(|_| "jellybridge=info".into()),
         )
         .without_time()
         .init();
@@ -71,19 +77,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui_handle = UiHandle::new(&window);
     let playback = Arc::new(Mutex::new(None::<PreparedPlayback>));
     let player_tracks = Arc::new(Mutex::new(PlayerTrackState::default()));
+    let state = Arc::new(Mutex::new(app_state));
+    let reporter = Arc::new(Mutex::new(PlaybackReporter::default()));
     let event_playback = playback.clone();
     let event_tracks = player_tracks.clone();
     let event_runtime = runtime.handle().clone();
     let event_ui = ui_handle.clone();
+    let event_state = state.clone();
+    let event_reporter = reporter.clone();
     let (render_client, player_worker) = create_player(move |event| {
         let ended = matches!(event, PlayerEvent::Ended);
+        // Turn mpv's position and pause events into Jellyfin reports. The
+        // reporter throttles them, so this only issues a request when the
+        // server actually needs one.
+        let due = match &event {
+            PlayerEvent::Position { seconds, .. } => event_reporter
+                .lock()
+                .ok()
+                .and_then(|mut reporter| reporter.note_position(*seconds, Instant::now())),
+            PlayerEvent::Paused(paused) => event_reporter
+                .lock()
+                .ok()
+                .and_then(|mut reporter| reporter.note_paused(*paused, Instant::now())),
+            _ => None,
+        };
+        if let Some(report) = due {
+            features::playback::send_progress_report(&event_state, &event_runtime, report);
+        }
         let tracks = event_tracks.clone();
         event_ui.update(move |window| ui::player::apply_player_event(window, event, &tracks));
-        if ended
-            && let Ok(mut slot) = event_playback.lock()
-            && let Some(remote) = slot.take()
-        {
-            event_runtime.spawn(remote.shutdown());
+        if ended {
+            // Commit the final position before the proxy goes away; Jellyfin
+            // decides from this whether the item counts as watched.
+            features::playback::finish_report(&event_reporter, &event_state, &event_runtime);
+            if let Ok(mut slot) = event_playback.lock()
+                && let Some(remote) = slot.take()
+            {
+                event_runtime.spawn(remote.shutdown());
+            }
         }
     })?;
     let player_sender = player_worker.command_sender();
@@ -92,13 +123,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let context = AppContext {
         ui: ui_handle,
         runtime: runtime.handle().clone(),
-        state: Arc::new(Mutex::new(app_state)),
+        state,
         generation: Arc::new(AtomicU64::new(0)),
         store,
         settings_store,
         image_cache,
         image_limit: Arc::new(tokio::sync::Semaphore::new(6)),
         playback,
+        reporter,
         player_sender,
         player_tracks,
         catalog_request: Arc::new(Mutex::new(None)),

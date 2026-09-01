@@ -1,8 +1,12 @@
 //! Playback orchestration: preparing a Jellyfin stream for the mpv worker and
 //! remembering per-title track preferences.
 
-use crate::app::AppContext;
+use std::sync::{Arc, Mutex};
+
+use crate::api::JellyfinApi;
+use crate::app::{AppContext, AppState};
 use crate::features::detail::{DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData};
+use crate::features::progress::{PlaybackReporter, ProgressReport, ReportTarget};
 use crate::services::playback::{PlaybackConfig, prepare_playback};
 use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
 use crate::services::session::{SettingsStore, StoredSettings};
@@ -104,8 +108,24 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                     ui::set_message(&ctx, "The MPV player worker is unavailable");
                     return;
                 }
+                let target = ReportTarget {
+                    item_id: detail.id.clone(),
+                    media_source_id: prepared.media_source_id.clone(),
+                    play_session_id: prepared.play_session_id.clone(),
+                };
                 if let Ok(mut slot) = ctx.playback.lock() {
                     *slot = Some(prepared);
+                }
+                // Tell the server the previous item stopped before claiming
+                // the session for this one.
+                finish_report(&ctx.reporter, &ctx.state, &ctx.runtime);
+                let start = ctx
+                    .reporter
+                    .lock()
+                    .ok()
+                    .map(|mut reporter| reporter.begin(target, initial_position));
+                if let Some(start) = start {
+                    send_start_report(&ctx.state, &ctx.runtime, start);
                 }
                 ui::player::present_playback_started(
                     &ctx,
@@ -119,6 +139,71 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
             }
         }
     });
+}
+
+/// Reporting is best-effort: a failed report must never interrupt playback, so
+/// each one is spawned and its error only logged.
+fn api_of(state: &Arc<Mutex<AppState>>) -> Option<JellyfinApi> {
+    state.lock().ok()?.api.clone()
+}
+
+pub fn send_start_report(
+    state: &Arc<Mutex<AppState>>,
+    runtime: &tokio::runtime::Handle,
+    report: ProgressReport,
+) {
+    let Some(api) = api_of(state) else { return };
+    runtime.spawn(async move {
+        if let Err(error) = api
+            .report_playback_start(&report.target, report.position_seconds)
+            .await
+        {
+            tracing::warn!(%error, "could not report playback start");
+        }
+    });
+}
+
+pub fn send_progress_report(
+    state: &Arc<Mutex<AppState>>,
+    runtime: &tokio::runtime::Handle,
+    report: ProgressReport,
+) {
+    let Some(api) = api_of(state) else { return };
+    runtime.spawn(async move {
+        if let Err(error) = api
+            .report_playback_progress(&report.target, report.position_seconds, report.paused)
+            .await
+        {
+            tracing::warn!(%error, "could not report playback progress");
+        }
+    });
+}
+
+pub fn send_stop_report(
+    state: &Arc<Mutex<AppState>>,
+    runtime: &tokio::runtime::Handle,
+    target: ReportTarget,
+    position_seconds: f64,
+) {
+    let Some(api) = api_of(state) else { return };
+    runtime.spawn(async move {
+        if let Err(error) = api.report_playback_stopped(&target, position_seconds).await {
+            tracing::warn!(%error, "could not report playback stop");
+        }
+    });
+}
+
+/// Ends the reported session, if one is open. Safe to call more than once --
+/// `finish` clears the target, so the stop reaches the server exactly once.
+pub fn finish_report(
+    reporter: &Arc<Mutex<PlaybackReporter>>,
+    state: &Arc<Mutex<AppState>>,
+    runtime: &tokio::runtime::Handle,
+) {
+    let finished = reporter.lock().ok().and_then(|mut r| r.finish());
+    if let Some((target, position)) = finished {
+        send_stop_report(state, runtime, target, position);
+    }
 }
 
 pub fn resolved_playback_sources(
@@ -165,6 +250,7 @@ pub fn resolved_playback_sources(
 }
 
 pub fn stop_remote_playback(context: &AppContext) {
+    finish_report(&context.reporter, &context.state, &context.runtime);
     let remote = context
         .playback
         .lock()
