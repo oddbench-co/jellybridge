@@ -14,7 +14,23 @@ const CLIENT_NAME: &str = "JellyBridge";
 const CLIENT_VERSION: &str = "0.1.0-rust";
 const DEVICE_NAME: &str = "Desktop";
 const DEVICE_ID: &str = "jellybridge-rust-desktop";
-const ITEM_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,Overview,RunTimeTicks,MediaStreams,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
+// Fields for list queries. `RecursiveItemCount` is deliberately absent: it
+// makes the server recursively count the contents of every folder-typed row,
+// which measured 17.8-18.1 s against a 323-item music library versus 0.37 s
+// without it. The only thing that reads it is the `CollectionFolder` subtitle
+// (see `item_subtitle`), and the only query that returns those is
+// `libraries()`, which uses LIBRARY_FIELDS below and returns a handful of rows.
+// `Overview` and `MediaStreams` are absent for the same reason: nothing on a
+// catalog row reads them. `CatalogItemData` has no overview, and the media
+// summary is built only for detail pages, which fetch DETAIL_FIELDS
+// separately. Carrying them made the six home requests ~900 KiB instead of
+// ~75 KiB and roughly doubled the slowest one.
+const LIST_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,RunTimeTicks,ChildCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
+// The top-level library rows, which need the recursive count for their
+// "Library - N items" subtitle. Cheap here because there are only a few.
+// How many rows one browse or search page returns.
+const PAGE_LIMIT: &str = "120";
+const LIBRARY_FIELDS: &str = "ParentId,ImageTags,UserData,Overview,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,CollectionType";
 const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +56,11 @@ pub enum ApiError {
 pub struct JellyfinApi {
     http: reqwest::Client,
     session: StoredSession,
+    // Both are derived from `session` and never change, but `request` runs for
+    // every call including the artwork fetches, where re-parsing the URL and
+    // rebuilding the header string per request is pure overhead.
+    server: Url,
+    authorization: HeaderValue,
 }
 
 #[derive(Clone, Debug)]
@@ -71,13 +92,19 @@ pub struct CatalogPage {
 
 impl JellyfinApi {
     pub fn from_session(session: StoredSession) -> Result<Self, ApiError> {
-        normalize_server_url(&session.server_url)?;
+        let server = normalize_server_url(&session.server_url)?;
+        let authorization = authorization_value(&session.token)?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(10))
             .read_timeout(std::time::Duration::from_secs(30))
             .build()?;
-        Ok(Self { http, session })
+        Ok(Self {
+            http,
+            session,
+            server,
+            authorization,
+        })
     }
 
     pub async fn authenticate(
@@ -145,6 +172,7 @@ impl JellyfinApi {
     ) -> Result<CatalogPage, ApiError> {
         let (sort_by, sort_order) = sort.query();
         let response = if item.kind.eq_ignore_ascii_case("Series") {
+            // A series has a handful of seasons; no page limit is needed.
             self.items_page_request(
                 &format!("Shows/{}/Seasons", encode_path_segment(&item.id)),
                 &[
@@ -156,6 +184,9 @@ impl JellyfinApi {
             )
             .await?
         } else {
+            // Bounded like `search`: an unbounded folder returns every row in
+            // the library, and each row costs a spawned artwork task and a
+            // decode. The UI already reports "Showing first N of M".
             self.items_page_request(
                 &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
                 &[
@@ -163,6 +194,9 @@ impl JellyfinApi {
                     ("Recursive", "false"),
                     ("SortBy", sort_by),
                     ("SortOrder", sort_order),
+                    ("StartIndex", "0"),
+                    ("Limit", PAGE_LIMIT),
+                    ("EnableTotalRecordCount", "true"),
                 ],
                 "loading a library folder",
             )
@@ -192,7 +226,7 @@ impl JellyfinApi {
             ("SortBy", sort_by),
             ("SortOrder", sort_order),
             ("StartIndex", "0"),
-            ("Limit", "120"),
+            ("Limit", PAGE_LIMIT),
             ("EnableTotalRecordCount", "true"),
         ];
         if let Some(parent_id) = parent_id {
@@ -405,12 +439,14 @@ impl JellyfinApi {
 
     async fn libraries(&self) -> Result<Vec<LibraryItem>, ApiError> {
         Ok(self
-            .items_request(
+            .items_page_request_with_fields(
                 &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
+                LIBRARY_FIELDS,
                 &[("Recursive", "false")],
                 "loading libraries",
             )
             .await?
+            .items
             .into_iter()
             .filter(is_visible_library)
             .collect())
@@ -507,7 +543,7 @@ impl JellyfinApi {
                 ),
             )?
             .query(&[
-                ("Fields", ITEM_FIELDS),
+                ("Fields", LIST_FIELDS),
                 ("EnableUserData", "true"),
                 ("EnableImages", "true"),
                 ("ImageTypeLimit", "1"),
@@ -570,8 +606,19 @@ impl JellyfinApi {
         extra_query: &[(&str, &str)],
         operation: &'static str,
     ) -> Result<ItemsResponse, ApiError> {
+        self.items_page_request_with_fields(path, LIST_FIELDS, extra_query, operation)
+            .await
+    }
+
+    async fn items_page_request_with_fields(
+        &self,
+        path: &str,
+        fields: &'static str,
+        extra_query: &[(&str, &str)],
+        operation: &'static str,
+    ) -> Result<ItemsResponse, ApiError> {
         let mut query = vec![
-            ("Fields", ITEM_FIELDS),
+            ("Fields", fields),
             ("EnableUserData", "true"),
             ("EnableImages", "true"),
             ("ImageTypeLimit", "1"),
@@ -583,16 +630,14 @@ impl JellyfinApi {
     }
 
     fn request(&self, method: Method, path: &str) -> Result<reqwest::RequestBuilder, ApiError> {
-        let server = normalize_server_url(&self.session.server_url)?;
-        let url = server.join(path).map_err(|_| ApiError::InvalidServerUrl)?;
+        let url = self
+            .server
+            .join(path)
+            .map_err(|_| ApiError::InvalidServerUrl)?;
         Ok(self
             .http
             .request(method, url)
-            .header("x-emby-authorization", self.authorization()?))
-    }
-
-    fn authorization(&self) -> Result<HeaderValue, ApiError> {
-        Ok(authorization_value(&self.session.token)?)
+            .header("x-emby-authorization", self.authorization.clone()))
     }
 
     async fn send_json<T: DeserializeOwned>(
@@ -705,7 +750,14 @@ fn sort_detail_items(items: &mut [LibraryItem]) {
                     .unwrap_or(i32::MAX)
                     .cmp(&right.index_number.unwrap_or(i32::MAX))
             })
-            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+            // Same ordering as comparing two lowercased Strings, without
+            // allocating one per comparison.
+            .then_with(|| {
+                left.name
+                    .chars()
+                    .flat_map(char::to_lowercase)
+                    .cmp(right.name.chars().flat_map(char::to_lowercase))
+            })
     });
 }
 
@@ -1287,6 +1339,59 @@ struct ItemMediaStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fields(set: &str) -> Vec<&str> {
+        set.split(',').collect()
+    }
+
+    /// Each of these was measured against a real server, and each is easy to
+    /// reintroduce by copying `DETAIL_FIELDS` when adding a list query.
+    /// `RecursiveItemCount` makes the server recursively count every
+    /// folder-typed row: 17.8 s versus 0.37 s on a 323-item music library.
+    /// `Overview` and `MediaStreams` are dead weight no catalog row reads, and
+    /// carrying them made the six Home requests ~900 KiB instead of ~75 KiB,
+    /// which was most of a 528 ms time-to-interactive.
+    #[test]
+    fn list_queries_ask_for_nothing_a_catalog_row_cannot_use() {
+        for unwanted in ["RecursiveItemCount", "Overview", "MediaStreams"] {
+            assert!(
+                !fields(LIST_FIELDS).contains(&unwanted),
+                "{unwanted} is expensive and no catalog row reads it"
+            );
+        }
+    }
+
+    /// The library rows are the one list that does need the recursive count,
+    /// for their "Library - N items" subtitle. It is cheap there because the
+    /// query only ever returns the handful of top-level libraries.
+    #[test]
+    fn library_rows_keep_the_recursive_count_their_subtitle_needs() {
+        assert!(fields(LIBRARY_FIELDS).contains(&"RecursiveItemCount"));
+        let item: LibraryItem = serde_json::from_str(
+            r#"{"Id":"l1","Name":"Movies","Type":"CollectionFolder","RecursiveItemCount":33}"#,
+        )
+        .unwrap();
+        assert_eq!(item_subtitle(&item), "Library • 33 items");
+    }
+
+    /// The detail page renders both of the fields trimmed from LIST_FIELDS, so
+    /// the trim must not be copied across to DETAIL_FIELDS.
+    #[test]
+    fn detail_queries_still_ask_for_what_the_detail_page_renders() {
+        for wanted in ["Overview", "MediaStreams", "People", "Genres"] {
+            assert!(
+                fields(DETAIL_FIELDS).contains(&wanted),
+                "the detail page renders {wanted}"
+            );
+        }
+    }
+
+    /// An unbounded folder query returns every row in the library, and each row
+    /// costs a spawned artwork task and a decode.
+    #[test]
+    fn browsing_a_folder_is_a_bounded_page() {
+        assert!(PAGE_LIMIT.parse::<u32>().is_ok_and(|limit| limit > 0));
+    }
 
     #[test]
     fn normalizes_supported_server_urls_without_accepting_credentials() {

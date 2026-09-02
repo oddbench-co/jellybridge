@@ -230,15 +230,16 @@ pub fn present(context: &AppContext, generation: u64) {
         window.set_detail_subheading(subheading.into());
         window.set_detail_ends_at(ends_at.into());
         window.set_detail_tags(tags_line.into());
-        window.set_detail_links(ModelRc::new(VecModel::from(
-            links
-                .into_iter()
-                .map(|(name, url)| super::ExternalLink {
-                    name: name.into(),
-                    url: url.into(),
-                })
-                .collect::<Vec<_>>(),
-        )));
+        let links = links
+            .into_iter()
+            .map(|(name, url)| super::ExternalLink {
+                name: name.into(),
+                url: url.into(),
+            })
+            .collect::<Vec<_>>();
+        if !patch_rows(&window.get_detail_links(), &links, |a, b| a.name == b.name) {
+            window.set_detail_links(ModelRc::new(VecModel::from(links)));
+        }
         window.set_detail_director(director.into());
         window.set_detail_writers(writers_line.into());
         window.set_detail_star_rating(star_rating);
@@ -281,18 +282,30 @@ pub fn present(context: &AppContext, generation: u64) {
         }) {
             window.set_detail_people(ModelRc::new(VecModel::from(people)));
         }
-        window.set_detail_audio_options(ModelRc::new(VecModel::from(
-            audio_options
-                .into_iter()
-                .map(SharedString::from)
-                .collect::<Vec<_>>(),
-        )));
-        window.set_detail_subtitle_options(ModelRc::new(VecModel::from(
-            subtitle_options
-                .into_iter()
-                .map(SharedString::from)
-                .collect::<Vec<_>>(),
-        )));
+        // These back ComboBoxes. Replacing the model rebuilds the popup and
+        // resets what it is showing, so only install a genuinely new list --
+        // `update_detail_mutation` re-presents the whole page twice for one
+        // watched toggle, and the track lists are identical both times.
+        let audio_options = audio_options
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>();
+        if !patch_rows(&window.get_detail_audio_options(), &audio_options, |a, b| {
+            a == b
+        }) {
+            window.set_detail_audio_options(ModelRc::new(VecModel::from(audio_options)));
+        }
+        let subtitle_options = subtitle_options
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>();
+        if !patch_rows(
+            &window.get_detail_subtitle_options(),
+            &subtitle_options,
+            |a, b| a == b,
+        ) {
+            window.set_detail_subtitle_options(ModelRc::new(VecModel::from(subtitle_options)));
+        }
         window.set_detail_audio_index(audio_index);
         window.set_detail_subtitle_index(subtitle_index);
         window.set_can_go_back(can_go_back);
@@ -608,6 +621,7 @@ enum DetailArtworkTarget {
     HeroLogo(String),
     Season { index: usize, id: String },
     Episode { index: usize, id: String },
+    NextUp { id: String },
     Person { index: usize, id: String, name: String },
 }
 
@@ -634,22 +648,39 @@ fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageD
             )
         })
     }));
-    requests.extend(
-        page.episodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, item)| {
-                primary_card_image(item).cloned().map(|image| {
-                    (
-                        DetailArtworkTarget::Episode {
-                            index,
-                            id: item.id.clone(),
-                        },
-                        image,
-                    )
-                })
-            }),
-    );
+    if page.item.kind == DetailKind::Series {
+        // `detail-screen.slint` only renders `detail-episodes` for season and
+        // episode pages. A series page shows the Next Up card instead, whose
+        // artwork comes from this same cache -- so fetching every episode's
+        // still was up to 47 wasted round trips and decodes on a long show.
+        if let Some(target) = page.play_target()
+            && let Some(image) = primary_card_image(target).cloned()
+        {
+            requests.push((
+                DetailArtworkTarget::NextUp {
+                    id: target.id.clone(),
+                },
+                image,
+            ));
+        }
+    } else {
+        requests.extend(
+            page.episodes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, item)| {
+                    primary_card_image(item).cloned().map(|image| {
+                        (
+                            DetailArtworkTarget::Episode {
+                                index,
+                                id: item.id.clone(),
+                            },
+                            image,
+                        )
+                    })
+                }),
+        );
+    }
     requests.extend(
         page.item
             .people
@@ -680,6 +711,11 @@ fn load_detail_image(
     image: ImageRef,
 ) {
     let Some(api) = context.api() else { return };
+    // Already decoded and resident: the presenter reads the same key, so the
+    // row on screen is already showing it.
+    if cached_image(&image_key(&image)).is_some() {
+        return;
+    }
     let ctx = context.clone();
     context.runtime.spawn(async move {
         let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
@@ -697,7 +733,14 @@ fn load_detail_image(
             &cache_id,
             &image.tag,
         );
-        let result = if let Some(path) = existing_cached_image(&path) {
+        // Same reason as the catalog loader: blocking std::fs, including an
+        // fsync on the write, must not run on a runtime worker.
+        let probe = path.clone();
+        let cached = tokio::task::spawn_blocking(move || existing_cached_image(&probe))
+            .await
+            .ok()
+            .flatten();
+        let result = if let Some(path) = cached {
             Ok(path)
         } else {
             let max_width = match &target {
@@ -711,7 +754,11 @@ fn load_detail_image(
                 _ => 600,
             };
             match api.fetch_detail_image(&image, max_width).await {
-                Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => write_cached_image(&path, &bytes),
+                Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
+                    tokio::task::spawn_blocking(move || write_cached_image(&path, &bytes))
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string()))
+                }
                 Ok(_) => Err("detail artwork exceeded 20 MiB".to_owned()),
                 Err(error) => Err(error.to_string()),
             }
@@ -759,6 +806,15 @@ fn load_detail_image(
                         {
                             row.artwork = image;
                             model.set_row_data(index, row);
+                        }
+                    }
+                    DetailArtworkTarget::NextUp { id } => {
+                        let model = window.get_detail_next_up();
+                        if let Some(mut row) = model.row_data(0)
+                            && row.id.as_str() == id
+                        {
+                            row.artwork = image;
+                            model.set_row_data(0, row);
                         }
                     }
                     DetailArtworkTarget::Person { index, id, name } => {

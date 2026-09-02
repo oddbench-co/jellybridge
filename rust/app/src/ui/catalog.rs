@@ -1,5 +1,7 @@
 //! Catalog screen: callback wiring, presentation, and artwork loading.
 
+use std::sync::Arc;
+
 use slint::{Image, Model, ModelRc, SharedString, VecModel};
 
 use super::{
@@ -40,7 +42,7 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
 /// Presents the current catalog page (home dashboard, browse results, or
 /// search results) and kicks off artwork loading for its items.
 pub fn present(context: &AppContext, message: &str) {
-    let (current, account, can_go_back, sort, density) = match context.state.lock() {
+    let (mut current, account, can_go_back, sort, density) = match context.state.lock() {
         Ok(state) => (
             state.current.clone(),
             state.account_name.clone(),
@@ -60,8 +62,10 @@ pub fn present(context: &AppContext, message: &str) {
             count: i32::try_from(section.count).unwrap_or(i32::MAX),
         })
         .collect();
-    let ui_item_data = current.items.clone();
-    let artwork_items = current.items.clone();
+    // `present` used to deep-clone this vector twice more on top of the
+    // `current` clone above -- once for the UI mapping and once for the
+    // artwork loader. One shared copy serves both.
+    let items_data = Arc::new(std::mem::take(&mut current.items));
     let generation = context.next_generation();
     let home_dashboard = current.is_home_dashboard();
     let title = if current.parent.is_none() && !current.search_text.is_empty() {
@@ -73,12 +77,12 @@ pub fn present(context: &AppContext, message: &str) {
         format!(
             "{} sections • {} items",
             current.sections.len(),
-            current.items.len()
+            items_data.len()
         )
-    } else if current.total_record_count > current.items.len() {
+    } else if current.total_record_count > items_data.len() {
         format!(
             "Showing first {} of {}",
-            current.items.len(),
+            items_data.len(),
             current.total_record_count
         )
     } else {
@@ -97,6 +101,7 @@ pub fn present(context: &AppContext, message: &str) {
         .map(|sort| SharedString::from(sort.label()))
         .collect::<Vec<_>>();
     let message = message.to_owned();
+    let ui_items = items_data.clone();
     context.ui.update(move |window| {
         window.set_screen(super::Screen::Catalog);
         window.set_busy(false);
@@ -110,20 +115,31 @@ pub fn present(context: &AppContext, message: &str) {
         if window.get_search_text().as_str() != search_text {
             window.set_search_text(search_text.into());
         }
-        window.set_sort_options(ModelRc::new(VecModel::from(sort_options)));
+        // Replacing a model tears down and rebuilds everything bound to it.
+        // These options never change, so only install them once.
+        if !patch_rows(&window.get_sort_options(), &sort_options, |a, b| a == b) {
+            window.set_sort_options(ModelRc::new(VecModel::from(sort_options)));
+        }
         window.set_sort_index(sort.index());
         window.set_density_index(density.index());
         window.set_tile_target_width(density.card_width() as f32);
         window.set_account_name(account.into());
         window.set_account_initial(account_initial.into());
         window.set_can_go_back(can_go_back);
-        window.set_sections(ModelRc::new(VecModel::from(ui_sections)));
-        let items = ui_item_data.into_iter().map(to_ui_item).collect::<Vec<_>>();
+        // `catalog-screen.slint` iterates `sections` to build every
+        // CatalogShelf, and each shelf builds its MediaTiles. Replacing the
+        // model destroyed and rebuilt all of them on every present, which
+        // also threw away the `patch_rows` on `catalog_items` below.
+        if !patch_rows(&window.get_sections(), &ui_sections, |a, b| a.id == b.id) {
+            window.set_sections(ModelRc::new(VecModel::from(ui_sections)));
+        }
+        let items = ui_items.iter().map(to_ui_item).collect::<Vec<_>>();
         if !patch_rows(&window.get_catalog_items(), &items, |a, b| a.id == b.id) {
             window.set_catalog_items(ModelRc::new(VecModel::from(items)));
         }
+        super::startup::mark_content_ready("catalog");
     });
-    load_artwork(context, generation, artwork_items);
+    load_artwork(context, generation, &items_data);
 }
 
 /// Pushes the persisted sort/density preferences into the window without
@@ -140,7 +156,7 @@ pub fn present_preferences(context: &AppContext) {
     });
 }
 
-fn to_ui_item(item: CatalogItemData) -> CatalogItem {
+fn to_ui_item(item: &CatalogItemData) -> CatalogItem {
     let placeholder = item
         .title
         .split_whitespace()
@@ -149,11 +165,11 @@ fn to_ui_item(item: CatalogItemData) -> CatalogItem {
         .flat_map(char::to_uppercase)
         .collect::<String>();
     CatalogItem {
-        id: item.id.into(),
-        title: item.title.into(),
-        subtitle: item.subtitle.into(),
+        id: item.id.as_str().into(),
+        title: item.title.as_str().into(),
+        subtitle: item.subtitle.as_str().into(),
         kind_label: catalog_kind_label(&item.kind).into(),
-        kind: item.kind.into(),
+        kind: item.kind.as_str().into(),
         placeholder: placeholder.into(),
         artwork: item
             .image_tag
@@ -176,14 +192,24 @@ fn catalog_kind_label(kind: &str) -> &str {
     }
 }
 
-fn load_artwork(context: &AppContext, generation: u64, items: Vec<CatalogItemData>) {
+fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]) {
     let Some(api) = context.api() else { return };
-    for (index, item) in items.into_iter().enumerate() {
+    for (index, item) in items.iter().enumerate() {
         let Some(tag) = item.image_tag.clone() else {
             continue;
         };
+        // `to_ui_item` already filled the row from this cache, so a hit means
+        // the whole fetch-probe-decode round trip below would produce an image
+        // that is already on screen. Without this, every re-present -- going
+        // back, toggling watched, changing density -- re-ran it for every row.
+        if cached_image(&catalog_image_key(&item.image_item_id, &tag)).is_some() {
+            continue;
+        }
         let ctx = context.clone();
         let api = api.clone();
+        // Two ids, rather than a clone of the whole row per spawned task.
+        let image_item_id = item.image_item_id.clone();
+        let item_id = item.id.clone();
         context.runtime.spawn(async move {
             let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
                 return;
@@ -191,23 +217,32 @@ fn load_artwork(context: &AppContext, generation: u64, items: Vec<CatalogItemDat
             let path = image_cache_path(
                 &ctx.image_cache,
                 api.session().server_url.as_str(),
-                &item.image_item_id,
+                &image_item_id,
                 &tag,
             );
-            let result = if let Some(path) = existing_cached_image(&path) {
+            // `existing_cached_image` and `write_cached_image` are blocking
+            // std::fs, and the write fsyncs; running them directly on a
+            // runtime worker stalls every other task sharing that thread.
+            let probe = path.clone();
+            let cached = tokio::task::spawn_blocking(move || existing_cached_image(&probe))
+                .await
+                .ok()
+                .flatten();
+            let result = if let Some(path) = cached {
                 Ok(path)
             } else {
-                match api.fetch_primary_image(&item.image_item_id).await {
+                match api.fetch_primary_image(&image_item_id).await {
                     Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
-                        write_cached_image(&path, &bytes)
+                        tokio::task::spawn_blocking(move || write_cached_image(&path, &bytes))
+                            .await
+                            .unwrap_or_else(|error| Err(error.to_string()))
                     }
                     Ok(_) => Err("artwork exceeded 20 MiB".to_owned()),
                     Err(error) => Err(error.to_string()),
                 }
             };
             if let Ok(path) = result {
-                let item_id = item.id;
-                let key = catalog_image_key(&item.image_item_id, &tag);
+                let key = catalog_image_key(&image_item_id, &tag);
                 let apply_ctx = ctx.clone();
                 ctx.ui.update(move |window| {
                     let Ok(image) = Image::load_from_path(&path) else {

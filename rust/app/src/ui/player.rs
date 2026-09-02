@@ -234,10 +234,21 @@ pub fn connect(
     player_ui
 }
 
+thread_local! {
+    /// What the cursor was last set to. `player-activity` fires on every
+    /// pointer move and each winit call below is a compositor round trip, so
+    /// the overwhelmingly common "already visible" case must not make one.
+    static CURSOR_VISIBLE: Cell<bool> = const { Cell::new(true) };
+}
+
 /// Shows or hides the OS cursor. Goes through the winit window because the
 /// declarative TouchArea cursor binding is only applied on pointer events.
 fn set_cursor_visible(window: &JellyBridgeWindow, visible: bool) {
     use i_slint_backend_winit::WinitWindowAccessor;
+    if CURSOR_VISIBLE.with(Cell::get) == visible {
+        return;
+    }
+    CURSOR_VISIBLE.with(|state| state.set(visible));
     window
         .window()
         .with_winit_window(|winit_window| winit_window.set_cursor_visible(visible));
@@ -389,6 +400,11 @@ pub fn install_renderer(
         });
     });
     let mut render_host = RenderHost::new(render_client, redraw);
+    // The mpv render context is built lazily, on the first frame that needs
+    // it, so a failure there recurs every frame rather than once at setup.
+    // Report each distinct failure once instead of formatting a status string
+    // per frame for as long as it persists.
+    let mut last_render_error: Option<String> = None;
     let render_weak = window.as_weak();
     let render_image_is_cleared = image_is_cleared.clone();
     window
@@ -410,6 +426,7 @@ pub fn install_renderer(
                 }
                 RenderingState::BeforeRendering => Ok(None),
                 RenderingState::AfterRendering => {
+                    super::startup::note_frame_rendered();
                     if window.get_screen() == super::Screen::Player {
                         let actual_fullscreen = window.window().is_fullscreen();
                         if player_ui.borrow().fullscreen != actual_fullscreen {
@@ -429,13 +446,18 @@ pub fn install_renderer(
             };
             match result {
                 Ok(Some(image)) => {
+                    last_render_error = None;
                     render_image_is_cleared.set(false);
                     window.set_video_frame(image);
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    tracing::error!(%error, "application render seam failed");
-                    window.set_player_status(format!("Rendering failed: {error}").into());
+                    let message = error.to_string();
+                    if last_render_error.as_deref() != Some(message.as_str()) {
+                        tracing::error!(%error, "application render seam failed");
+                        window.set_player_status(format!("Rendering failed: {message}").into());
+                        last_render_error = Some(message);
+                    }
                 }
             }
         })?;

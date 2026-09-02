@@ -104,28 +104,32 @@ impl PlaybackReporter {
         if seconds.is_finite() {
             self.position_seconds = seconds;
         }
-        let target = self.target.clone()?;
-        self.throttle
-            .should_send(now, self.paused)
-            .then_some(ProgressReport {
-                target,
-                position_seconds: self.position_seconds,
-                paused: self.paused,
-            })
+        // Decide first, then clone: this runs on every mpv position event
+        // (4x a second) and the throttle discards all but one report per
+        // interval, so cloning the target up front was thrown away 39 times
+        // out of 40.
+        if !self.throttle.should_send(now, self.paused) {
+            return None;
+        }
+        Some(ProgressReport {
+            target: self.target.clone()?,
+            position_seconds: self.position_seconds,
+            paused: self.paused,
+        })
     }
 
     /// mpv paused or resumed. Always worth a report so other clients and the
     /// dashboard do not sit on a stale state for up to a full interval.
     pub fn note_paused(&mut self, paused: bool, now: Instant) -> Option<ProgressReport> {
         self.paused = paused;
-        let target = self.target.clone()?;
-        self.throttle
-            .should_send(now, paused)
-            .then_some(ProgressReport {
-                target,
-                position_seconds: self.position_seconds,
-                paused,
-            })
+        if !self.throttle.should_send(now, paused) {
+            return None;
+        }
+        Some(ProgressReport {
+            target: self.target.clone()?,
+            position_seconds: self.position_seconds,
+            paused,
+        })
     }
 
     /// Playback ended or the user left the player. Clears the target so a

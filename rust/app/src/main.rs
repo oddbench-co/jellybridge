@@ -32,6 +32,9 @@ const RENDERER_NAME: &str = "femtovg";
 const RENDERER_NAME: &str = "skia";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // First statement: time_to_interactive is measured from here, so it
+    // includes runtime, backend, and window construction.
+    let process_start = Instant::now();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -43,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .without_time()
         .init();
+    ui::startup::mark_process_start(process_start);
 
     slint::BackendSelector::new()
         .backend_name("winit".into())

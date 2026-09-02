@@ -6,6 +6,7 @@ pub mod catalog;
 pub mod detail;
 pub mod player;
 pub mod player_hotkeys;
+pub mod startup;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -80,6 +81,7 @@ pub fn set_message(context: &AppContext, message: &str) {
 
 pub fn show_login(context: &AppContext, message: &str) {
     set_screen_busy(context, Screen::Login, false, message);
+    startup::mark_content_ready("login");
 }
 
 pub fn show_catalog_error(context: &AppContext, message: String) {

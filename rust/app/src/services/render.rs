@@ -77,12 +77,20 @@ pub fn native_display(window: &slint::Window) -> Result<NativeDisplay, RenderErr
 
 pub struct RenderHost {
     mpv: Option<RawRenderContext>,
+    // Kept from `setup` so the mpv render context can be built on first use
+    // rather than at startup. Valid for the lifetime of the window.
+    display: Option<NativeDisplay>,
     gl: Option<glow::Context>,
     targets: Option<FrameTargets>,
     retired: Vec<(u64, FrameTargets)>,
     front: usize,
     completed_frames: u64,
     debug_enabled_by_us: bool,
+    // Read once: this used to take the global environment lock on every frame.
+    gl_sentinel_requested: bool,
+    // Set when `render_frame` actually drew, so `finish_frame` only reports a
+    // swap for frames mpv produced.
+    rendered_this_cycle: bool,
     redraw: RedrawRequest,
     // This must be declared after RawRenderContext so Rust's field drop order
     // cannot destroy the client handle before its render context.
@@ -93,12 +101,15 @@ impl RenderHost {
     pub fn new(core: RenderClient, redraw: RedrawRequest) -> Self {
         Self {
             mpv: None,
+            display: None,
             gl: None,
             targets: None,
             retired: Vec::new(),
             front: 0,
             completed_frames: 0,
             debug_enabled_by_us: false,
+            gl_sentinel_requested: std::env::var_os("JELLYBRIDGE_GL_SENTINEL").is_some(),
+            rendered_this_cycle: false,
             redraw,
             core,
         }
@@ -135,8 +146,30 @@ impl RenderHost {
             self.debug_enabled_by_us = !was_enabled;
         }
 
-        let raw = RawRenderContext::create(&self.core, display, self.redraw.clone())?;
+        // The mpv render context is deliberately NOT built here. Creating it
+        // loads the GL entry points and builds mpv's whole render pipeline,
+        // which measured 310 ms of a 539 ms time-to-interactive -- all of it
+        // spent on a video path the user has not opened. `ensure_mpv` builds
+        // it on the first frame that actually needs it.
         self.gl = Some(gl);
+        self.display = Some(display);
+        Ok(())
+    }
+
+    /// Builds mpv's render context the first time a frame needs it. Runs
+    /// inside the rendering notifier, so the GL context is current, which is
+    /// what `mpv_render_context_create` requires.
+    fn ensure_mpv(&mut self) -> Result<(), RenderError> {
+        if self.mpv.is_some() {
+            return Ok(());
+        }
+        let display = self.display.ok_or(RenderError::NotNativeOpenGl)?;
+        let started = std::time::Instant::now();
+        let raw = RawRenderContext::create(&self.core, display, self.redraw.clone())?;
+        tracing::info!(
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mpv render context created"
+        );
         self.mpv = Some(raw);
         Ok(())
     }
@@ -144,14 +177,33 @@ impl RenderHost {
     pub fn render_frame(&mut self, size: PhysicalSize) -> Result<Option<Image>, RenderError> {
         let width = i32::try_from(size.width.max(1)).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height.max(1)).unwrap_or(i32::MAX);
+        self.ensure_mpv()?;
         let gl = self.gl.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
         let mpv = self.mpv.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
 
-        if self
+        let resized = self
             .targets
             .as_ref()
-            .is_none_or(|targets| targets.size != (width, height))
-        {
+            .is_none_or(|targets| targets.size != (width, height));
+        // A resize needs new targets, and the first frame has nothing on
+        // screen yet; otherwise draw only when mpv says it has a new frame and
+        // hand back the texture already being displayed when it does not.
+        if !resized && self.completed_frames > 0 && !mpv.take_frame_request() {
+            self.rendered_this_cycle = false;
+            let target = &self.targets.as_ref().expect("targets initialized").frames[self.front];
+            let image = unsafe {
+                BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
+                    target.texture.0,
+                    [width as u32, height as u32].into(),
+                )
+            }
+            .origin(BorrowedOpenGLTextureOrigin::BottomLeft)
+            .build();
+            return Ok(Some(image));
+        }
+        self.rendered_this_cycle = true;
+
+        if resized {
             let new_targets = FrameTargets::create(gl, width, height)?;
             if let Some(old_targets) = self.targets.replace(new_targets) {
                 // The old image can remain cached through this render. Release it
@@ -172,7 +224,6 @@ impl RenderHost {
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
-        mpv.update()?;
         mpv.render(target.framebuffer.0.get() as i32, width, height)?;
 
         let image = unsafe {
@@ -187,6 +238,11 @@ impl RenderHost {
     }
 
     pub fn finish_frame(&mut self, window_size: PhysicalSize) {
+        if self.rendered_this_cycle
+            && let Some(mpv) = self.mpv.as_ref()
+        {
+            mpv.report_swap();
+        }
         self.completed_frames = self.completed_frames.saturating_add(1);
         if self.completed_frames == 1
             && let Some(targets) = self.targets.as_ref()
@@ -207,7 +263,7 @@ impl RenderHost {
                 }
             }
             self.retired = retained;
-            if std::env::var_os("JELLYBRIDGE_GL_SENTINEL").is_some()
+            if self.gl_sentinel_requested
                 && (self.completed_frames == 1 || self.completed_frames.is_multiple_of(120))
             {
                 verify_magenta_sentinel(gl, window_size);
@@ -221,6 +277,7 @@ impl RenderHost {
     /// objects that the scene can still name.
     pub fn teardown(&mut self, image_cleared: bool) {
         let had_resources = self.mpv.is_some() || self.gl.is_some();
+        self.display = None;
         self.mpv.take(); // unregister callback and free mpv GL resources first
         if let Some(gl) = self.gl.take() {
             if image_cleared {
@@ -505,13 +562,25 @@ impl RawRenderContext {
         })
     }
 
-    fn update(&self) -> Result<(), RenderError> {
-        if self.update_state.pending.swap(false, Ordering::AcqRel) {
-            unsafe {
-                let _ = sys::mpv_render_context_update(self.context.as_ptr());
-            }
+    /// Whether mpv has a new frame to draw. The update callback only tells us
+    /// that *something* changed; `mpv_render_context_update` returns the flags
+    /// that say what, and `MPV_RENDER_UPDATE_FRAME` is the one that means
+    /// "call render". Discarding those flags made mpv redo the full scale,
+    /// colour-convert and dither pass at display refresh rate for content that
+    /// produces frames far more slowly.
+    fn take_frame_request(&self) -> bool {
+        if !self.update_state.pending.swap(false, Ordering::AcqRel) {
+            return false;
         }
-        Ok(())
+        let flags = unsafe { sys::mpv_render_context_update(self.context.as_ptr()) };
+        flags & u64::from(sys::mpv_render_update_flag_MPV_RENDER_UPDATE_FRAME) != 0
+    }
+
+    /// Tells mpv the rendered frame reached the display. Required by the
+    /// `MPV_RENDER_PARAM_ADVANCED_CONTROL` contract this context opts into;
+    /// without it mpv's frame timing has nothing to synchronise against.
+    fn report_swap(&self) {
+        unsafe { sys::mpv_render_context_report_swap(self.context.as_ptr()) };
     }
 
     fn render(&self, framebuffer: i32, width: i32, height: i32) -> Result<(), RenderError> {
@@ -679,6 +748,10 @@ struct GlStateGuard<'a> {
     debug_output_synchronous: bool,
 }
 
+/// `MAX_COMBINED_TEXTURE_IMAGE_UNITS` for the one GL context this process
+/// uses. Cached because `GlStateGuard` runs on every frame.
+static TEXTURE_UNIT_COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 impl<'a> GlStateGuard<'a> {
     fn capture(gl: &'a glow::Context) -> Self {
         unsafe {
@@ -689,9 +762,12 @@ impl<'a> GlStateGuard<'a> {
             let mut clear_color = [0.0; 4];
             gl.get_parameter_f32_slice(glow::COLOR_CLEAR_VALUE, &mut clear_color);
             let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE);
-            let unit_count = gl
-                .get_parameter_i32(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS)
-                .max(1) as usize;
+            // A property of the context, not of the frame: querying it per
+            // frame added a driver round trip to every single render.
+            let unit_count = *TEXTURE_UNIT_COUNT.get_or_init(|| {
+                gl.get_parameter_i32(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS)
+                    .max(1) as usize
+            });
             let mut texture_2d_bindings = Vec::with_capacity(unit_count);
             for unit in 0..unit_count {
                 gl.active_texture(glow::TEXTURE0 + unit as u32);

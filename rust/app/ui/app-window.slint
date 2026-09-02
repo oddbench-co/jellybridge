@@ -107,7 +107,11 @@ export component JellyBridgeWindow inherits Window {
     out property <length> detail-people-scroll-x;
     out property <length> catalog-home-scroll-y;
     out property <float> video-logical-width: root.width / 1px;
-    out property <float> video-logical-height: max(root.height - 112px, 1px) / 1px;
+    // Full window height: `player-surface` is `parent.height` and the top and
+    // bottom bars are overlays drawn on top of it, so sizing the mpv
+    // framebuffer 112px shorter just made `image-fit: contain` letterbox away
+    // that much real video resolution.
+    out property <float> video-logical-height: root.height / 1px;
 
     callback login(string, string, string);
     callback logout();

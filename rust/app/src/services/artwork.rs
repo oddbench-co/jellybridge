@@ -72,11 +72,12 @@ pub fn write_cached_image(path: &Path, data: &[u8]) -> Result<PathBuf, String> {
             .open(&temporary)
             .map_err(|error| error.to_string())?;
         file.write_all(data).map_err(|error| error.to_string())?;
+        // The file is synced so a crash can never leave a truncated entry
+        // that `existing_cached_image` would then serve forever. The parent
+        // directory deliberately is not: losing the rename loses one cache
+        // entry, which the next fetch replaces.
         file.sync_all().map_err(|error| error.to_string())?;
         fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| error.to_string())?;
         Ok(())
     })();
     if result.is_err() {

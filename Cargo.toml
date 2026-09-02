@@ -12,3 +12,12 @@ lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# Release codegen with the symbols a profiler needs. The release profile strips
+# symbols and omits frame pointers, which leaves a sampling profiler with
+# nothing but addresses -- so profiling runs build with this instead.
+# See docs/rust-port/performance-protocol.md.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"
