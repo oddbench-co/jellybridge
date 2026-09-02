@@ -77,6 +77,77 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
     });
 }
 
+/// Blanks every property the detail page renders.
+///
+/// This must cover *everything* on the page. Anything left behind is shown
+/// against the next item, which is what made opening a second movie flash the
+/// first one's poster, tagline and cast for a few hundred milliseconds.
+pub(super) fn clear_detail_page(window: &JellyBridgeWindow) {
+    window.set_detail_id("".into());
+    window.set_detail_title("".into());
+    window.set_detail_heading("".into());
+    window.set_detail_subheading("".into());
+    window.set_detail_ends_at("".into());
+    window.set_detail_tags("".into());
+    window.set_detail_links(ModelRc::new(VecModel::default()));
+    window.set_detail_director("".into());
+    window.set_detail_writers("".into());
+    window.set_detail_star_rating(0.0);
+    window.set_detail_critic_rating(-1);
+    window.set_detail_series_id("".into());
+    window.set_detail_series_name("".into());
+    window.set_detail_season_id("".into());
+    window.set_detail_season_name("".into());
+    window.set_detail_series_summary("".into());
+    window.set_detail_play_context("".into());
+    window.set_detail_season_summary("".into());
+    window.set_detail_play_label("".into());
+    window.set_detail_progress(0.0);
+    window.set_detail_progress_label("".into());
+    window.set_detail_seasons(ModelRc::new(VecModel::from(Vec::new())));
+    window.set_detail_episodes(ModelRc::new(VecModel::from(Vec::new())));
+    window.set_detail_next_up(ModelRc::new(VecModel::<DetailCard>::default()));
+    window.set_detail_people(ModelRc::new(VecModel::from(Vec::new())));
+    // The rest were missing from the old reset, and they are the loudest ones
+    // on screen: the hero images, the synopsis and the metadata lines.
+    window.set_detail_artwork(Image::default());
+    window.set_detail_backdrop(Image::default());
+    window.set_detail_logo(Image::default());
+    window.set_detail_overview("".into());
+    window.set_detail_tagline("".into());
+    window.set_detail_genres("".into());
+    window.set_detail_studios("".into());
+    window.set_detail_media_info("".into());
+    window.set_detail_subtitle("".into());
+    window.set_detail_playable(false);
+    window.set_detail_watched(false);
+    window.set_detail_favorite(false);
+    window.set_detail_audio_options(ModelRc::new(VecModel::<SharedString>::default()));
+    window.set_detail_subtitle_options(ModelRc::new(VecModel::<SharedString>::default()));
+    window.set_detail_audio_index(-1);
+    window.set_detail_subtitle_index(-1);
+}
+
+/// Switches to an empty detail page while the real one loads.
+///
+/// `DetailMessage::Open` already drops the outgoing page from the state
+/// machine, but nothing told the window, so it kept rendering the previous
+/// item until the fetch landed.
+pub fn present_loading(context: &AppContext) {
+    let can_go_back = context
+        .state
+        .lock()
+        .map(|state| state.detail.snapshot().can_go_back)
+        .unwrap_or(false);
+    context.ui.update(move |window| {
+        window.set_screen(super::Screen::Detail);
+        window.set_busy(true);
+        window.set_message("".into());
+        window.set_can_go_back(can_go_back);
+        clear_detail_page(window);
+    });
+}
+
 /// Presents the current detail page and kicks off its artwork loading.
 pub fn present(context: &AppContext, generation: u64) {
     let (page, error, can_go_back, tracks) = match context.state.lock() {
@@ -97,31 +168,7 @@ pub fn present(context: &AppContext, generation: u64) {
             window.set_busy(false);
             window.set_message(error.into());
             window.set_can_go_back(can_go_back);
-            window.set_detail_id("".into());
-            window.set_detail_title("".into());
-            window.set_detail_heading("".into());
-            window.set_detail_subheading("".into());
-            window.set_detail_ends_at("".into());
-            window.set_detail_tags("".into());
-            window.set_detail_links(ModelRc::new(VecModel::default()));
-            window.set_detail_director("".into());
-            window.set_detail_writers("".into());
-            window.set_detail_star_rating(0.0);
-            window.set_detail_critic_rating(-1);
-            window.set_detail_series_id("".into());
-            window.set_detail_series_name("".into());
-            window.set_detail_season_id("".into());
-            window.set_detail_season_name("".into());
-            window.set_detail_series_summary("".into());
-            window.set_detail_play_context("".into());
-            window.set_detail_season_summary("".into());
-            window.set_detail_play_label("".into());
-            window.set_detail_progress(0.0);
-            window.set_detail_progress_label("".into());
-            window.set_detail_seasons(ModelRc::new(VecModel::from(Vec::new())));
-            window.set_detail_episodes(ModelRc::new(VecModel::from(Vec::new())));
-            window.set_detail_next_up(ModelRc::new(VecModel::<DetailCard>::default()));
-            window.set_detail_people(ModelRc::new(VecModel::from(Vec::new())));
+            clear_detail_page(window);
         });
         return;
     };

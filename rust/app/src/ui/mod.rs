@@ -224,6 +224,52 @@ mod tests {
     }
 
 
+    /// Opening a second item used to show the first one's poster, tagline,
+    /// genres and cast for a few hundred milliseconds: `DetailMessage::Open`
+    /// dropped the outgoing page from the state machine, but nothing blanked
+    /// the window, and the reset that did exist skipped the loudest fields.
+    #[test]
+    fn resetting_the_detail_page_leaves_nothing_of_the_previous_item() {
+        use slint::{Image, Model, ModelRc, VecModel};
+
+        let _window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create detail UI");
+        ui.set_detail_title("Movie A".into());
+        ui.set_detail_overview("A's synopsis".into());
+        ui.set_detail_tagline("A's tagline".into());
+        ui.set_detail_genres("Action • Crime".into());
+        ui.set_detail_studios("A Studio".into());
+        ui.set_detail_media_info("2160p • HEVC • EAC3".into());
+        ui.set_detail_director("A Director".into());
+        ui.set_detail_subtitle("2005 • 47m".into());
+        ui.set_detail_playable(true);
+        ui.set_detail_watched(true);
+        ui.set_detail_people(ModelRc::new(VecModel::from(vec![super::DetailPerson {
+            id: "p1".into(),
+            name: "Someone".into(),
+            role: "Lead".into(),
+            artwork: Image::default(),
+        }])));
+
+        super::detail::clear_detail_page(&ui);
+
+        for (field, value) in [
+            ("title", ui.get_detail_title()),
+            ("overview", ui.get_detail_overview()),
+            ("tagline", ui.get_detail_tagline()),
+            ("genres", ui.get_detail_genres()),
+            ("studios", ui.get_detail_studios()),
+            ("media info", ui.get_detail_media_info()),
+            ("director", ui.get_detail_director()),
+            ("subtitle", ui.get_detail_subtitle()),
+        ] {
+            assert_eq!(value, "", "{field} survived the reset");
+        }
+        assert_eq!(ui.get_detail_people().row_count(), 0, "cast survived");
+        assert!(!ui.get_detail_playable());
+        assert!(!ui.get_detail_watched());
+    }
+
     #[test]
     fn season_page_scrolls_with_the_wheel() {
         use slint::{ModelRc, VecModel};

@@ -90,7 +90,22 @@ export component DetailScreen inherits Rectangle {
     out property <length> people-scroll-x;
     background: Theme.bg;
 
+    // While the next item loads the page is blanked, so show that it is
+    // loading rather than an empty frame. `visible` rather than an `if`
+    // because `page-height` and `page-scroll-y` name items inside the
+    // scroller.
+    if root.busy: VerticalLayout {
+        alignment: center;
+        Text {
+            text: "Loading…";
+            color: Theme.text-muted;
+            font-size: 16px;
+            horizontal-alignment: center;
+        }
+    }
+
     scroller := ScrollView {
+      visible: !root.busy;
       // An explicit-size child does not populate the Flickable's viewport
       // geometry (only layout children do), and the Flickable rejects wheel
       // events unless viewport-height exceeds its height — bind it directly.
