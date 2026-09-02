@@ -3,6 +3,7 @@
 
 pub mod artwork;
 pub mod dns;
+pub mod egl_vendor;
 pub mod playback;
 pub mod player;
 pub mod proxy;
