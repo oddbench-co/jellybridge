@@ -327,12 +327,40 @@ recorded here rather than taken:
 
 ### Still open
 
-- **`hwdec-current` reports `software`** on this machine -- an RTX 3090, with
-  `hwdec = auto-safe` and `vo = libmpv`. Verified pre-existing: the same
-  `decode_path=software` appears with the mpv option set from before this
-  round, so it is not caused by disabling the built-in scripts. Playback is
-  otherwise correct -- video renders, the timeline advances, audio and subtitle
-  tracks populate.
+- **Software decoding renders a black picture.** Reproducible, and the most
+  serious thing on this list. Measured as mean luma over the video area of
+  five captures, rather than by eye:
+
+  | decode path | video area | verdict |
+  |---|---|---|
+  | `hardware/direct (nvdec)` | mean 31.7, max 248 | picture |
+  | `hardware/direct (nvdec)` | mean 50.5, max 244 | picture |
+  | `software` | mean 0.3, max 3 | black |
+  | `software` | mean 1.0, max 3 | black |
+  | `software` | mean 1.0, max 3 | black |
+
+  Everything else keeps working while it is black: audio plays, the timeline
+  advances, the track selectors populate, and `render.rs` logs
+  `libmpv rendered into a same-context borrowed texture` at the right size. The
+  decode path is the only thing that correlates.
+
+  **Which path mpv picks for the same item is itself not deterministic** -- the
+  same episode reported `nvdec` on one launch and `software` on the next -- so
+  the fault appears intermittently, which is how it survived a smoke test. An
+  earlier entry here described the `software` case as a hardware-decoding
+  question and said playback was otherwise correct; that was wrong, and this
+  replaces it.
+
+  Not isolated to a cause. The leading suspect is the frame gating added in
+  round one (`take_frame_request`, `services/render.rs`): after the first frame
+  it draws only when mpv reports `MPV_RENDER_UPDATE_FRAME`, and otherwise hands
+  back the existing front texture -- so a path that never sets that flag would
+  leave frame one on screen forever, and frame one at the start of a video is
+  black. That is a hypothesis, **not a measured finding**: the controlled test
+  that would settle it (forcing `hwdec = no` and toggling the gate) has not
+  been run. Round one verified that change against playing, paused,
+  seek-while-paused and resize -- all with hardware decoding active. The
+  software path was never exercised.
 - The **`ImageStore::remove`** cost of tearing down a screen is 9% of the UI
   thread across a browse-and-navigate session. Keeping the catalog and detail
   screens alive behind `visible:` instead of `if` is what would remove it; it
