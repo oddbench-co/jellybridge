@@ -87,6 +87,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..AppState::default()
     };
     let image_cache = cache_directory()?;
+    // Nothing ever removed an artwork entry, so the cache grew for the life of
+    // the installation. Pruning is disk I/O over a directory of thousands of
+    // files, so it runs on the blocking pool and never blocks the first frame.
+    {
+        let directory = image_cache.clone();
+        runtime.spawn_blocking(move || {
+            services::artwork::prune_image_cache(&directory, services::artwork::IMAGE_CACHE_BUDGET)
+        });
+    }
     let window = JellyBridgeWindow::new()?;
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "window_built", "startup_stage");
     let ui_handle = UiHandle::new(&window);

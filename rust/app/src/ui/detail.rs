@@ -765,9 +765,6 @@ fn load_detail_image(
     }
     let ctx = context.clone();
     context.runtime.spawn(async move {
-        let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
-            return;
-        };
         let cache_id = format!(
             "{}-{}-{}",
             image.item_id,
@@ -790,6 +787,12 @@ fn load_detail_image(
         let result = if let Some(path) = cached {
             Ok(path)
         } else {
+            // Taken here, not at the top of the task: the permit bounds
+            // concurrent downloads, and a hero image already on disk should not
+            // wait behind six in-flight fetches for a permit it will not use.
+            let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
+                return;
+            };
             let max_width = match &target {
                 DetailArtworkTarget::HeroBackdrop(_) => 1600,
                 DetailArtworkTarget::Episode { .. } | DetailArtworkTarget::HeroPoster(_)

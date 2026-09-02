@@ -212,9 +212,6 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
         let image_item_id = item.image_item_id.clone();
         let item_id = item.id.clone();
         context.runtime.spawn(async move {
-            let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
-                return;
-            };
             let path = image_cache_path(
                 &ctx.image_cache,
                 api.session().server_url.as_str(),
@@ -232,6 +229,13 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
             let result = if let Some(path) = cached {
                 Ok(path)
             } else {
+                // The permit bounds concurrent downloads, so it is taken here
+                // rather than at the top of the task: a poster already on disk
+                // used to wait behind six in-flight fetches for a permit it
+                // then did not use.
+                let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
+                    return;
+                };
                 match api.fetch_primary_image(&image_item_id).await {
                     Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
                         tokio::task::spawn_blocking(move || write_cached_image(&path, &bytes))
