@@ -98,19 +98,73 @@ pub fn show_catalog_error(context: &AppContext, message: String) {
 // loses already-loaded images; fetch tasks insert into it even when their
 // navigation generation has gone stale, because a fetched image stays valid.
 thread_local! {
-    static IMAGE_CACHE: RefCell<HashMap<String, Image>> = RefCell::new(HashMap::new());
+    static IMAGE_CACHE: RefCell<ImageCache> = RefCell::new(ImageCache::default());
 }
 
 const IMAGE_CACHE_CAP: usize = 1024;
 
+/// Decoded artwork, with the pixel cost of what it holds.
+///
+/// Entry counts do not describe this cache: a 320 px poster decodes to ~600 KB
+/// and a 1600 px backdrop to ~5.7 MB, so 1024 entries is anywhere between
+/// tens of megabytes and more than a gigabyte. `bytes` is what the budget in
+/// `docs/rust-port/performance-protocol.md` is set against.
+#[derive(Default)]
+struct ImageCache {
+    entries: HashMap<String, Image>,
+    bytes: usize,
+    /// Highest `bytes` ever reached, reported when it grows, so a profiling
+    /// run records the peak without sampling.
+    reported_high_water: usize,
+}
+
+/// Decoded size of an image in bytes. Slint keeps artwork as RGBA8, so this is
+/// exact for the buffers this cache holds.
+fn decoded_bytes(image: &Image) -> usize {
+    let size = image.size();
+    size.width as usize * size.height as usize * 4
+}
+
+impl ImageCache {
+    fn insert(&mut self, key: String, image: Image) {
+        let added = decoded_bytes(&image);
+        if let Some(previous) = self.entries.insert(key, image) {
+            self.bytes = self.bytes.saturating_sub(decoded_bytes(&previous));
+        }
+        self.bytes += added;
+        self.report_growth();
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+    }
+
+    /// Logs each new 8 MiB high-water mark. Reporting every insert would spam
+    /// a profiling log with hundreds of lines; reporting nothing would leave
+    /// the peak unmeasurable.
+    fn report_growth(&mut self) {
+        const STEP: usize = 8 * 1024 * 1024;
+        if self.bytes < self.reported_high_water + STEP {
+            return;
+        }
+        self.reported_high_water = self.bytes - self.bytes % STEP;
+        tracing::info!(
+            mib = self.bytes as f64 / (1024.0 * 1024.0),
+            entries = self.entries.len(),
+            "image_cache_high_water"
+        );
+    }
+}
+
 fn cached_image(key: &str) -> Option<Image> {
-    IMAGE_CACHE.with(|cache| cache.borrow().get(key).cloned())
+    IMAGE_CACHE.with(|cache| cache.borrow().entries.get(key).cloned())
 }
 
 fn store_cached_image(key: String, image: Image) {
     IMAGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if cache.len() >= IMAGE_CACHE_CAP {
+        if cache.entries.len() >= IMAGE_CACHE_CAP {
             cache.clear();
         }
         cache.insert(key, image);
