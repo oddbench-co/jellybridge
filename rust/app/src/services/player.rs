@@ -179,6 +179,22 @@ pub fn create_player(
         initializer.set_option("input-default-bindings", false)?;
         initializer.set_option("osc", false)?;
         initializer.set_option("keep-open", true)?;
+        // mpv starts a Lua VM on its own thread for each of its built-in
+        // scripts. They exist for mpv's own OSD and command line, none of which
+        // this app has: the UI is Slint, playback is driven through the command
+        // API, and the URL always comes from the loopback proxy, so ytdl can
+        // only ever be dead weight. Measured: seven threads and their VMs.
+        // `config = false` above does not cover these -- they are built in, not
+        // loaded from the config directory.
+        initializer.set_option("ytdl", false)?;
+        initializer.set_option("load-scripts", false)?;
+        initializer.set_option("load-stats-overlay", false)?;
+        initializer.set_option("load-console", false)?;
+        initializer.set_option("load-select", false)?;
+        initializer.set_option("load-positioning", false)?;
+        initializer.set_option("load-commands", false)?;
+        initializer.set_option("load-context-menu", false)?;
+        initializer.set_option("load-auto-profiles", false)?;
         Ok(())
     })?;
     configure_observers(&core)?;

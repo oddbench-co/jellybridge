@@ -59,7 +59,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
 
+    // One worker per logical CPU is tokio's default: 32 OS threads here, for a
+    // workload whose real concurrency is six dashboard requests, six artwork
+    // permits and eight proxy streams, all of it I/O-bound. Four workers cover
+    // that; the blocking pool, which the artwork disk probes and getaddrinfo
+    // use, is capped well below its 512-thread default for the same reason.
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .max_blocking_threads(8)
         .enable_all()
         .build()?;
     // Before anything else touches the main thread. The saved session's
