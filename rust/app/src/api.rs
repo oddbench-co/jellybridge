@@ -1,5 +1,7 @@
 use reqwest::header::{HeaderValue, InvalidHeaderValue};
 use reqwest::{Method, StatusCode};
+use std::future::Future;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
@@ -90,15 +92,51 @@ pub struct CatalogPage {
     pub total_record_count: usize,
 }
 
+/// Times one dashboard request.
+///
+/// The dashboard is server-bound and `home` installs nothing until all six
+/// requests finish, so the slowest one sets the first frame. Which one that is
+/// varies with the library, and it is not guessable from the client -- run with
+/// `RUST_LOG=jellybridge=debug` to see it.
+async fn timed<T>(request: &'static str, work: impl Future<Output = T>) -> T {
+    let started = std::time::Instant::now();
+    let value = work.await;
+    tracing::debug!(
+        ms = started.elapsed().as_secs_f64() * 1000.0,
+        request,
+        "dashboard_request"
+    );
+    value
+}
+
+/// The one place an HTTP client is built.
+///
+/// The caching resolver is the reason this is shared: hyper resolves once per
+/// connection with no in-flight deduplication, so the dashboard's six parallel
+/// requests each paid the same lookup. See `services::dns`.
+fn build_http_client() -> Result<reqwest::Client, ApiError> {
+    Ok(reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .read_timeout(std::time::Duration::from_secs(30))
+        .dns_resolver(crate::services::dns::shared())
+        .build()?)
+}
+
 impl JellyfinApi {
     pub fn from_session(session: StoredSession) -> Result<Self, ApiError> {
+        Self::from_session_with(session, build_http_client()?)
+    }
+
+    /// Builds an API for a session over an existing client, so sign-in does not
+    /// throw away the connection it just opened (and warmed the DNS cache with)
+    /// before the dashboard fetch starts on an empty pool.
+    fn from_session_with(
+        session: StoredSession,
+        http: reqwest::Client,
+    ) -> Result<Self, ApiError> {
         let server = normalize_server_url(&session.server_url)?;
         let authorization = authorization_value(&session.token)?;
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .read_timeout(std::time::Duration::from_secs(30))
-            .build()?;
         Ok(Self {
             http,
             session,
@@ -136,7 +174,7 @@ impl JellyfinApi {
             user_id: response.user.id,
         };
         let account_name = response.user.name;
-        Ok((Self::from_session(session)?, account_name))
+        Ok((Self::from_session_with(session, api.http)?, account_name))
     }
 
     pub fn session(&self) -> &StoredSession {
@@ -145,12 +183,12 @@ impl JellyfinApi {
 
     pub async fn home(&self) -> Result<Vec<CatalogSectionData>, ApiError> {
         let (libraries, resume, next_up, latest, favorites, recent) = tokio::join!(
-            self.libraries(),
-            self.resume_items(),
-            self.next_up(),
-            self.latest(),
-            self.favorites(),
-            self.recent(),
+            timed("libraries", self.libraries()),
+            timed("resume", self.resume_items()),
+            timed("next_up", self.next_up()),
+            timed("latest", self.latest()),
+            timed("favorites", self.favorites()),
+            timed("recent", self.recent()),
         );
         let mut sections = vec![CatalogSectionData {
             id: "libraries".into(),

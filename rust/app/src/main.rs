@@ -62,6 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // Before anything else touches the main thread. The saved session's
+    // dashboard is the slowest thing in startup and it does not depend on the
+    // window, so it runs while the window, the player and the renderer are
+    // being built rather than after them. See auth::prefetch_home.
+    let prefetched_home = features::auth::prefetch_home(runtime.handle());
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "prefetch_spawned", "startup_stage");
     let store = SessionStore::for_current_user()?;
     let settings_store = SettingsStore::for_current_user()?;
     let stored_settings = settings_store.load().unwrap_or_else(|error| {
@@ -75,7 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let image_cache = cache_directory()?;
     let window = JellyBridgeWindow::new()?;
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "window_built", "startup_stage");
     let ui_handle = UiHandle::new(&window);
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "ui_handle", "startup_stage");
     let playback = Arc::new(Mutex::new(None::<PreparedPlayback>));
     let player_tracks = Arc::new(Mutex::new(PlayerTrackState::default()));
     let state = Arc::new(Mutex::new(app_state));
@@ -118,6 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     })?;
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "player_created", "startup_stage");
     let player_sender = player_worker.command_sender();
     let player_worker = Rc::new(RefCell::new(Some(player_worker)));
     let image_is_cleared = Rc::new(Cell::new(true));
@@ -139,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui::connect(&window, &context);
     let player_ui = ui::player::connect(&window, &context, image_is_cleared.clone());
     ui::player::install_renderer(&window, render_client, image_is_cleared.clone(), player_ui)?;
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "renderer_installed", "startup_stage");
     let close_worker = player_worker.clone();
     let close_weak = slint::ComponentHandle::as_weak(&window);
     let close_image_is_cleared = image_is_cleared.clone();
@@ -150,12 +160,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         slint::CloseRequestResponse::HideWindow
     });
-    features::auth::restore_session(&context);
+    features::auth::restore_session(&context, prefetched_home);
 
     tracing::info!(
         renderer = RENDERER_NAME,
         "Rust JellyBridge application ready"
     );
+    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "event_loop_start", "startup_stage");
     window.run()?;
 
     // Teardown order matters: invalidate in-flight work, stop the mpv worker,

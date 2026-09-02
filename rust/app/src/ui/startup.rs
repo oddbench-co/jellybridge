@@ -30,6 +30,14 @@ pub fn mark_process_start(at: Instant) {
     let _ = EXEC_TO_MAIN_MS.set(exec_to_main_ms());
 }
 
+/// Milliseconds since `main` began, for temporary stage timing.
+pub fn elapsed_ms() -> f64 {
+    PROCESS_START
+        .get()
+        .map(|start| start.elapsed().as_secs_f64() * 1000.0)
+        .unwrap_or(-1.0)
+}
+
 /// Marks the first screen with real content as pushed to the window. Cheap and
 /// idempotent: only the first caller wins, later presents are not startup.
 pub fn mark_content_ready(screen: &'static str) {

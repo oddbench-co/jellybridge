@@ -137,7 +137,8 @@ pub fn present(context: &AppContext, message: &str) {
         if !patch_rows(&window.get_catalog_items(), &items, |a, b| a.id == b.id) {
             window.set_catalog_items(ModelRc::new(VecModel::from(items)));
         }
-        super::startup::mark_content_ready("catalog");
+        tracing::debug!(ms = super::startup::elapsed_ms(), stage = "catalog_presented", "startup_stage");
+    super::startup::mark_content_ready("catalog");
     });
     load_artwork(context, generation, &items_data);
 }

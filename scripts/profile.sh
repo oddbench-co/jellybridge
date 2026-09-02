@@ -78,7 +78,7 @@ fi
 # an interactive app does; refresh_full_speed would measure a benchmark loop
 # the app never runs.
 export SLINT_DEBUG_PERFORMANCE="refresh_lazy,console"
-export RUST_LOG="${RUST_LOG:-jellybridge=info}"
+export RUST_LOG="${RUST_LOG:-jellybridge=debug}"
 
 if [[ "$mode" == cpu ]]; then
     [[ -x "$SAMPLY" ]] || { echo "samply not found at $SAMPLY (cargo install samply)" >&2; exit 3; }

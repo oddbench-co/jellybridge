@@ -195,29 +195,43 @@ pub fn start_home_load(context: &AppContext) {
         if !ctx.is_current(generation) {
             return;
         }
-        match result {
-            Ok(home) => {
-                let account = ctx
-                    .state
-                    .lock()
-                    .map(|state| state.account_name.clone())
-                    .unwrap_or_default();
-                install_home(&ctx, api, account, home);
-            }
-            Err(ApiError::Unauthorized) => {
-                let _ = ctx.store.clear();
-                if let Ok(mut state) = ctx.state.lock() {
-                    crate::features::auth::reset_session_state(&mut state);
-                }
-                ui::show_login(
-                    &ctx,
-                    "Your saved session is no longer valid. Please sign in again.",
-                );
-            }
-            Err(error) => ui::show_catalog_error(&ctx, error.to_string()),
-        }
+        apply_home_result(&ctx, api, result);
     });
     replace_catalog_request(context, task.abort_handle());
+}
+
+/// Installs a finished dashboard request, or reports why it failed.
+///
+/// Shared by the launch prefetch in [`crate::features::auth`] and by every
+/// later reload, so a session that expired between launches is handled the
+/// same way whichever path fetched it. The caller has already checked the
+/// navigation generation.
+pub fn apply_home_result(
+    context: &AppContext,
+    api: JellyfinApi,
+    result: Result<Vec<CatalogSectionData>, ApiError>,
+) {
+    match result {
+        Ok(home) => {
+            let account = context
+                .state
+                .lock()
+                .map(|state| state.account_name.clone())
+                .unwrap_or_default();
+            install_home(context, api, account, home);
+        }
+        Err(ApiError::Unauthorized) => {
+            let _ = context.store.clear();
+            if let Ok(mut state) = context.state.lock() {
+                crate::features::auth::reset_session_state(&mut state);
+            }
+            ui::show_login(
+                context,
+                "Your saved session is no longer valid. Please sign in again.",
+            );
+        }
+        Err(error) => ui::show_catalog_error(context, error.to_string()),
+    }
 }
 
 pub fn install_home(

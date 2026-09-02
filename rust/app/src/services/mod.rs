@@ -2,6 +2,7 @@
 //! loopback proxy, GL render bridge) and Jellyfin playback preparation.
 
 pub mod artwork;
+pub mod dns;
 pub mod playback;
 pub mod player;
 pub mod proxy;
