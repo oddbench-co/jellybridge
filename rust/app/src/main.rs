@@ -25,6 +25,11 @@ compile_error!("select exactly one renderer feature");
 #[cfg(not(any(feature = "renderer-femtovg", feature = "renderer-skia-opengl")))]
 compile_error!("select renderer-femtovg or renderer-skia-opengl");
 
+/// Identifies our windows to the window manager. Matches the packager
+/// identifier in `Cargo.toml` so the desktop entry, the window class and the
+/// installed package all agree.
+const APP_ID: &str = "dev.nk.jellybridge";
+
 #[cfg(feature = "renderer-femtovg")]
 const RENDERER_NAME: &str = "femtovg";
 
@@ -64,6 +69,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // permits and eight proxy streams, all of it I/O-bound. Four workers cover
     // that; the blocking pool, which the artwork disk probes and getaddrinfo
     // use, is capped well below its 512-thread default for the same reason.
+    // Without this the Wayland surface carries no app id at all: `hyprctl
+    // clients` reports an empty class, the desktop entry's StartupWMClass
+    // matches nothing, and anything that identifies windows by class -- window
+    // rules, taskbars, launch-or-focus keybinds -- can only fall back to
+    // matching our title, which collides with any other window that happens to
+    // mention the project. The identifier matches the one the packager uses.
+    if let Err(error) = slint::set_xdg_app_id(APP_ID) {
+        tracing::warn!(%error, "the window manager app id could not be set");
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .max_blocking_threads(8)
