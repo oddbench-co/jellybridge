@@ -60,6 +60,13 @@ pub fn present(context: &AppContext, message: &str) {
             title: section.title.as_str().into(),
             start_index: i32::try_from(section.start_index).unwrap_or(i32::MAX),
             count: i32::try_from(section.count).unwrap_or(i32::MAX),
+            // Taken from the rows themselves rather than the section id, so a
+            // folder of libraries is shaped correctly too. A shelf holds one
+            // kind of row, so the first one decides.
+            wide: current
+                .items
+                .get(section.start_index)
+                .is_some_and(|item| is_wide_tile(&item.kind)),
         })
         .collect();
     // `present` used to deep-clone this vector twice more on top of the
@@ -175,7 +182,8 @@ pub fn present_preferences(context: &AppContext) {
     });
 }
 
-fn to_ui_item(item: &CatalogItemData, artwork_width: u32) -> CatalogItem {
+fn to_ui_item(item: &CatalogItemData, base_width: u32) -> CatalogItem {
+    let artwork_width = item_artwork_width(&item.kind, base_width);
     let placeholder = item
         .title
         .split_whitespace()
@@ -204,6 +212,29 @@ fn to_ui_item(item: &CatalogItemData, artwork_width: u32) -> CatalogItem {
     }
 }
 
+/// Whether a row shows the server's 16:9 banner art rather than poster art.
+///
+/// Jellyfin gives collection folders and playlist folders a wide image with
+/// the library name rendered into it -- 960x540 here. Fitting one into a 2:3
+/// poster tile cropped away 62% of the width, name included, and upscaled what
+/// was left 2.6x.
+fn is_wide_tile(kind: &str) -> bool {
+    matches!(
+        kind,
+        "CollectionFolder" | "UserView" | "ManualPlaylistsFolder"
+    )
+}
+
+/// The artwork width for one row. Wide tiles are drawn half again as wide as
+/// poster tiles, so they need correspondingly more pixels.
+fn item_artwork_width(kind: &str, base_width: u32) -> u32 {
+    if is_wide_tile(kind) {
+        (base_width * 3 / 2).div_ceil(40) * 40
+    } else {
+        base_width
+    }
+}
+
 fn catalog_kind_label(kind: &str) -> &str {
     match kind {
         "CollectionFolder" | "UserView" => "Library",
@@ -217,7 +248,7 @@ fn load_artwork(
     context: &AppContext,
     generation: u64,
     items: &[CatalogItemData],
-    artwork_width: u32,
+    base_width: u32,
 ) {
     let Some(api) = context.api() else { return };
     let mut spawned = 0_usize;
@@ -226,6 +257,7 @@ fn load_artwork(
         let Some(tag) = item.image_tag.clone() else {
             continue;
         };
+        let artwork_width = item_artwork_width(&item.kind, base_width);
         // `to_ui_item` already filled the row from this cache, so a hit means
         // the whole fetch-probe-decode round trip below would produce an image
         // that is already on screen. Without this, every re-present -- going

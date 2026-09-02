@@ -9,14 +9,18 @@ export component CatalogShelf inherits Rectangle {
     in property <length> card-width: 176px;
     callback open-item(string, string, bool, bool);
     callback vertical-scroll(delta-y: length);
-    property <length> content-width: root.section.count * (root.card-width + 16px) - 16px;
+    // A 16:9 banner at poster width would be a third of the height of the
+    // rows around it, so wide tiles are given half again the width.
+    property <float> poster-aspect: root.section.wide ? 0.5625 : 1.5;
+    property <length> tile-width: root.section.wide ? root.card-width * 1.5 : root.card-width;
+    property <length> content-width: root.section.count * (root.tile-width + 16px) - 16px;
     property <length> shelf-offset-x: 0px;
     property <length> minimum-shelf-offset: min(0px, shelf.width - root.content-width);
     // Short enough to track trackpad deltas ~1:1, long enough that wheel
     // ticks and the arrow-button jumps glide instead of teleporting.
     animate shelf-offset-x { duration: 120ms; easing: ease-out; }
 
-    height: card-width * 1.5 + 112px;
+    height: root.tile-width * root.poster-aspect + 112px;
     background: transparent;
 
     // Fallback scroll layer for the whole shelf. The enclosing ListView's own
@@ -48,7 +52,7 @@ export component CatalogShelf inherits Rectangle {
         x: 24px;
         y: 43px;
         width: parent.width - 48px;
-        height: root.card-width * 1.5 + 62px;
+        height: root.tile-width * root.poster-aspect + 62px;
         background: transparent;
         clip: true;
 
@@ -69,7 +73,8 @@ export component CatalogShelf inherits Rectangle {
             width: root.content-width;
             spacing: 16px;
             for shelf-entry[item-index] in root.section.count: MediaTile {
-                width: root.card-width;
+                width: root.tile-width;
+                poster-aspect: root.poster-aspect;
                 item: root.items[root.section.start-index + item-index];
                 opened => {
                     root.open-item(self.item.id, self.item.kind, self.item.is-container, self.item.playable);
@@ -80,7 +85,7 @@ export component CatalogShelf inherits Rectangle {
 
     Rectangle {
         x: 4px;
-        y: 43px + root.card-width * 0.62;
+        y: 43px + root.tile-width * root.poster-aspect * 0.41;
         width: 38px;
         height: 58px;
         border-radius: 19px;
@@ -95,7 +100,7 @@ export component CatalogShelf inherits Rectangle {
 
     Rectangle {
         x: parent.width - 42px;
-        y: 43px + root.card-width * 0.62;
+        y: 43px + root.tile-width * root.poster-aspect * 0.41;
         width: 38px;
         height: 58px;
         border-radius: 19px;

@@ -691,6 +691,7 @@ mod tests {
                 title: format!("Section {s}").into(),
                 start_index: s * 10,
                 count: 10,
+                wide: false,
             })
             .collect::<Vec<_>>();
         ui.set_catalog_items(ModelRc::new(VecModel::from(items)));
@@ -793,6 +794,7 @@ mod tests {
             title: "Libraries".into(),
             start_index: 0,
             count: 2,
+            wide: false,
         }];
         for s in 0..10 {
             sections.push(super::CatalogSection {
@@ -800,6 +802,7 @@ mod tests {
                 title: format!("Section {s}").into(),
                 start_index: 2 + s * 6,
                 count: 6,
+                wide: false,
             });
         }
         ui.set_catalog_items(ModelRc::new(VecModel::from(items)));

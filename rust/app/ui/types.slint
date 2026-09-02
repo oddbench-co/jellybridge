@@ -21,6 +21,9 @@ export struct CatalogSection {
     title: string,
     start-index: int,
     count: int,
+    // Libraries and playlists are 16:9 banner art, not 2:3 posters. Cropping
+    // one into the other threw away 62% of the width and upscaled the rest.
+    wide: bool,
 }
 
 export struct CatalogItem {

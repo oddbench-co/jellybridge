@@ -3,9 +3,12 @@ import { CatalogItem } from "../../types.slint";
 
 export component MediaTile inherits Rectangle {
     in property <CatalogItem> item;
+    // Poster height as a fraction of the width: 1.5 for 2:3 poster art,
+    // 0.5625 for the 16:9 banners the server has for libraries.
+    in property <float> poster-aspect: 1.5;
     callback opened();
 
-    height: self.width * 1.5 + 58px;
+    height: self.width * root.poster-aspect + 58px;
     background: transparent;
 
     tile-focus := FocusScope {
@@ -22,7 +25,7 @@ export component MediaTile inherits Rectangle {
         spacing: 8px;
 
         poster := Rectangle {
-            height: root.width * 1.5;
+            height: root.width * root.poster-aspect;
             background: Theme.surface;
             border-color: tile-focus.has-focus ? Theme.accent-bright : tile-touch.has-hover ? Theme.text-faint : Theme.surface-hover;
             border-width: tile-focus.has-focus ? 3px : tile-touch.has-hover ? 2px : 1px;
