@@ -23,13 +23,6 @@ pub struct StoredSettings {
     pub library_sort_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub library_page_size: Option<i32>,
-    /// The glvnd ICD file for the EGL vendor that served this display, and the
-    /// `GL_VENDOR` it reported. Both are set together once a launch has
-    /// observed them; see `services::egl_vendor`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub egl_vendor_icd: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub egl_vendor_name: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub playback_preferences: HashMap<String, StoredPlaybackPreference>,
     #[serde(flatten)]
@@ -219,26 +212,6 @@ impl SettingsStore {
         self.save(&settings)
     }
 
-    /// Records, or clears, the EGL vendor pin. `None` forgets it entirely, so
-    /// the next launch probes every installed vendor again.
-    pub fn save_egl_vendor(
-        &self,
-        vendor: Option<(&std::path::Path, &str)>,
-    ) -> Result<(), SessionError> {
-        let mut settings = self.load()?;
-        match vendor {
-            Some((icd, name)) => {
-                settings.egl_vendor_icd = Some(icd.to_string_lossy().into_owned());
-                settings.egl_vendor_name = Some(name.to_owned());
-            }
-            None => {
-                settings.egl_vendor_icd = None;
-                settings.egl_vendor_name = None;
-            }
-        }
-        self.save(&settings)
-    }
-
     pub fn save_playback_preference(
         &self,
         key: &str,
@@ -300,22 +273,13 @@ fn config_directory() -> Result<PathBuf, SessionError> {
     }
 }
 
-/// The app's cache root. Artwork lives in a subdirectory of this; small
-/// runtime markers that are not artwork live directly in it, so that the
-/// artwork pruner never has to reason about files it does not own.
-pub fn cache_root() -> Result<PathBuf, SessionError> {
+pub fn cache_directory() -> Result<PathBuf, SessionError> {
     let directory = if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
-        PathBuf::from(path).join("jellybridge")
+        PathBuf::from(path).join("jellybridge/images")
     } else {
         let home = std::env::var_os("HOME").ok_or(SessionError::MissingConfigDirectory)?;
-        PathBuf::from(home).join(".cache/jellybridge")
+        PathBuf::from(home).join(".cache/jellybridge/images")
     };
-    secure_directory(&directory)?;
-    Ok(directory)
-}
-
-pub fn cache_directory() -> Result<PathBuf, SessionError> {
-    let directory = cache_root()?.join("images");
     secure_directory(&directory)?;
     Ok(directory)
 }

@@ -132,8 +132,6 @@ impl RenderHost {
         let vendor = unsafe { gl.get_parameter_string(glow::VENDOR) };
         let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
         tracing::info!(%version, %vendor, %renderer, "Slint OpenGL context acquired");
-        // The first context is what confirms or rejects the EGL vendor pin.
-        crate::services::egl_vendor::note_gl_vendor(&vendor);
 
         let debug_requested = std::env::var_os("JELLYBRIDGE_GL_DEBUG").is_some();
         if debug_requested && gl.supports_debug() {

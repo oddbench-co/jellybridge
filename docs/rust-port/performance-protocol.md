@@ -208,7 +208,7 @@ so the "before" column is re-measured rather than copied.
 |---|---|---|
 | `exec_to_main` (dynamic linker, previously unmeasured) | 70 ms | 70 ms |
 | `time_to_interactive` from `main` | 303-339 ms | 288-343 ms |
-| Settled Home RSS / PSS | 349 MiB / 151 MiB | **239 MiB / 123 MiB** |
+| Settled Home RSS / PSS | 349 MiB / 151 MiB | 345 MiB / 147 MiB |
 | Settled thread count | 55 | 13 |
 | Release binary | 25,888,064 B | 24,317,048 B |
 | Decoded-image cache after a browse | unbounded (80 MiB and climbing) | bounded at 96 MiB, LRU |
@@ -325,62 +325,14 @@ recorded here rather than taken:
   nothing, because the local init it now overlaps is 31 ms, not the ~200 ms the
   plan assumed.
 
-### The EGL vendor that never draws anything
-
-`libEGL.so.1` is glvnd, which at first EGL use reads every ICD in
-`/usr/share/glvnd/egl_vendor.d` and `dlopen`s each one to ask which can drive
-the display. This machine has two. NVIDIA wins; Mesa is initialised anyway,
-brings `libgallium` and `libLLVM` with it -- it compiles shaders with LLVM --
-never draws a frame, and stays resident for the life of the process. Measured
-at **104 MiB of RSS**, the single largest line in the settled breakdown after
-the NVIDIA driver itself.
-
-`__EGL_VENDOR_LIBRARY_FILENAMES` narrows the list to one file and removes the
-load completely. Measured, three runs each, with `Mesa resident` read from
-`maps.txt`:
-
-| | RSS | PSS | Mesa resident |
-|---|---|---|---|
-| probing both vendors | 344-345 MiB | 145-147 MiB | 104.1 MiB |
-| pinned to the winner | **238-240 MiB** | **122-124 MiB** | **0.0 MiB** |
-
-`time_to_interactive` is unchanged, and the GL context is identical --
-`3.3.0 NVIDIA`, `NVIDIA GeForce RTX 3090`.
-
-It cannot be set from a hardcoded guess: on AMD and Intel machines Mesa *is*
-the right vendor, and a wrong pin means a session on software rendering.
-`services::egl_vendor` therefore never guesses. It learns, verifies, and heals:
-
-- The first launch probes normally and records the winner, but **only when
-  exactly one installed ICD can be attributed to the reported `GL_VENDOR`** --
-  `nvidia` against `NVIDIA Corporation`, `mesa` against `Mesa/X.org`. An Intel
-  or AMD driver matches nothing, so nothing is pinned and the app behaves
-  exactly as it did before. Two matches also pin nothing.
-- A pinned launch leaves a marker file in the cache root and removes it on
-  reaching a working GL context. Finding that marker still there at the next
-  startup means the previous pinned launch never got a context -- it crashed,
-  hung, or was killed -- so the pin is dropped. This catches the failure modes
-  an error return cannot.
-- A pin that produces a *different* vendor is rejected: the pin is dropped, the
-  event loop quits and the process re-executes itself once, unpinned, rather
-  than spending the session on whatever driver the stale pin selected. A single
-  `JELLYBRIDGE_EGL_REPROBED` marker makes an exec loop impossible.
-- An explicit `__EGL_VENDOR_LIBRARY_FILENAMES` from the user or a launcher
-  script always wins; this only chooses when nobody else has.
-
-All three paths were exercised against the real app: learn (RSS 345, pin
-written), pin (RSS 239, Mesa 0.0), stale marker (pin dropped, that launch
-probed at RSS 345 and re-learned), and vendor mismatch (warned, dropped,
-restarted, re-learned). Playback was verified with the pin active.
-
 ### Still open
 
-- **Hardware decoding is per-item, not universal.** `hwdec = auto-safe` with
-  `vo = libmpv` reports `hardware/direct (nvdec)` on a 2160p HEVC movie, but
-  `software` on a 1080p H.264/EAC3 episode. Verified that the software case
-  predates this round -- the same `decode_path=software` appears with the mpv
-  option set from before it -- so disabling the built-in Lua scripts is not the
-  cause. Worth finding out what about that file falls outside `auto-safe`.
+- **`hwdec-current` reports `software`** on this machine -- an RTX 3090, with
+  `hwdec = auto-safe` and `vo = libmpv`. Verified pre-existing: the same
+  `decode_path=software` appears with the mpv option set from before this
+  round, so it is not caused by disabling the built-in scripts. Playback is
+  otherwise correct -- video renders, the timeline advances, audio and subtitle
+  tracks populate.
 - The **`ImageStore::remove`** cost of tearing down a screen is 9% of the UI
   thread across a browse-and-navigate session. Keeping the catalog and detail
   screens alive behind `visible:` instead of `if` is what would remove it; it

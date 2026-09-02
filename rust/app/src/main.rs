@@ -16,7 +16,7 @@ use features::catalog::{CatalogDensity, CatalogSort};
 use features::progress::PlaybackReporter;
 use services::player::{PlayerEvent, create_player};
 use services::playback::PreparedPlayback;
-use services::session::{SessionStore, SettingsStore, StoredSettings, cache_directory, cache_root};
+use services::session::{SessionStore, SettingsStore, StoredSettings, cache_directory};
 use ui::{JellyBridgeWindow, UiHandle};
 
 #[cfg(all(feature = "renderer-femtovg", feature = "renderer-skia-opengl"))]
@@ -48,16 +48,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     ui::startup::mark_process_start(process_start);
 
-    // Both are read here, ahead of the backend, because the EGL vendor pin has
-    // to be in the environment before anything touches EGL: glvnd builds its
-    // vendor list on first use and never rereads it.
-    let settings_store = SettingsStore::for_current_user()?;
-    let stored_settings = settings_store.load().unwrap_or_else(|error| {
-        tracing::warn!(%error, "catalog settings could not be loaded");
-        StoredSettings::default()
-    });
-    services::egl_vendor::apply(&stored_settings, &cache_root()?);
-
     slint::BackendSelector::new()
         .backend_name("winit".into())
         .renderer_name(RENDERER_NAME.into())
@@ -86,6 +76,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let prefetched_home = features::auth::prefetch_home(runtime.handle());
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "prefetch_spawned", "startup_stage");
     let store = SessionStore::for_current_user()?;
+    let settings_store = SettingsStore::for_current_user()?;
+    let stored_settings = settings_store.load().unwrap_or_else(|error| {
+        tracing::warn!(%error, "catalog settings could not be loaded");
+        StoredSettings::default()
+    });
     let app_state = AppState {
         catalog_sort: CatalogSort::from_key(stored_settings.library_sort_key.as_deref()),
         catalog_density: CatalogDensity::from_card_width(stored_settings.card_width_dp),
@@ -206,15 +201,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime.block_on(remote.shutdown());
     }
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
-
-    // Set when the pinned EGL vendor turned out to serve a different driver
-    // than the one it was recorded for. The pin is already cleared; restarting
-    // is what stops the user spending the session on whatever that driver is,
-    // which on a machine with a discrete GPU means software rendering. Only
-    // returns if the restart itself failed.
-    if services::egl_vendor::reprobe_wanted() {
-        let error = services::egl_vendor::reexec_unpinned();
-        tracing::error!(%error, "could not restart without the EGL vendor pin");
-    }
     Ok(())
 }
