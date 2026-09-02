@@ -12,6 +12,7 @@ server snapshot, window size, and network. Debug builds are invalid.
 5. Peak RSS while scrolling the representative 100-card grid.
 6. Repeated Home to detail page navigation, measuring CPU per round trip.
 7. Steady-state playback of a 2160p HEVC item, playing and paused.
+8. Browse into the largest library and scroll its grid end to end.
 
 ## Measurement
 
@@ -29,13 +30,24 @@ server snapshot, window size, and network. Debug builds are invalid.
 symbols, in its own target directory) and runs the app with Slint's frame
 metrics on, sampling `VmRSS` into a CSV:
 
-    scripts/profile.sh run  [label]              # frame metrics + RSS
+    scripts/profile.sh run  [label]              # frame metrics + RSS/PSS
     scripts/profile.sh cpu  [label]              # the same, under samply
     scripts/profile.sh --cold-artwork --duration 20 run cold
 
 The `time_to_interactive` marker (`src/ui/startup.rs`) is reported once, when
 the first frame carrying real content has actually been drawn -- not when the
-presenter ran. Artifacts land in `target/profiling-runs/<label>-<stamp>/`.
+presenter ran. It reports two halves: `exec_to_main_ms`, read from
+`/proc/self/stat`, covers the dynamic linker, and `ms` covers everything after
+`main` begins. Timing only the second half understated the launch by a fifth.
+
+Memory is sampled as both RSS and PSS, and one settled per-library breakdown
+lands in `maps.txt`. RSS charges every resident page of a shared mapping to
+us, and most of this process is the GPU driver, so RSS alone is not a measure
+of anything this code controls.
+
+Artifacts land in `target/profiling-runs/<label>-<stamp>/`. Run with
+`RUST_LOG=jellybridge=debug` (the harness default) for per-stage startup
+timings and per-request dashboard timings.
 
 samply needs `kernel.perf_event_paranoid <= 1` and a
 `kernel.perf_event_mlock_kb` above the 516 KiB default; both are runtime
@@ -185,6 +197,151 @@ anything but a longer list. `api::tests` pins them:
 `detail_queries_still_ask_for_what_the_detail_page_renders`, and
 `browsing_a_folder_is_a_bounded_page`. The first was checked by putting all
 three fields back and confirming it fails.
+
+## Round two, 2026-09-02
+
+Same machine and server as above. Round one's numbers were measured from the
+first statement of `main`; the figures below separate the dynamic linker out,
+so the "before" column is re-measured rather than copied.
+
+| Scenario | Before | After |
+|---|---|---|
+| `exec_to_main` (dynamic linker, previously unmeasured) | 70 ms | 70 ms |
+| `time_to_interactive` from `main` | 303-339 ms | 288-343 ms |
+| Settled Home RSS / PSS | 349 MiB / 151 MiB | 345 MiB / 147 MiB |
+| Settled thread count | 55 | 13 |
+| Release binary | 25,888,064 B | 24,317,048 B |
+| Decoded-image cache after a browse | unbounded (80 MiB and climbing) | bounded at 96 MiB, LRU |
+| On-disk artwork cache | unbounded, never pruned | bounded at 256 MiB, oldest first |
+
+### Where launch time actually goes
+
+Round one assumed the fan-out was gated on things that could be moved. Stage
+timings say otherwise:
+
+| stage | at |
+|---|---|
+| tracing + backend selection + tokio runtime | 25 ms |
+| window built (the whole Slint tree) | 26 ms |
+| mpv core init and renderer installed | 30 ms |
+| HTTP client built | 31 ms |
+| **dashboard response** | **285 ms** |
+| catalog presented | 286 ms |
+| first frame carrying it | 298 ms |
+
+**Local init is 31 ms.** Building the window costs 1 ms and mpv core init 4 ms,
+so moving either off the critical path cannot help. The launch is the
+dashboard, and the dashboard is the server:
+
+| request | arrives at |
+|---|---|
+| libraries | 123 ms |
+| resume | 183 ms |
+| latest | 184 ms |
+| recent | 207 ms |
+| favorites | 236 ms |
+| **`Shows/NextUp`** | **285 ms** |
+
+`home()` installs nothing until all six finish, so `Shows/NextUp` alone sets
+the first frame, and `time_to_interactive` tracks it one-for-one across runs
+(313/273, 326/286, 298/258, 349/308 -- a flat ~40 ms of client-side work on
+top). Its cost scales with `Limit`: measured against this server at 20 items it
+is 111 ms, at 12 items 77 ms, at 8 items 53 ms.
+
+So there are exactly two client-side levers left on launch, and both are
+recorded here rather than taken:
+
+- **Ask `Shows/NextUp` for fewer items.** Worth roughly 35 ms solo and more
+  under the six-way contention. It shortens a user-visible shelf, which is a
+  product decision, not a performance one.
+- **Present each dashboard section as it arrives.** First content would land
+  with `libraries` at ~123 ms instead of ~298 ms. Round one estimated this at
+  "roughly 100 ms" and rejected it; the measured figure is 162 ms, and it stays
+  fully network-authoritative -- each section is still painted only after the
+  server confirms it. It remains a real restructure of the models-and-ordering
+  path, which currently installs all six atomically.
+
+### What moved, and why
+
+- **DNS.** hyper resolves once per connection with no in-flight
+  deduplication, so the six parallel dashboard requests each ran the same
+  `getaddrinfo`: one lookup of `jellyfin.local` measures 22-40 ms and six contending
+  measure ~80 ms of wall time. `services::dns` caches with a 60 s TTL -- a TTL
+  rather than a pinned address, so a server that moves recovers without a
+  restart. The log now shows one lookup and five hits. It does not move
+  `time_to_interactive`, because the lookups overlapped connection setup; it is
+  kept for the artwork connections that follow and for resolvers slower than
+  this one.
+- **Threads, 55 to 13.** tokio defaulted to one worker per logical CPU, 32
+  here, plus a blocking pool ceiling of 512. Eight more were mpv's: it starts a
+  Lua VM on its own thread for each built-in script -- `ytdl_hook`, `stats`,
+  `console`, `select`, `positioning`, `commands`, `context_menu`, `osc` -- all
+  of which serve mpv's own OSD and command line, which this app does not have.
+  `config = false` does not cover them. Worth ~5 MiB; thread stacks are
+  virtual, so the rest of the win is scheduler pressure, not resident memory.
+- **The decoded-image cache had no byte budget.** It counted entries and, at
+  1024, called `clear()`. Entries range from ~590 KB to ~5.7 MB, and nothing
+  was evicted before the cliff: one library browse plus six detail pages
+  reached 80 MiB across 123 entries and was still climbing. Now 96 MiB with LRU
+  eviction to 80% -- enough for a full 120-card grid page, so ordinary
+  scrolling never evicts.
+- **The on-disk artwork cache was never pruned**, growing for the life of the
+  installation. Now bounded at 256 MiB, oldest first, on the blocking pool at
+  launch.
+- **The artwork cache filename came from `DefaultHasher`**, whose output is
+  unspecified between Rust releases: a toolchain upgrade silently renamed every
+  entry, leaked the old ones, and re-fetched everything. FNV-1a, with a test
+  pinning the exact filename.
+- **The download permit was taken ahead of the disk probe**, so every cache hit
+  queued behind six in-flight fetches for a permit it did not use.
+
+### Rejected after measurement, round two
+
+- **Moving JPEG decode off the UI thread.** Round one rejected this at 1.5% of
+  CPU on Home; a library browse with scrolling put it at 8.6% of the UI thread,
+  which justified revisiting. Implemented -- decoding on the blocking pool into
+  a `SharedPixelBuffer`, straight from the decoder, preserving the source pixel
+  format -- it removes the decode from the UI thread completely (8.6% to
+  absent) and costs **17 MiB of settled RSS and PSS**, reproducibly: 345-348
+  MiB RSS / 147-149 PSS with `Image::load_from_path` on the event loop, 362-364
+  / 164-165 with the identical code decoding off it. Slint's own loader stores
+  the pixels more compactly than `Image::from_rgb8` does. Forcing RGBA8 rather
+  than preserving RGB8 costs a further 17 MiB on top. 8.6% of a UI thread that
+  is not dropping frames is not worth 11% of the memory this app actually owns.
+  Reverted; the byte budget it was developed alongside was kept.
+- **Reusing the per-frame `Vec` in `GlStateGuard::capture`.** It is
+  `MAX_COMBINED_TEXTURE_IMAGE_UNITS` entries, 1.5 KiB, so roughly 50 ns against
+  a 16.6 ms frame budget -- 0.0003%, and only during playback. Threading a
+  scratch buffer through the most delicate code in the app is the wrong trade
+  at that size. The 192 `glGetIntegerv` calls in the same loop dominate it by
+  orders of magnitude and are the thing worth attacking, at a risk level this
+  round deliberately avoided.
+- **Skipping the `chmod` in `secure_directory` when the mode already matches.**
+  One syscall on an existing directory, per launch. Adding a branch to
+  permission-enforcement code cannot be justified by an unmeasurable saving.
+- **Starting the dashboard request before the window is built.** Implemented
+  and kept, because it is strictly better ordering and takes the blocking
+  `session.json` read and the client build off the main thread -- but it moved
+  nothing, because the local init it now overlaps is 31 ms, not the ~200 ms the
+  plan assumed.
+
+### Still open
+
+- **`hwdec-current` reports `software`** on this machine -- an RTX 3090, with
+  `hwdec = auto-safe` and `vo = libmpv`. Verified pre-existing: the same
+  `decode_path=software` appears with the mpv option set from before this
+  round, so it is not caused by disabling the built-in scripts. Playback is
+  otherwise correct -- video renders, the timeline advances, audio and subtitle
+  tracks populate.
+- The **`ImageStore::remove`** cost of tearing down a screen is 9% of the UI
+  thread across a browse-and-navigate session. Keeping the catalog and detail
+  screens alive behind `visible:` instead of `if` is what would remove it; it
+  changes layout and hit-testing and was out of scope this round.
+- **libmpv is a direct `DT_NEEDED`**, and 202 of the 206 objects the process
+  loads at exec (~213 MB of `.so`) come from that one tree. `exec_to_main` is
+  70 ms, a fifth of the launch. `dlopen`ing libmpv at first playback would need
+  the `libmpv2` crate replaced by a hand-rolled symbol table; out of scope this
+  round.
 
 ### Package comparison gate
 
