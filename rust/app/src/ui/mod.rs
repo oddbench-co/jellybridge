@@ -101,38 +101,86 @@ thread_local! {
     static IMAGE_CACHE: RefCell<ImageCache> = RefCell::new(ImageCache::default());
 }
 
-const IMAGE_CACHE_CAP: usize = 1024;
-
-/// Decoded artwork, with the pixel cost of what it holds.
+/// How many bytes of decoded artwork stay resident.
 ///
-/// Entry counts do not describe this cache: a 320 px poster decodes to ~600 KB
-/// and a 1600 px backdrop to ~5.7 MB, so 1024 entries is anywhere between
-/// tens of megabytes and more than a gigabyte. `bytes` is what the budget in
-/// `docs/rust-port/performance-protocol.md` is set against.
+/// A 320 px poster decodes to ~590 KB and a 1600 px backdrop to ~5.7 MB, so
+/// this holds a full 120-card grid page (~71 MB) with room to spare, which is
+/// what keeps scrolling back from re-decoding. Measured before the budget
+/// existed: one library browse plus six detail pages reached 80 MB and was
+/// still climbing, because nothing was ever evicted.
+const IMAGE_CACHE_BUDGET: usize = 96 * 1024 * 1024;
+
+/// Decoded artwork, bounded by the bytes it holds.
+///
+/// Entry counts do not describe this cache -- entries differ by an order of
+/// magnitude in size -- and the previous policy, `clear()` at 1024 entries, was
+/// a cliff rather than a gradient: it dropped every image at once and the next
+/// present re-decoded all of them.
 #[derive(Default)]
 struct ImageCache {
-    entries: HashMap<String, Image>,
+    entries: HashMap<String, Entry>,
     bytes: usize,
+    /// Monotonic use counter. Cheaper than maintaining a linked list for a
+    /// cache that only evicts when it is over budget.
+    clock: u64,
     /// Highest `bytes` ever reached, reported when it grows, so a profiling
     /// run records the peak without sampling.
     reported_high_water: usize,
 }
 
-/// Decoded size of an image in bytes. Slint keeps artwork as RGBA8, so this is
-/// exact for the buffers this cache holds.
-fn decoded_bytes(image: &Image) -> usize {
-    let size = image.size();
-    size.width as usize * size.height as usize * 4
+struct Entry {
+    image: Image,
+    bytes: usize,
+    used: u64,
 }
 
 impl ImageCache {
-    fn insert(&mut self, key: String, image: Image) {
-        let added = decoded_bytes(&image);
-        if let Some(previous) = self.entries.insert(key, image) {
-            self.bytes = self.bytes.saturating_sub(decoded_bytes(&previous));
+    fn get(&mut self, key: &str) -> Option<Image> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(key)?;
+        entry.used = clock;
+        Some(entry.image.clone())
+    }
+
+    fn insert(&mut self, key: String, image: Image, bytes: usize) {
+        self.clock += 1;
+        let entry = Entry {
+            image,
+            bytes,
+            used: self.clock,
+        };
+        if let Some(previous) = self.entries.insert(key, entry) {
+            self.bytes = self.bytes.saturating_sub(previous.bytes);
         }
-        self.bytes += added;
+        self.bytes += bytes;
         self.report_growth();
+        self.evict_to_budget();
+    }
+
+    /// Drops least-recently-used entries until the cache fits. Pruning to 80%
+    /// of the budget rather than exactly to it keeps a cache sitting on the
+    /// limit from evicting on every single insert.
+    fn evict_to_budget(&mut self) {
+        if self.bytes <= IMAGE_CACHE_BUDGET {
+            return;
+        }
+        let target = IMAGE_CACHE_BUDGET / 5 * 4;
+        let mut by_age: Vec<(u64, String)> = self
+            .entries
+            .iter()
+            .map(|(key, entry)| (entry.used, key.clone()))
+            .collect();
+        by_age.sort_unstable_by_key(|(used, _)| *used);
+        for (_, key) in by_age {
+            if self.bytes <= target {
+                break;
+            }
+            if let Some(entry) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.bytes);
+            }
+        }
+        self.reported_high_water = self.bytes;
     }
 
     fn clear(&mut self) {
@@ -158,17 +206,23 @@ impl ImageCache {
 }
 
 fn cached_image(key: &str) -> Option<Image> {
-    IMAGE_CACHE.with(|cache| cache.borrow().entries.get(key).cloned())
+    IMAGE_CACHE.with(|cache| cache.borrow_mut().get(key))
 }
 
 fn store_cached_image(key: String, image: Image) {
-    IMAGE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.entries.len() >= IMAGE_CACHE_CAP {
-            cache.clear();
-        }
-        cache.insert(key, image);
-    });
+    let bytes = decoded_bytes(&image);
+    IMAGE_CACHE.with(|cache| cache.borrow_mut().insert(key, image, bytes));
+}
+
+/// Upper bound on what a decoded image costs.
+///
+/// Slint stores artwork without an alpha channel as RGB8, so this over-counts
+/// a JPEG poster by a third. That is the safe direction for a budget: it
+/// evicts slightly sooner than strictly necessary, and there is no API that
+/// reports the stored pixel format.
+fn decoded_bytes(image: &Image) -> usize {
+    let size = image.size();
+    size.width as usize * size.height as usize * 4
 }
 
 fn clear_image_cache() {
@@ -255,7 +309,69 @@ mod tests {
     };
     use slint::{ComponentHandle, LogicalPosition, PhysicalSize};
 
-    use super::{JellyBridgeWindow, Screen};
+    use super::{IMAGE_CACHE_BUDGET, ImageCache, JellyBridgeWindow, Screen};
+    use slint::{Image, Rgba8Pixel, SharedPixelBuffer};
+
+    /// An image of a known decoded size, for the cache tests.
+    fn image_of(mib: usize) -> (Image, usize) {
+        let bytes = mib * 1024 * 1024;
+        let pixels = bytes / 4;
+        (
+            Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(pixels as u32, 1)),
+            bytes,
+        )
+    }
+
+    #[test]
+    fn the_image_cache_evicts_the_least_recently_used_entry_first() {
+        let mut cache = ImageCache::default();
+        for index in 0..12 {
+            let (image, bytes) = image_of(8);
+        cache.insert(format!("cold-{index}"), image, bytes);
+        }
+        // 96 MB is exactly the budget, so nothing has been evicted yet.
+        assert_eq!(cache.entries.len(), 12);
+
+        // Touch the first one so it is no longer the oldest, then overflow.
+        assert!(cache.get("cold-0").is_some());
+        let (image, bytes) = image_of(8);
+        cache.insert("hot".to_owned(), image, bytes);
+
+        assert!(
+            cache.bytes <= IMAGE_CACHE_BUDGET,
+            "cache is {} bytes, over its budget",
+            cache.bytes
+        );
+        assert!(cache.entries.contains_key("hot"), "the new entry was evicted");
+        assert!(
+            cache.entries.contains_key("cold-0"),
+            "a recently used entry was evicted before older ones"
+        );
+        assert!(
+            !cache.entries.contains_key("cold-1"),
+            "the least recently used entry survived"
+        );
+    }
+
+    #[test]
+    fn the_image_cache_accounts_bytes_across_replacement_and_clear() {
+        let mut cache = ImageCache::default();
+        let (image, bytes) = image_of(8);
+        cache.insert("one".to_owned(), image, bytes);
+        let (image, bytes) = image_of(8);
+        cache.insert("two".to_owned(), image, bytes);
+        assert_eq!(cache.bytes, 16 * 1024 * 1024);
+
+        // Replacing an entry must not double-count the one it displaced.
+        let (image, bytes) = image_of(4);
+        cache.insert("one".to_owned(), image, bytes);
+        assert_eq!(cache.bytes, 12 * 1024 * 1024);
+        assert_eq!(cache.entries.len(), 2);
+
+        cache.clear();
+        assert_eq!(cache.bytes, 0);
+        assert!(cache.entries.is_empty());
+    }
 
     thread_local! {
         static TEST_WINDOW: Rc<MinimalSoftwareWindow> =

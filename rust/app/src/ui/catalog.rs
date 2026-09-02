@@ -250,9 +250,17 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
                 let key = catalog_image_key(&image_item_id, &tag);
                 let apply_ctx = ctx.clone();
                 ctx.ui.update(move |window| {
+                    // Decoded here, on the event loop, deliberately. Decoding on
+                    // the blocking pool and shipping a `SharedPixelBuffer` does
+                    // take 8.6% off the UI thread, but it also costs 17 MiB of
+                    // settled RSS because Slint's own loader stores the pixels
+                    // more compactly than `Image::from_rgb8` does. Measured both
+                    // ways; see docs/rust-port/performance-protocol.md.
                     let Ok(image) = Image::load_from_path(&path) else {
                         return;
                     };
+                    // Cached before the generation check on purpose: a fetched
+                    // image stays valid however the user navigated meanwhile.
                     store_cached_image(key, image.clone());
                     if !apply_ctx.is_current(generation) {
                         return;

@@ -817,6 +817,9 @@ fn load_detail_image(
             let key = image_key(&image);
             let apply_ctx = ctx.clone();
             ctx.ui.update(move |window| {
+                // On the event loop for the same measured reason as the catalog
+                // loader: moving the decode off it costs more memory than the
+                // UI-thread time it saves.
                 let Ok(image) = Image::load_from_path(&path) else {
                     return;
                 };
