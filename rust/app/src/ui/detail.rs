@@ -771,11 +771,24 @@ fn load_detail_image(
             image.image_type.jellyfin_name(),
             image.index.unwrap_or(0)
         );
+        // Above the cache path, which is keyed on it: an entry fetched at one
+        // size must not be served for a request at another.
+        let max_width = match &target {
+            DetailArtworkTarget::HeroBackdrop(_) => 1600,
+            DetailArtworkTarget::Episode { .. } | DetailArtworkTarget::HeroPoster(_)
+                if image.image_type == ImageType::Thumb =>
+            {
+                900
+            }
+            DetailArtworkTarget::Person { .. } => 320,
+            _ => 600,
+        };
         let path = image_cache_path(
             &ctx.image_cache,
             api.session().server_url.as_str(),
             &cache_id,
             &image.tag,
+            max_width,
         );
         // Same reason as the catalog loader: blocking std::fs, including an
         // fsync on the write, must not run on a runtime worker.
@@ -792,16 +805,6 @@ fn load_detail_image(
             // wait behind six in-flight fetches for a permit it will not use.
             let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
                 return;
-            };
-            let max_width = match &target {
-                DetailArtworkTarget::HeroBackdrop(_) => 1600,
-                DetailArtworkTarget::Episode { .. } | DetailArtworkTarget::HeroPoster(_)
-                    if image.image_type == ImageType::Thumb =>
-                {
-                    900
-                }
-                DetailArtworkTarget::Person { .. } => 320,
-                _ => 600,
             };
             match api.fetch_detail_image(&image, max_width).await {
                 Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {

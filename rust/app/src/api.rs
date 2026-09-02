@@ -462,13 +462,21 @@ impl JellyfinApi {
         .await
     }
 
-    pub async fn fetch_primary_image(&self, item_id: &str) -> Result<Vec<u8>, ApiError> {
+    pub async fn fetch_primary_image(
+        &self,
+        item_id: &str,
+        max_width: u32,
+    ) -> Result<Vec<u8>, ApiError> {
         let response = self
             .request(
                 Method::GET,
                 &format!("Items/{}/Images/Primary", encode_path_segment(item_id)),
             )?
-            .query(&[("maxWidth", "320"), ("quality", "85"), ("format", "Jpg")])
+            .query(&[
+                ("maxWidth", max_width.to_string().as_str()),
+                ("quality", "90"),
+                ("format", "Jpg"),
+            ])
             .send()
             .await?;
         let response = check_status(response, "loading artwork")?;

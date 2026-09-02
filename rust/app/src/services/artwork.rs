@@ -14,9 +14,16 @@ use std::path::{Path, PathBuf};
 /// -- the input is a server URL and two opaque ids, and a collision costs one
 /// wrong thumbnail -- so a fast, fixed, self-contained digest is the right
 /// tool.
-pub fn image_cache_path(directory: &Path, server: &str, item_id: &str, tag: &str) -> PathBuf {
+pub fn image_cache_path(
+    directory: &Path,
+    server: &str,
+    item_id: &str,
+    tag: &str,
+    max_width: u32,
+) -> PathBuf {
     let mut digest = FNV_OFFSET_BASIS;
-    for part in [server, item_id, tag] {
+    let width = max_width.to_string();
+    for part in [server, item_id, tag, width.as_str()] {
         for byte in part.as_bytes() {
             digest ^= u64::from(*byte);
             digest = digest.wrapping_mul(FNV_PRIME);
@@ -178,9 +185,10 @@ mod tests {
                 Path::new("/cache"),
                 "http://jellyfin.local",
                 "d3d5f6a1b2c3",
-                "tag-1"
+                "tag-1",
+                400
             ),
-            Path::new("/cache/8557ae780c6169ab.jpg")
+            Path::new("/cache/90216ab486b4413e.jpg")
         );
     }
 
@@ -238,9 +246,18 @@ mod tests {
     }
 
     #[test]
+    fn the_requested_width_is_part_of_the_name() {
+        // Otherwise switching density keeps serving the file fetched for the
+        // old size, and the sharper image never appears.
+        let small = image_cache_path(Path::new("/cache"), "server", "item", "tag", 320);
+        let large = image_cache_path(Path::new("/cache"), "server", "item", "tag", 480);
+        assert_ne!(small, large, "two sizes of one image share a cache entry");
+    }
+
+    #[test]
     fn field_boundaries_are_part_of_the_name() {
-        let split_one = image_cache_path(Path::new("/cache"), "server", "ab", "c");
-        let split_two = image_cache_path(Path::new("/cache"), "server", "a", "bc");
+        let split_one = image_cache_path(Path::new("/cache"), "server", "ab", "c", 400);
+        let split_two = image_cache_path(Path::new("/cache"), "server", "a", "bc", 400);
         assert_ne!(
             split_one, split_two,
             "ids that differ only in where they are split share a cache entry"

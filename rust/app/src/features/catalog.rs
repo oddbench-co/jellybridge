@@ -104,6 +104,19 @@ impl CatalogDensity {
         }
     }
 
+    /// The pixel width to request artwork at for this density.
+    ///
+    /// Cards were always fetched at a hardcoded 320 px while being drawn at
+    /// `card_width * scale_factor` physical pixels -- 390 px for Normal
+    /// density on a 1.5x display, so every poster was upscaled 22% past its
+    /// own resolution. Rounding up to a multiple of 40 keeps the number of
+    /// distinct sizes in the disk cache small without wasting much.
+    pub fn artwork_width(self, scale_factor: f32) -> u32 {
+        let needed = (self.card_width() as f32 * scale_factor.max(1.0)).ceil() as u32;
+        let rounded = needed.div_ceil(40) * 40;
+        rounded.clamp(160, 1200)
+    }
+
     pub fn from_card_width(value: Option<i32>) -> Self {
         let value = value.unwrap_or(Self::Normal.card_width());
         Self::ALL
@@ -491,6 +504,34 @@ pub fn retry(context: &AppContext) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn artwork_is_requested_at_the_size_it_will_be_drawn() {
+        // A card is card_width * scale_factor physical pixels. Asking for 320
+        // regardless, as this used to, upscaled every poster on any display
+        // above 1x.
+        assert!(
+            CatalogDensity::Normal.artwork_width(1.5) >= (260.0 * 1.5) as u32,
+            "Normal density on a 1.5x display still under-requests"
+        );
+        assert!(
+            CatalogDensity::Large.artwork_width(2.0) >= (320.0 * 2.0) as u32,
+            "Large density on a 2x display still under-requests"
+        );
+
+        // Rounded, so a handful of sizes cover every density and scale rather
+        // than one cache entry per pixel width.
+        for density in CatalogDensity::ALL {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let width = density.artwork_width(scale);
+                assert_eq!(width % 40, 0, "{width} is not a rounded size");
+                assert!((160..=1200).contains(&width), "{width} is out of range");
+            }
+        }
+
+        // A scale factor below 1 must never shrink the request below the card.
+        assert!(CatalogDensity::Normal.artwork_width(0.5) >= 260);
+    }
+
     use super::*;
 
     fn item(id: &str) -> CatalogItemData {

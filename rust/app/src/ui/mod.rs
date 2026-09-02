@@ -244,8 +244,11 @@ fn image_key(image: &ImageRef) -> String {
     )
 }
 
-fn catalog_image_key(image_item_id: &str, tag: &str) -> String {
-    format!("{image_item_id}:Primary:0:{tag}")
+/// The width is part of the key: changing density changes the size we ask the
+/// server for, and without it the cache would keep serving the image decoded
+/// for the old size.
+fn catalog_image_key(image_item_id: &str, tag: &str, max_width: u32) -> String {
+    format!("{image_item_id}:Primary:0:{tag}@{max_width}")
 }
 
 /// The image shown on a card (and the detail hero): episodes prefer their

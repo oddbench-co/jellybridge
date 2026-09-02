@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use slint::{Image, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
 use super::{
     CatalogItem, CatalogSection, JellyBridgeWindow, cached_image, catalog_image_key, patch_rows,
@@ -67,6 +67,8 @@ pub fn present(context: &AppContext, message: &str) {
     // artwork loader. One shared copy serves both.
     let items_data = Arc::new(std::mem::take(&mut current.items));
     let generation = context.next_generation();
+    let artwork_ctx = context.clone();
+    let artwork_items = items_data.clone();
     let home_dashboard = current.is_home_dashboard();
     let title = if current.parent.is_none() && !current.search_text.is_empty() {
         "Search results".to_owned()
@@ -133,14 +135,30 @@ pub fn present(context: &AppContext, message: &str) {
         if !patch_rows(&window.get_sections(), &ui_sections, |a, b| a.id == b.id) {
             window.set_sections(ModelRc::new(VecModel::from(ui_sections)));
         }
-        let items = ui_items.iter().map(to_ui_item).collect::<Vec<_>>();
+        // The scale factor is only knowable here, with a real window, and it
+        // decides how large the artwork has to be: a card is
+        // `card_width * scale_factor` physical pixels.
+        let artwork_width = density.artwork_width(window.window().scale_factor());
+        let items = ui_items
+            .iter()
+            .map(|item| to_ui_item(item, artwork_width))
+            .collect::<Vec<_>>();
         if !patch_rows(&window.get_catalog_items(), &items, |a, b| a.id == b.id) {
             window.set_catalog_items(ModelRc::new(VecModel::from(items)));
         }
-        tracing::debug!(ms = super::startup::elapsed_ms(), stage = "catalog_presented", "startup_stage");
-    super::startup::mark_content_ready("catalog");
+        tracing::debug!(
+            ms = super::startup::elapsed_ms(),
+            stage = "catalog_presented",
+            "startup_stage"
+        );
+        super::startup::mark_content_ready("catalog");
+        // Deliberately here rather than after `ui.update` returns. The
+        // resident-image check reads a thread-local cache that only the UI
+        // thread ever writes, so running it on whichever thread called
+        // `present` -- a tokio worker, for everything driven by the network --
+        // read an empty map and re-fetched every row it should have skipped.
+        load_artwork(&artwork_ctx, generation, &artwork_items, artwork_width);
     });
-    load_artwork(context, generation, &items_data);
 }
 
 /// Pushes the persisted sort/density preferences into the window without
@@ -157,7 +175,7 @@ pub fn present_preferences(context: &AppContext) {
     });
 }
 
-fn to_ui_item(item: &CatalogItemData) -> CatalogItem {
+fn to_ui_item(item: &CatalogItemData, artwork_width: u32) -> CatalogItem {
     let placeholder = item
         .title
         .split_whitespace()
@@ -175,7 +193,9 @@ fn to_ui_item(item: &CatalogItemData) -> CatalogItem {
         artwork: item
             .image_tag
             .as_deref()
-            .and_then(|tag| cached_image(&catalog_image_key(&item.image_item_id, tag)))
+            .and_then(|tag| {
+                cached_image(&catalog_image_key(&item.image_item_id, tag, artwork_width))
+            })
             .unwrap_or_default(),
         watched: item.watched,
         progress: item.progress,
@@ -193,8 +213,15 @@ fn catalog_kind_label(kind: &str) -> &str {
     }
 }
 
-fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]) {
+fn load_artwork(
+    context: &AppContext,
+    generation: u64,
+    items: &[CatalogItemData],
+    artwork_width: u32,
+) {
     let Some(api) = context.api() else { return };
+    let mut spawned = 0_usize;
+    let mut resident = 0_usize;
     for (index, item) in items.iter().enumerate() {
         let Some(tag) = item.image_tag.clone() else {
             continue;
@@ -203,9 +230,11 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
         // the whole fetch-probe-decode round trip below would produce an image
         // that is already on screen. Without this, every re-present -- going
         // back, toggling watched, changing density -- re-ran it for every row.
-        if cached_image(&catalog_image_key(&item.image_item_id, &tag)).is_some() {
+        if cached_image(&catalog_image_key(&item.image_item_id, &tag, artwork_width)).is_some() {
+            resident += 1;
             continue;
         }
+        spawned += 1;
         let ctx = context.clone();
         let api = api.clone();
         // Two ids, rather than a clone of the whole row per spawned task.
@@ -217,6 +246,7 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
                 api.session().server_url.as_str(),
                 &image_item_id,
                 &tag,
+                artwork_width,
             );
             // `existing_cached_image` and `write_cached_image` are blocking
             // std::fs, and the write fsyncs; running them directly on a
@@ -236,7 +266,7 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
                 let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
                     return;
                 };
-                match api.fetch_primary_image(&image_item_id).await {
+                match api.fetch_primary_image(&image_item_id, artwork_width).await {
                     Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
                         tokio::task::spawn_blocking(move || write_cached_image(&path, &bytes))
                             .await
@@ -247,7 +277,7 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
                 }
             };
             if let Ok(path) = result {
-                let key = catalog_image_key(&image_item_id, &tag);
+                let key = catalog_image_key(&image_item_id, &tag, artwork_width);
                 let apply_ctx = ctx.clone();
                 ctx.ui.update(move |window| {
                     // Decoded here, on the event loop, deliberately. Decoding on
@@ -276,4 +306,10 @@ fn load_artwork(context: &AppContext, generation: u64, items: &[CatalogItemData]
             }
         });
     }
+    tracing::debug!(
+        spawned,
+        resident,
+        thread = std::thread::current().name().unwrap_or("?"),
+        "catalog artwork pass"
+    );
 }
