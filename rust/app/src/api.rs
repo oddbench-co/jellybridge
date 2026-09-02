@@ -1,5 +1,6 @@
 use reqwest::header::{HeaderValue, InvalidHeaderValue};
 use reqwest::{Method, StatusCode};
+use std::collections::HashMap;
 use std::future::Future;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -32,6 +33,10 @@ const LIST_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,Seas
 // "Library - N items" subtitle. Cheap here because there are only a few.
 // How many rows one browse or search page returns.
 const PAGE_LIMIT: &str = "120";
+/// Rows fetched for "Recently Added" before episodes are collapsed into their
+/// show, and rows kept afterwards.
+const RECENT_FETCH_LIMIT: &str = "60";
+const HOME_SHELF_LIMIT: usize = 20;
 const LIBRARY_FIELDS: &str = "ParentId,ImageTags,UserData,Overview,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,CollectionType";
 const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
 
@@ -197,9 +202,21 @@ impl JellyfinApi {
         }];
         append_optional_section(&mut sections, "continue", "Continue Watching", resume);
         append_optional_section(&mut sections, "next-up", "Next Up", next_up);
-        append_optional_section(&mut sections, "latest", "Latest Media", latest);
+        append_series_grouped_section(
+            &mut sections,
+            "latest",
+            "Latest Media",
+            HOME_SHELF_LIMIT,
+            latest,
+        );
         append_optional_section(&mut sections, "favorites", "Favorites", favorites);
-        append_optional_section(&mut sections, "recent", "Recently Added", recent);
+        append_series_grouped_section(
+            &mut sections,
+            "recent",
+            "Recently Added",
+            HOME_SHELF_LIMIT,
+            recent,
+        );
         Ok(sections)
     }
 
@@ -596,7 +613,10 @@ impl JellyfinApi {
                 ("EnableImageTypes", "Primary"),
                 ("Limit", "20"),
                 ("IncludeItemTypes", "Movie,Episode,Series"),
-                ("GroupItems", "false"),
+                // Collapses a batch of new episodes into their series and puts
+                // the number of them in `ChildCount`. Cheaper on the wire than
+                // the ungrouped list, too.
+                ("GroupItems", "true"),
             ]),
             "loading latest media",
         )
@@ -627,7 +647,10 @@ impl JellyfinApi {
                 ("IncludeItemTypes", "Movie,Episode,Series"),
                 ("SortBy", "DateCreated"),
                 ("SortOrder", "Descending"),
-                ("Limit", "20"),
+                // This endpoint has no grouping of its own, so the shelf is
+                // collapsed client-side and the query has to over-fetch or a
+                // single season would leave three cards behind.
+                ("Limit", RECENT_FETCH_LIMIT),
             ],
             "loading recently added",
         )
@@ -805,6 +828,153 @@ fn sort_detail_items(items: &mut [LibraryItem]) {
                     .cmp(right.name.chars().flat_map(char::to_lowercase))
             })
     });
+}
+
+/// Appends a shelf, collapsing the episodes of one show into a single row.
+///
+/// Downloading a season otherwise fills the shelf with one card per episode:
+/// nine of the first fourteen "Recently Added" rows were episodes of the same
+/// show, plus a tenth for the show itself, which arrived at the same time.
+///
+/// Used for the two "what is new" shelves only. Continue Watching and Next Up
+/// are meant to name a specific episode, and favourites are chosen one at a
+/// time.
+fn append_series_grouped_section(
+    sections: &mut Vec<CatalogSectionData>,
+    id: &str,
+    title: &str,
+    limit: usize,
+    result: Result<Vec<LibraryItem>, ApiError>,
+) {
+    match result {
+        Ok(items) if !items.is_empty() => {
+            let mut items = group_episodes_by_series(items);
+            // Grouping shrinks the shelf, so the queries behind it fetch more
+            // than they show; trim back to the shelf's real size.
+            items.truncate(limit);
+            sections.push(CatalogSectionData {
+                id: id.to_owned(),
+                title: title.to_owned(),
+                items,
+            });
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, section = title, "dashboard section failed"),
+    }
+}
+
+/// One row per show, counting how many of its episodes are in `items`.
+///
+/// Keyed on the series: an episode by its `SeriesId`, a series by its own id.
+/// That single key is what merges the two ways a show turns up twice -- the
+/// Latest endpoint returns a series both bare and grouped when the show and
+/// its episodes are new together, and the Recently Added query returns the
+/// series alongside every one of its episodes. Both share an id, so the larger
+/// count wins and one row survives.
+///
+/// Movies and folders pass through untouched, and first-appearance order is
+/// preserved so the server's newest-first ordering survives.
+///
+/// The count only sees the rows it was given: a show with thirty new episodes
+/// reports twenty when twenty were fetched. The server's own grouped
+/// `ChildCount` truncates the same way, so the shelves stay consistent with
+/// each other and with Jellyfin.
+fn group_episodes_by_series(items: Vec<LibraryItem>) -> Vec<CatalogItemData> {
+    let mut rows: Vec<CatalogItemData> = Vec::with_capacity(items.len());
+    // Series id -> (index into `rows`, episodes counted so far).
+    let mut groups: HashMap<String, (usize, u32)> = HashMap::new();
+
+    for item in items {
+        let Some((key, contribution)) = group_key(&item) else {
+            rows.push(item.into());
+            continue;
+        };
+        if let Some((index, count)) = groups.get_mut(&key) {
+            *count = contribution.merged_into(*count);
+            rows[*index].subtitle = new_episode_subtitle(*count);
+            continue;
+        }
+        let count = contribution.merged_into(0);
+        groups.insert(key.clone(), (rows.len(), count));
+        rows.push(series_row(item, key, count));
+    }
+    rows
+}
+
+/// What one row adds to its group's episode count.
+#[derive(Clone, Copy)]
+enum GroupContribution {
+    /// A single episode. Occurrences add up.
+    Episode,
+    /// A series row that already carries the whole count, so occurrences do
+    /// not add: the larger figure is the right one.
+    Total(u32),
+}
+
+impl GroupContribution {
+    fn merged_into(self, count: u32) -> u32 {
+        match self {
+            Self::Episode => count.saturating_add(1),
+            Self::Total(total) => count.max(total),
+        }
+    }
+}
+
+/// The series a row belongs to and what it contributes to the count. `None` for
+/// rows that are not part of a show.
+fn group_key(item: &LibraryItem) -> Option<(String, GroupContribution)> {
+    match item.kind.as_str() {
+        // Without a series id there is nothing to group an episode under, so
+        // it stays a row of its own rather than disappearing.
+        "Episode" => item
+            .series_id
+            .clone()
+            .map(|id| (id, GroupContribution::Episode)),
+        // `ChildCount` on a row from the Latest endpoint with `GroupItems=true`
+        // is the number of newly added episodes -- not its usual meaning, which
+        // for the same series on an ordinary query is the season count.
+        "Series" => Some((
+            item.id.clone(),
+            GroupContribution::Total(item.child_count.unwrap_or(0).max(0) as u32),
+        )),
+        _ => None,
+    }
+}
+
+/// Rewrites one row of a group as the show it belongs to.
+///
+/// The artwork needs no special handling: `artwork_identity` already makes an
+/// episode borrow its series poster, so this resolves to the same image, and
+/// the same cache key, that was going to be drawn anyway.
+fn series_row(item: LibraryItem, series_id: String, count: u32) -> CatalogItemData {
+    let series_name = item.series_name.clone();
+    let mut row = CatalogItemData::from(item);
+    if count == 0 {
+        // A show that is itself new, with no episodes grouped under it. Leave
+        // it exactly as the server described it.
+        return row;
+    }
+    row.id = series_id;
+    row.title = series_name.unwrap_or(row.title);
+    row.kind = "Series".to_owned();
+    row.subtitle = new_episode_subtitle(count);
+    // `playable` and `is_container` follow the kind, and a Series opens its
+    // detail page, where `play_target` picks the right episode.
+    row.playable = false;
+    row.is_container = true;
+    // Progress taken from whichever episode happened to come first would be
+    // meaningless for a group.
+    row.watched = false;
+    row.progress = 0.0;
+    row
+}
+
+fn new_episode_subtitle(count: u32) -> String {
+    if count == 1 {
+        "1 new episode".to_owned()
+    } else {
+        format!("{count} new episodes")
+    }
 }
 
 fn append_optional_section(
@@ -1181,7 +1351,10 @@ fn item_subtitle(item: &LibraryItem) -> String {
             .map(|count| format!("Library • {count} items"))
             .unwrap_or_else(|| "Library".to_owned());
     }
-    match (item.production_year, item.child_count) {
+    // A zero count is not information: the Latest endpoint reports
+    // `ChildCount = 0` on every row it did not group, which read as
+    // "Spider-Man - 2003 • 0 items".
+    match (item.production_year, item.child_count.filter(|count| *count > 0)) {
         (Some(year), Some(count)) => format!("{year} • {count} items"),
         (Some(year), None) => year.to_string(),
         (None, Some(count)) => format!("{count} items"),
@@ -1384,6 +1557,132 @@ struct ItemMediaStream {
 
 #[cfg(test)]
 mod tests {
+    /// Builds a row the way the server sends one, so the grouping tests
+    /// exercise the real deserialization as well.
+    fn row(json: serde_json::Value) -> LibraryItem {
+        serde_json::from_value(json).expect("library item")
+    }
+
+    fn episode(series_id: &str, series_name: &str, number: i64) -> LibraryItem {
+        row(serde_json::json!({
+            "Id": format!("ep-{series_id}-{number}"),
+            "Name": format!("Episode {number}"),
+            "Type": "Episode",
+            "SeriesId": series_id,
+            "SeriesName": series_name,
+            "SeriesPrimaryImageTag": "poster-tag",
+            "ParentIndexNumber": 1,
+            "IndexNumber": number,
+        }))
+    }
+
+    #[test]
+    fn a_zero_child_count_is_not_shown_as_zero_items() {
+        // The Latest endpoint sets ChildCount = 0 on every row it did not
+        // group, which turned a movie's subtitle into "2003 • 0 items".
+        let rows = group_episodes_by_series(vec![row(serde_json::json!({
+            "Id": "m1", "Name": "Spider-Man", "Type": "Movie",
+            "ProductionYear": 2003, "ChildCount": 0
+        }))]);
+        assert_eq!(rows[0].subtitle, "2003");
+    }
+
+    #[test]
+    fn a_season_of_new_episodes_becomes_one_row_for_the_show() {
+        let rows = group_episodes_by_series(vec![
+            episode("s1670", "1670", 8),
+            episode("s1670", "1670", 7),
+            episode("s1670", "1670", 6),
+        ]);
+
+        assert_eq!(rows.len(), 1, "the shelf still shows one card per episode");
+        let show = &rows[0];
+        assert_eq!(show.id, "s1670", "the row must open the series, not an episode");
+        assert_eq!(show.kind, "Series");
+        assert_eq!(show.title, "1670");
+        assert_eq!(show.subtitle, "3 new episodes");
+        assert!(show.is_container && !show.playable);
+    }
+
+    #[test]
+    fn a_show_added_with_its_episodes_appears_once() {
+        // What "Recently Added" returns when a whole season lands: the series
+        // itself, then every episode of it.
+        let rows = group_episodes_by_series(vec![
+            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series"})),
+            episode("s1670", "1670", 2),
+            episode("s1670", "1670", 1),
+        ]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "s1670");
+        assert_eq!(rows[0].subtitle, "2 new episodes");
+    }
+
+    #[test]
+    fn the_latest_endpoints_bare_and_grouped_rows_collapse_to_the_larger_count() {
+        // `Users/{id}/Items/Latest` with GroupItems=true returns a series twice
+        // when the show and its episodes are both new: once bare, once grouped.
+        let rows = group_episodes_by_series(vec![
+            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series", "ChildCount": 0})),
+            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series", "ChildCount": 8})),
+        ]);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].subtitle, "8 new episodes");
+    }
+
+    #[test]
+    fn one_new_episode_reads_as_one() {
+        let rows = group_episodes_by_series(vec![episode("s9", "Say Nothing", 5)]);
+        assert_eq!(rows[0].subtitle, "1 new episode");
+    }
+
+    #[test]
+    fn movies_are_left_alone_and_order_is_preserved() {
+        let rows = group_episodes_by_series(vec![
+            episode("s1670", "1670", 8),
+            row(serde_json::json!({
+                "Id": "m1", "Name": "Spider-Man", "Type": "Movie", "ProductionYear": 2024
+            })),
+            episode("s1670", "1670", 7),
+            row(serde_json::json!({"Id": "m2", "Name": "Smoke", "Type": "Movie"})),
+        ]);
+
+        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["s1670", "m1", "m2"],
+            "grouping must not reorder the server's newest-first list"
+        );
+        let movie = &rows[1];
+        assert_eq!(movie.title, "Spider-Man");
+        assert_eq!(movie.subtitle, "2024", "a movie's own subtitle was rewritten");
+        assert!(movie.playable);
+    }
+
+    #[test]
+    fn an_episode_with_no_series_stays_a_row_of_its_own() {
+        // Nothing to group it under; dropping it would lose the row entirely.
+        let orphan = row(serde_json::json!({
+            "Id": "ep-orphan", "Name": "Loose Episode", "Type": "Episode"
+        }));
+        let rows = group_episodes_by_series(vec![orphan]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "ep-orphan");
+        assert_eq!(rows[0].kind, "Episode");
+    }
+
+    #[test]
+    fn a_newly_added_show_with_no_new_episodes_keeps_its_own_description() {
+        let rows = group_episodes_by_series(vec![row(serde_json::json!({
+            "Id": "s5", "Name": "Smoke", "Type": "Series", "ProductionYear": 2025
+        }))]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "Smoke");
+        assert_eq!(rows[0].subtitle, "2025");
+    }
+
     use super::*;
 
     fn fields(set: &str) -> Vec<&str> {
