@@ -719,6 +719,59 @@ mod tests {
         ui.get_catalog_home_scroll_y()
     }
 
+    /// What the timeline draws must be exactly played / total. The stock
+    /// Slider that used to draw it mapped its value over a thumb-inset rail
+    /// while the chapter marks and the click target mapped over the full
+    /// width, so the three disagreed with each other.
+    #[test]
+    fn the_timeline_draws_the_played_fraction_of_the_duration() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
+        ui.invoke_enter_player(0.0, 100.0);
+        ui.show().expect("show");
+        platform_window.draw_if_needed(|_| {});
+
+        for (position, expected) in [(0.0, 0.0), (25.0, 0.25), (50.0, 0.5), (100.0, 1.0)] {
+            ui.set_playback_position(position);
+            slint::platform::update_timers_and_animations();
+            platform_window.draw_if_needed(|_| {});
+            let drawn = ui.get_timeline_played_ratio();
+            assert!(
+                (drawn - expected).abs() < 0.001,
+                "at {position}s of 100s the timeline must be {expected} full, was {drawn}"
+            );
+        }
+    }
+
+    /// A duration of zero means "not known yet", not "already finished". The
+    /// resume position used to be substituted for a missing runtime, which
+    /// drew a completely full bar until mpv reported the real duration.
+    #[test]
+    fn an_unknown_duration_draws_an_empty_timeline_not_a_full_one() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
+        ui.invoke_enter_player(0.0, 0.0);
+        ui.show().expect("show");
+        platform_window.draw_if_needed(|_| {});
+
+        ui.set_playback_position(90.0);
+        slint::platform::update_timers_and_animations();
+        platform_window.draw_if_needed(|_| {});
+        assert_eq!(
+            ui.get_timeline_played_ratio(),
+            0.0,
+            "an unknown duration must not draw a full bar"
+        );
+
+        // Once mpv reports the real duration the bar catches up.
+        ui.set_playback_duration(180.0);
+        slint::platform::update_timers_and_animations();
+        platform_window.draw_if_needed(|_| {});
+        assert!((ui.get_timeline_played_ratio() - 0.5).abs() < 0.001);
+    }
+
     #[test]
     fn player_entry_restores_hotkeys_after_detail_focus_is_removed() {
         let platform_window = setup_test_window();

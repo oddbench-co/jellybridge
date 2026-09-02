@@ -45,10 +45,14 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
     } else {
         detail.resume_seconds.max(0.0)
     };
+    // An unknown runtime means "no duration yet", not "duration equals the
+    // resume position" -- the latter renders a full bar until mpv reports the
+    // real duration a moment later.
     let initial_duration = detail
         .runtime_seconds
-        .unwrap_or_default()
-        .max(initial_position);
+        .filter(|runtime| *runtime > 0.0)
+        .map(|runtime| runtime.max(initial_position))
+        .unwrap_or(0.0);
     let preference_key = playback_preference_key(&detail);
     let config = match PlaybackConfig::from_session(&session, detail.id.clone()) {
         Ok(config) => config,
@@ -144,7 +148,13 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
 /// Reporting is best-effort: a failed report must never interrupt playback, so
 /// each one is spawned and its error only logged.
 fn api_of(state: &Arc<Mutex<AppState>>) -> Option<JellyfinApi> {
-    state.lock().ok()?.api.clone()
+    let api = state.lock().ok()?.api.clone();
+    if api.is_none() {
+        // Reporting silently doing nothing is exactly the failure that is hard
+        // to notice, so say so rather than just returning.
+        tracing::warn!("no Jellyfin client available; playback was not reported");
+    }
+    api
 }
 
 pub fn send_start_report(
@@ -154,11 +164,16 @@ pub fn send_start_report(
 ) {
     let Some(api) = api_of(state) else { return };
     runtime.spawn(async move {
-        if let Err(error) = api
+        match api
             .report_playback_start(&report.target, report.position_seconds)
             .await
         {
-            tracing::warn!(%error, "could not report playback start");
+            Ok(()) => tracing::info!(
+                item = %report.target.item_id,
+                position = report.position_seconds,
+                "reported playback start"
+            ),
+            Err(error) => tracing::warn!(%error, "could not report playback start"),
         }
     });
 }
@@ -170,11 +185,17 @@ pub fn send_progress_report(
 ) {
     let Some(api) = api_of(state) else { return };
     runtime.spawn(async move {
-        if let Err(error) = api
+        match api
             .report_playback_progress(&report.target, report.position_seconds, report.paused)
             .await
         {
-            tracing::warn!(%error, "could not report playback progress");
+            Ok(()) => tracing::debug!(
+                item = %report.target.item_id,
+                position = report.position_seconds,
+                paused = report.paused,
+                "reported playback progress"
+            ),
+            Err(error) => tracing::warn!(%error, "could not report playback progress"),
         }
     });
 }
@@ -187,8 +208,13 @@ pub fn send_stop_report(
 ) {
     let Some(api) = api_of(state) else { return };
     runtime.spawn(async move {
-        if let Err(error) = api.report_playback_stopped(&target, position_seconds).await {
-            tracing::warn!(%error, "could not report playback stop");
+        match api.report_playback_stopped(&target, position_seconds).await {
+            Ok(()) => tracing::info!(
+                item = %target.item_id,
+                position = position_seconds,
+                "reported playback stop"
+            ),
+            Err(error) => tracing::warn!(%error, "could not report playback stop"),
         }
     });
 }

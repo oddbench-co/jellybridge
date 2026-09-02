@@ -34,6 +34,10 @@ export component PlayerScreen inherits Rectangle {
     callback player-activity();
     callback leave-player();
 
+    // Test probe: the proportion actually drawn on the timeline, asserted by a
+    // window test.
+    out property <float> probe-played-ratio: timeline-area.played-ratio;
+
     background: Theme.scrim;
 
     player-surface := Rectangle {
@@ -159,6 +163,18 @@ export component PlayerScreen inherits Rectangle {
                     horizontal-stretch: 1;
                     background: transparent;
 
+                    // One mapping for the whole timeline: position, chapter
+                    // marks and the hover/seek cursor all use ratio-of-width,
+                    // so they agree with each other by construction. The stock
+                    // Slider used to draw this, but it maps its value over a
+                    // thumb-inset rail while everything layered on top mapped
+                    // over the full width, so the marks and the click target
+                    // drifted from the playhead.
+                    property <float> played-ratio: root.playback-duration > 0
+                        ? clamp(root.timeline-position / root.playback-duration, 0, 1)
+                        : 0;
+
+
                     // Time under the cursor, derived from the hover position.
                     property <float> hover-ratio: clamp(timeline-touch.mouse-x / max(self.width, 1px), 0, 1);
                     property <float> hover-time: self.hover-ratio * max(root.playback-duration, 1);
@@ -171,12 +187,23 @@ export component PlayerScreen inherits Rectangle {
                         + self.hover-minutes + ":"
                         + (self.hover-secs < 10 ? "0" : "") + self.hover-secs;
 
-                    player-timeline := Slider {
+                    // Rail, then the played portion over it. The fill is a
+                    // plain fraction of the full width, so what is drawn is
+                    // exactly played / total.
+                    Rectangle {
+                        y: (parent.height - self.height) / 2;
+                        height: 4px;
                         width: 100%;
-                        height: 100%;
-                        minimum: 0;
-                        maximum: max(root.playback-duration, 1);
-                        value <=> root.timeline-position;
+                        border-radius: 2px;
+                        background: Theme.border;
+                    }
+                    Rectangle {
+                        x: 0px;
+                        y: (parent.height - self.height) / 2;
+                        height: 4px;
+                        width: parent.width * timeline-area.played-ratio;
+                        border-radius: 2px;
+                        background: Theme.accent;
                     }
 
                     // Chapter marks, like mpv's seekbar ticks. Positions are
@@ -192,11 +219,27 @@ export component PlayerScreen inherits Rectangle {
                         visible: chapter.time > 0 && chapter.time < root.playback-duration;
                     }
 
-                    // Owns all pointer interaction with the timeline: the
-                    // stock Slider exposes no hover position, so this layer
+                    // Playhead. Kept inside the track at both ends, which is
+                    // why it is drawn from the same ratio rather than being
+                    // what defines it.
+                    Rectangle {
+                        x: clamp(
+                            parent.width * timeline-area.played-ratio - self.width / 2,
+                            0px,
+                            parent.width - self.width
+                        );
+                        y: (parent.height - self.height) / 2;
+                        width: timeline-touch.has-hover || timeline-touch.pressed ? 16px : 12px;
+                        height: self.width;
+                        border-radius: self.width / 2;
+                        background: Theme.text-bright;
+                        animate width { duration: 80ms; easing: ease-out; }
+                    }
+
+                    // Owns all pointer interaction with the timeline: it
                     // provides the finger cursor and hover time, and drives
-                    // scrubbing through the same timeline-position /
-                    // scrub-finished path the Slider's handlers used.
+                    // scrubbing through the timeline-position /
+                    // scrub-finished path.
                     timeline-touch := TouchArea {
                         mouse-cursor: pointer;
                         pointer-event(event) => {

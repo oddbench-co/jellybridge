@@ -93,6 +93,7 @@ export component JellyBridgeWindow inherits Window {
     private property <float> timeline-position: 0;
     private property <bool> timeline-scrubbing: false;
     out property <float> timeline-display-position: root.timeline-position;
+    out property <float> timeline-played-ratio;
     in property <string> playback-position-label: "0:00";
     in property <string> playback-duration-label: "0:00";
     in property <[ChapterMarker]> chapters;
@@ -298,6 +299,7 @@ export component JellyBridgeWindow inherits Window {
             volume <=> root.volume;
             timeline-position <=> root.timeline-position;
             timeline-scrubbing <=> root.timeline-scrubbing;
+            changed probe-played-ratio => { root.timeline-played-ratio = self.probe-played-ratio; }
             toggle-playback => { root.toggle-playback(); }
             toggle-fullscreen => { root.toggle-fullscreen(); }
             seek-relative(seconds) => { root.seek-relative(seconds); }
