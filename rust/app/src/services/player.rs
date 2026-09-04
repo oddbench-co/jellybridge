@@ -28,6 +28,13 @@ pub enum PlayerCommand {
         audio_source_index: Option<i64>,
         subtitle_source_index: Option<i64>,
     },
+    /// Attaches a subtitle that finished downloading after playback began.
+    AddSubtitle {
+        subtitle: PlayerSubtitleFile,
+        /// The subtitle preference already resolved for this playback, so the
+        /// worker picks the same `sub-add` flag [`finish_load`] would have.
+        preferred_source_index: Option<i64>,
+    },
     TogglePaused,
     SeekRelative(f64),
     SeekAbsolute(f64),
@@ -243,7 +250,7 @@ fn worker_loop(mpv: Mpv, receiver: Receiver<PlayerCommand>, event_sink: impl Fn(
         match receiver.recv_timeout(EVENT_POLL_INTERVAL) {
             Ok(PlayerCommand::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(command) => {
-                if let Err(error) = apply_command(&mpv, command, &mut pending_load) {
+                if let Err(error) = apply_command(&mpv, command, &mut pending_load, &event_sink) {
                     event_sink(PlayerEvent::Error(format!(
                         "player command failed: {error}"
                     )));
@@ -338,6 +345,7 @@ fn apply_command(
     mpv: &Mpv,
     command: PlayerCommand,
     pending_load: &mut Option<PendingLoad>,
+    event_sink: &impl Fn(PlayerEvent),
 ) -> Result<(), libmpv2::Error> {
     match command {
         PlayerCommand::Load {
@@ -354,6 +362,35 @@ fn apply_command(
                 subtitle_source_index,
             });
             mpv.command("loadfile", &[&uri, "replace"])
+        }
+        PlayerCommand::AddSubtitle {
+            subtitle,
+            preferred_source_index,
+        } => {
+            // The file is still opening, so `finish_load` has not run its own
+            // sub-add loop yet: hand the subtitle over rather than racing it.
+            // Opening a large remux takes long enough that this is the common
+            // case for the first subtitle to arrive.
+            if let Some(load) = pending_load.as_mut() {
+                load.subtitles.push(subtitle);
+                return Ok(());
+            }
+            let Some(path) = subtitle.path.to_str() else {
+                return Ok(());
+            };
+            mpv.command(
+                "sub-add",
+                &[
+                    path,
+                    sub_add_flag(preferred_source_index, &subtitle),
+                    subtitle.title.as_deref().unwrap_or(""),
+                    subtitle.language.as_deref().unwrap_or(""),
+                ],
+            )?;
+            // The track list is the only thing the subtitle menu is built
+            // from, so it has to be re-read for the new entry to appear.
+            event_sink(read_tracks(mpv));
+            Ok(())
         }
         PlayerCommand::TogglePaused => mpv.command("cycle", &["pause"]),
         PlayerCommand::SeekRelative(seconds) => {
@@ -455,7 +492,8 @@ fn finish_load(mpv: &Mpv, load: PendingLoad) -> Result<(), libmpv2::Error> {
         if let Some(path) = subtitle.path.to_str() {
             let title = subtitle.title.as_deref().unwrap_or("");
             let language = subtitle.language.as_deref().unwrap_or("");
-            mpv.command("sub-add", &[path, "auto", title, language])?;
+            let flag = sub_add_flag(load.subtitle_source_index, subtitle);
+            mpv.command("sub-add", &[path, flag, title, language])?;
         }
     }
     let tracks = match read_tracks(mpv) {
@@ -487,6 +525,27 @@ fn finish_load(mpv: &Mpv, load: PendingLoad) -> Result<(), libmpv2::Error> {
         None => {}
     }
     Ok(())
+}
+
+/// mpv's `sub-add` selection flag for a materialized subtitle.
+///
+/// This used to be an unconditional `auto`, which mpv defines as "select unless
+/// a subtitle is already selected". That was harmless while every subtitle was
+/// added before playback began, but subtitles now arrive during playback, and
+/// `auto` would turn them on for someone who has them off -- mpv counts
+/// `sid=no` as nothing being selected. So the decision is made here, from the
+/// preference the caller already resolved, and both add paths share it.
+fn sub_add_flag(
+    preferred_source_index: Option<i64>,
+    subtitle: &PlayerSubtitleFile,
+) -> &'static str {
+    match preferred_source_index {
+        Some(index) if subtitle.source_index == Some(index) => "select",
+        // No stored preference and no default stream: leave the pick to mpv,
+        // which is what this path did before subtitles arrived late.
+        None => "auto",
+        _ => "cached",
+    }
 }
 
 fn track_for_source<'a>(
@@ -568,5 +627,27 @@ mod tests {
                 .id,
             17
         );
+    }
+
+    fn subtitle(source_index: Option<i64>) -> PlayerSubtitleFile {
+        PlayerSubtitleFile {
+            path: PathBuf::from("/tmp/subtitle-0.srt"),
+            source_index,
+            language: None,
+            title: None,
+        }
+    }
+
+    #[test]
+    fn a_late_subtitle_is_only_selected_when_it_is_the_one_that_was_asked_for() {
+        // The subtitle the resolved preference names.
+        assert_eq!(sub_add_flag(Some(2), &subtitle(Some(2))), "select");
+        // A different track: added so it appears in the menu, not selected.
+        assert_eq!(sub_add_flag(Some(2), &subtitle(Some(3))), "cached");
+        // Subtitles off. `auto` here would turn them on mid-playback, because
+        // mpv reads `sid=no` as nothing being selected.
+        assert_eq!(sub_add_flag(Some(-1), &subtitle(Some(2))), "cached");
+        // No preference and no default stream: unchanged from before, mpv picks.
+        assert_eq!(sub_add_flag(None, &subtitle(Some(2))), "auto");
     }
 }

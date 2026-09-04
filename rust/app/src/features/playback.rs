@@ -7,7 +7,7 @@ use crate::api::JellyfinApi;
 use crate::app::{AppContext, AppState};
 use crate::features::detail::{DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData};
 use crate::features::progress::{PlaybackReporter, ProgressReport, ReportTarget};
-use crate::services::playback::{PlaybackConfig, prepare_playback};
+use crate::services::playback::{PlaybackConfig, SubtitleFetcher, prepare_playback};
 use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
 use crate::services::session::{SettingsStore, StoredSettings};
 use crate::ui;
@@ -76,24 +76,21 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
         }
         let prepared = prepare_playback(config).await;
         if !ctx.is_current(generation) {
-            if let Ok(prepared) = prepared {
+            if let Ok((prepared, _)) = prepared {
                 prepared.shutdown().await;
             }
+            // The overlay was raised before this task started and nothing else
+            // lowers it, so abandoning the playback silently left the detail
+            // screen on "Loading…" for the rest of the session.
+            ui::player::present_playback_failed(&ctx, String::new());
             return;
         }
         match prepared {
-            Ok(prepared) => {
-                let uri = prepared.local_url.clone();
-                let subtitles = prepared
-                    .subtitle_streams
-                    .iter()
-                    .map(|subtitle| PlayerSubtitleFile {
-                        path: subtitle.path.clone(),
-                        source_index: Some(i64::from(subtitle.stream_index)),
-                        language: subtitle.language.clone(),
-                        title: subtitle.title.clone(),
-                    })
-                    .collect();
+            Ok((prepared, fetcher)) => {
+                // Doubles as this playback's identity: the proxy's secret path
+                // is fresh for every prepared stream.
+                let local_url = prepared.local_url.clone();
+                let uri = local_url.clone();
                 if let Ok(mut tracks) = ctx.player_tracks.lock() {
                     tracks.preference_key = Some(preference_key);
                 }
@@ -102,14 +99,20 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                     .send(PlayerCommand::Load {
                         uri,
                         start_seconds: initial_position,
-                        subtitles,
+                        // External text subtitles are not here: they are
+                        // fetched below, after playback has started, and
+                        // attached as each one arrives.
+                        subtitles: Vec::new(),
                         audio_source_index,
                         subtitle_source_index,
                     })
                     .is_err()
                 {
                     prepared.shutdown().await;
-                    ui::set_message(&ctx, "The MPV player worker is unavailable");
+                    ui::player::present_playback_failed(
+                        &ctx,
+                        "The MPV player worker is unavailable".to_owned(),
+                    );
                     return;
                 }
                 let target = ReportTarget {
@@ -137,9 +140,80 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                     initial_position,
                     initial_duration,
                 );
+                fetch_subtitles(&ctx, fetcher, local_url, subtitle_source_index);
             }
             Err(error) => {
                 ui::player::present_playback_failed(&ctx, error.to_string());
+            }
+        }
+    });
+}
+
+/// Downloads the external text subtitles for a playback that is already on
+/// screen, attaching each to mpv as it lands.
+///
+/// Jellyfin delivers an embedded text track through the same route as a sidecar
+/// file and extracts it with ffmpeg on demand, which on a large remux takes
+/// minutes. Waiting for that before handing mpv a URL is what made the first
+/// play of a title sit on the loading overlay, so it happens here instead, and
+/// a subtitle that never arrives costs nothing but its own absence.
+fn fetch_subtitles(
+    context: &AppContext,
+    fetcher: SubtitleFetcher,
+    local_url: String,
+    subtitle_source_index: Option<i64>,
+) {
+    if fetcher.pending.is_empty() {
+        return;
+    }
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        // Sequentially: every request starts a server-side ffmpeg pass over the
+        // same source file, so running them at once only makes both slower.
+        for pending in &fetcher.pending {
+            // Generation is not the right guard here -- an unrelated catalog
+            // refresh bumps it -- so this asks the only question that matters:
+            // is this still the stream that is playing?
+            let still_current = ctx
+                .playback
+                .lock()
+                .ok()
+                .and_then(|slot| {
+                    slot.as_ref()
+                        .map(|playback| playback.local_url == local_url)
+                })
+                .unwrap_or(false);
+            if !still_current {
+                tracing::info!("playback moved on; stopped materializing subtitles");
+                return;
+            }
+            let subtitle = match fetcher.materialize(pending).await {
+                Ok(subtitle) => subtitle,
+                Err(error) => {
+                    // Never fatal: the video is already playing.
+                    tracing::warn!(
+                        %error,
+                        stream_index = pending.stream_index,
+                        "could not materialize subtitle"
+                    );
+                    continue;
+                }
+            };
+            if ctx
+                .player_sender
+                .send(PlayerCommand::AddSubtitle {
+                    subtitle: PlayerSubtitleFile {
+                        path: subtitle.path,
+                        source_index: Some(i64::from(subtitle.stream_index)),
+                        language: subtitle.language,
+                        title: subtitle.title,
+                    },
+                    preferred_source_index: subtitle_source_index,
+                })
+                .is_err()
+            {
+                tracing::warn!("the MPV player worker is gone; subtitle not attached");
+                return;
             }
         }
     });

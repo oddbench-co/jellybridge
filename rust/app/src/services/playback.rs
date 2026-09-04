@@ -8,6 +8,9 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -87,12 +90,14 @@ impl PlaybackConfig {
 
 pub struct PreparedPlayback {
     pub local_url: String,
-    pub subtitle_streams: Vec<PreparedSubtitle>,
     /// Identifies the stream to the server when reporting playback progress.
     pub media_source_id: String,
     pub play_session_id: Option<String>,
     proxy: ProxySession,
-    _temporary_subtitles: TemporarySubtitles,
+    /// Shared with the [`SubtitleFetcher`]: the directory outlives preparation
+    /// now that subtitles are materialized after playback has already started,
+    /// and is removed when the last of the two owners is dropped.
+    _temporary_subtitles: Arc<TemporarySubtitles>,
 }
 
 #[derive(Clone, Debug)]
@@ -109,9 +114,61 @@ impl PreparedPlayback {
     }
 }
 
+/// One external text subtitle Jellyfin has advertised but not yet delivered.
+#[derive(Clone, Debug)]
+pub struct PendingSubtitle {
+    url: Url,
+    extension: &'static str,
+    pub stream_index: i32,
+    pub language: Option<String>,
+    pub title: Option<String>,
+}
+
+/// Downloads the subtitles a prepared playback advertised, after that playback
+/// has already started.
+///
+/// Jellyfin serves an *embedded* text track through the same `DeliveryMethod:
+/// External` route as a sidecar file, and answers that request by running
+/// ffmpeg over the source. On a large remux that takes minutes, which is why
+/// this deliberately does not run before the stream URL reaches mpv: none of it
+/// is needed to decode video.
+pub struct SubtitleFetcher {
+    client: reqwest::Client,
+    authorization: HeaderValue,
+    directory: Arc<TemporarySubtitles>,
+    pub pending: Vec<PendingSubtitle>,
+}
+
+impl SubtitleFetcher {
+    pub async fn materialize(
+        &self,
+        pending: &PendingSubtitle,
+    ) -> Result<PreparedSubtitle, PlaybackError> {
+        let path = self
+            .directory
+            .download(
+                &self.client,
+                pending.url.clone(),
+                self.authorization.clone(),
+                pending.extension,
+            )
+            .await?;
+        tracing::info!(
+            stream_index = pending.stream_index,
+            "materialized authenticated subtitle"
+        );
+        Ok(PreparedSubtitle {
+            path,
+            stream_index: pending.stream_index,
+            language: pending.language.clone(),
+            title: pending.title.clone(),
+        })
+    }
+}
+
 pub async fn prepare_playback(
     config: PlaybackConfig,
-) -> Result<PreparedPlayback, PlaybackError> {
+) -> Result<(PreparedPlayback, SubtitleFetcher), PlaybackError> {
     cleanup_stale_subtitles();
     let client = strict_client().map_err(PlaybackError::PlaybackInfoRequest)?;
     let authorization = config.authorization()?;
@@ -123,36 +180,27 @@ pub async fn prepare_playback(
         .filter(|id| !id.is_empty())
         .ok_or(PlaybackError::MissingMediaSourceId)?;
 
-    let mut temporary_subtitles = TemporarySubtitles::create()?;
-    let mut subtitle_streams = Vec::new();
+    let temporary_subtitles = Arc::new(TemporarySubtitles::create()?);
+    let mut pending = Vec::new();
     for stream in source
         .media_streams
         .iter()
         .filter(|stream| stream.is_external_text())
     {
-        let remote_url = subtitle_url(&config, media_source_id, stream)?;
-        let extension = safe_extension(stream.codec.as_deref());
-        let path = temporary_subtitles
-            .download(&client, remote_url, authorization.clone(), extension)
-            .await?;
-        tracing::info!(
-            stream_index = stream.index,
-            "materialized authenticated subtitle"
-        );
-        subtitle_streams.push(PreparedSubtitle {
-            path: path.clone(),
+        pending.push(PendingSubtitle {
+            url: subtitle_url(&config, media_source_id, stream)?,
+            extension: safe_extension(stream.codec.as_deref()),
             stream_index: stream.index,
             language: stream.language.clone(),
             title: stream.display_title.clone(),
         });
-        temporary_subtitles.files.push(path);
     }
 
     let stream_url = raw_stream_url(&config, media_source_id)?;
     let mut headers = HeaderMap::new();
-    headers.insert("x-emby-authorization", authorization);
+    headers.insert("x-emby-authorization", authorization.clone());
     let proxy = start_proxy(
-        client,
+        client.clone(),
         PlaybackOrigin {
             url: stream_url,
             headers,
@@ -160,17 +208,24 @@ pub async fn prepare_playback(
     )
     .await?;
     let local_url = proxy.local_url().as_str().to_owned();
-    Ok(PreparedPlayback {
-        local_url,
-        subtitle_streams,
-        media_source_id: media_source_id.to_owned(),
-        play_session_id: playback_info
-            .play_session_id
-            .clone()
-            .filter(|id| !id.is_empty()),
-        proxy,
-        _temporary_subtitles: temporary_subtitles,
-    })
+    Ok((
+        PreparedPlayback {
+            local_url,
+            media_source_id: media_source_id.to_owned(),
+            play_session_id: playback_info
+                .play_session_id
+                .clone()
+                .filter(|id| !id.is_empty()),
+            proxy,
+            _temporary_subtitles: temporary_subtitles.clone(),
+        },
+        SubtitleFetcher {
+            client,
+            authorization,
+            directory: temporary_subtitles,
+            pending,
+        },
+    ))
 }
 
 async fn request_playback_info(
@@ -417,9 +472,15 @@ fn normalized(value: Option<&str>) -> Option<String> {
         .map(str::to_ascii_lowercase)
 }
 
+/// The 0700 directory the materialized subtitles live in, shared between the
+/// prepared playback and the fetcher that fills it. Interior mutability rather
+/// than `&mut self` because both hold it behind an `Arc`.
 struct TemporarySubtitles {
     directory: PathBuf,
-    files: Vec<PathBuf>,
+    files: Mutex<Vec<PathBuf>>,
+    /// Names files independently of `files`, so a failed download cannot make
+    /// the next one reuse its name and so concurrent downloads cannot collide.
+    next_name: AtomicUsize,
 }
 
 impl TemporarySubtitles {
@@ -447,7 +508,8 @@ impl TemporarySubtitles {
         marker.sync_all().map_err(PlaybackError::SubtitleIo)?;
         Ok(Self {
             directory,
-            files: Vec::new(),
+            files: Mutex::new(Vec::new()),
+            next_name: AtomicUsize::new(0),
         })
     }
 
@@ -474,9 +536,16 @@ impl TemporarySubtitles {
             return Err(PlaybackError::SubtitleTooLarge);
         }
 
-        let path = self
-            .directory
-            .join(format!("subtitle-{}.{}", self.files.len(), extension));
+        let path = self.directory.join(format!(
+            "subtitle-{}.{}",
+            self.next_name.fetch_add(1, Ordering::Relaxed),
+            extension
+        ));
+        // Recorded before the first write so a download that fails part way
+        // still leaves a path for `Drop` to remove.
+        if let Ok(mut files) = self.files.lock() {
+            files.push(path.clone());
+        }
         let mut file = secure_create(&path)?;
         let mut total = 0usize;
         let mut stream = response.bytes_stream();
@@ -497,8 +566,10 @@ impl TemporarySubtitles {
 
 impl Drop for TemporarySubtitles {
     fn drop(&mut self) {
-        for path in &self.files {
-            let _ = fs::remove_file(path);
+        if let Ok(files) = self.files.lock() {
+            for path in files.iter() {
+                let _ = fs::remove_file(path);
+            }
         }
         let _ = fs::remove_file(self.directory.join(SUBTITLE_MARKER));
         let _ = fs::remove_dir(&self.directory);
@@ -580,6 +651,7 @@ mod tests {
     use super::*;
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
 
     use http_body_util::Full;
     use hyper::body::{Bytes, Incoming};
@@ -591,97 +663,114 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
-    async fn mock_jellyfin() -> (SocketAddr, JoinHandle<()>) {
+    async fn mock_jellyfin() -> (SocketAddr, JoinHandle<()>, Arc<AtomicUsize>) {
+        mock_jellyfin_with_subtitle_delay(Duration::ZERO).await
+    }
+
+    /// The third return is how many times the subtitle route was requested --
+    /// Jellyfin extracts an embedded track with ffmpeg on that request, so
+    /// whether preparation touches it at all is the thing under test.
+    async fn mock_jellyfin_with_subtitle_delay(
+        subtitle_delay: Duration,
+    ) -> (SocketAddr, JoinHandle<()>, Arc<AtomicUsize>) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let address = listener.local_addr().unwrap();
+        let subtitle_hits = Arc::new(AtomicUsize::new(0));
+        let hits = subtitle_hits.clone();
         let task = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     break;
                 };
+                let hits = hits.clone();
                 tokio::spawn(async move {
-                    let service = service_fn(|request: Request<Incoming>| async move {
-                        let authorized = request
-                            .headers()
-                            .get("x-emby-authorization")
-                            .and_then(|value| value.to_str().ok())
-                            .is_some_and(|value| value.contains("Token=\"test-token\""));
-                        if !authorized
-                            || request.uri().query().is_some_and(|query| {
-                                query.contains("api_key") || query.contains("access_token")
-                            })
-                        {
-                            return Ok::<_, Infallible>(
-                                Response::builder()
-                                    .status(StatusCode::UNAUTHORIZED)
-                                    .body(Full::new(Bytes::new()))
-                                    .unwrap(),
-                            );
-                        }
-
-                        match request.uri().path() {
-                            "/Items/item/PlaybackInfo" => {
-                                let body = serde_json::json!({
-                                    "MediaSources": [{
-                                        "Id": "source",
-                                        "SupportsDirectPlay": false,
-                                        "SupportsDirectStream": true,
-                                        "TranscodingUrl": "/Videos/item/master.m3u8",
-                                        "Container": "mpegts",
-                                        "MediaStreams": [
-                                            {"Index": 0, "Type": "Video", "Codec": "vc1"},
-                                            {"Index": 1, "Type": "Audio", "Codec": "dts"},
-                                            {
-                                                "Index": 2,
-                                                "Type": "Subtitle",
-                                                "Codec": "srt",
-                                                "Language": "eng",
-                                                "DisplayTitle": "English Signs",
-                                                "IsExternal": true,
-                                                "IsTextSubtitleStream": true,
-                                                "DeliveryMethod": "External",
-                                                "DeliveryUrl": "/Videos/item/source/Subtitles/2/0/Stream.srt"
-                                            }
-                                        ]
-                                    }]
+                    let service = service_fn(move |request: Request<Incoming>| {
+                        let hits = hits.clone();
+                        async move {
+                            let authorized = request
+                                .headers()
+                                .get("x-emby-authorization")
+                                .and_then(|value| value.to_str().ok())
+                                .is_some_and(|value| value.contains("Token=\"test-token\""));
+                            if !authorized
+                                || request.uri().query().is_some_and(|query| {
+                                    query.contains("api_key") || query.contains("access_token")
                                 })
-                                .to_string();
-                                Ok(Response::builder()
-                                    .status(StatusCode::OK)
-                                    .header(CONTENT_LENGTH, body.len())
-                                    .body(Full::new(Bytes::from(body)))
-                                    .unwrap())
-                            }
-                            "/Videos/item/source/Subtitles/2/0/Stream.srt" => {
-                                let body = Bytes::from_static(
-                                    b"1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+                            {
+                                return Ok::<_, Infallible>(
+                                    Response::builder()
+                                        .status(StatusCode::UNAUTHORIZED)
+                                        .body(Full::new(Bytes::new()))
+                                        .unwrap(),
                                 );
-                                Ok(Response::builder()
-                                    .status(StatusCode::OK)
-                                    .header(CONTENT_LENGTH, body.len())
-                                    .body(Full::new(body))
-                                    .unwrap())
                             }
-                            "/Videos/item/stream" => {
-                                let requested_range = request.headers().get(RANGE)
-                                    == Some(&hyper::header::HeaderValue::from_static("bytes=2-5"));
-                                let (status, body) = if requested_range {
-                                    (StatusCode::PARTIAL_CONTENT, Bytes::from_static(b"2345"))
-                                } else {
-                                    (StatusCode::OK, Bytes::from_static(b"0123456789"))
-                                };
-                                let mut response = Response::builder()
-                                    .status(status)
-                                    .header(CONTENT_LENGTH, body.len());
-                                if requested_range {
-                                    response = response.header(CONTENT_RANGE, "bytes 2-5/10");
+
+                            match request.uri().path() {
+                                "/Items/item/PlaybackInfo" => {
+                                    let body = serde_json::json!({
+                                        "MediaSources": [{
+                                            "Id": "source",
+                                            "SupportsDirectPlay": false,
+                                            "SupportsDirectStream": true,
+                                            "TranscodingUrl": "/Videos/item/master.m3u8",
+                                            "Container": "mpegts",
+                                            "MediaStreams": [
+                                                {"Index": 0, "Type": "Video", "Codec": "vc1"},
+                                                {"Index": 1, "Type": "Audio", "Codec": "dts"},
+                                                {
+                                                    "Index": 2,
+                                                    "Type": "Subtitle",
+                                                    "Codec": "srt",
+                                                    "Language": "eng",
+                                                    "DisplayTitle": "English Signs",
+                                                    "IsExternal": true,
+                                                    "IsTextSubtitleStream": true,
+                                                    "DeliveryMethod": "External",
+                                                    "DeliveryUrl": "/Videos/item/source/Subtitles/2/0/Stream.srt"
+                                                }
+                                            ]
+                                        }]
+                                    })
+                                    .to_string();
+                                    Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header(CONTENT_LENGTH, body.len())
+                                        .body(Full::new(Bytes::from(body)))
+                                        .unwrap())
                                 }
-                                Ok(response.body(Full::new(body)).unwrap())
+                                "/Videos/item/source/Subtitles/2/0/Stream.srt" => {
+                                    hits.fetch_add(1, Ordering::Relaxed);
+                                    tokio::time::sleep(subtitle_delay).await;
+                                    let body = Bytes::from_static(
+                                        b"1\n00:00:00,000 --> 00:00:01,000\nhello\n",
+                                    );
+                                    Ok(Response::builder()
+                                        .status(StatusCode::OK)
+                                        .header(CONTENT_LENGTH, body.len())
+                                        .body(Full::new(body))
+                                        .unwrap())
+                                }
+                                "/Videos/item/stream" => {
+                                    let requested_range = request.headers().get(RANGE)
+                                        == Some(&hyper::header::HeaderValue::from_static("bytes=2-5"));
+                                    let (status, body) = if requested_range {
+                                        (StatusCode::PARTIAL_CONTENT, Bytes::from_static(b"2345"))
+                                    } else {
+                                        (StatusCode::OK, Bytes::from_static(b"0123456789"))
+                                    };
+                                    let mut response = Response::builder()
+                                        .status(status)
+                                        .header(CONTENT_LENGTH, body.len());
+                                    if requested_range {
+                                        response = response.header(CONTENT_RANGE, "bytes 2-5/10");
+                                    }
+                                    Ok(response.body(Full::new(body)).unwrap())
+                                }
+                                _ => Ok(Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Full::new(Bytes::new()))
+                                    .unwrap()),
                             }
-                            _ => Ok(Response::builder()
-                                .status(StatusCode::NOT_FOUND)
-                                .body(Full::new(Bytes::new()))
-                                .unwrap()),
                         }
                     });
                     let _ = http1::Builder::new()
@@ -690,32 +779,32 @@ mod tests {
                 });
             }
         });
-        (address, task)
+        (address, task, subtitle_hits)
     }
 
     #[tokio::test]
     async fn prepares_authenticated_raw_playback_without_exposing_credentials() {
-        let (address, upstream) = mock_jellyfin().await;
+        let (address, upstream, subtitle_hits) = mock_jellyfin().await;
         let session = StoredSession {
             server_url: format!("http://{address}/"),
             token: "test-token".to_owned(),
             user_id: "user".to_owned(),
         };
         let config = PlaybackConfig::from_session(&session, "item".to_owned()).unwrap();
-        let prepared = prepare_playback(config).await.unwrap();
+        let (prepared, fetcher) = prepare_playback(config).await.unwrap();
         assert!(!prepared.local_url.contains("test-token"));
         assert!(!prepared.local_url.contains("api_key"));
-        assert_eq!(prepared.subtitle_streams.len(), 1);
-        assert_eq!(prepared.subtitle_streams[0].stream_index, 2);
-        assert_eq!(
-            prepared.subtitle_streams[0].language.as_deref(),
-            Some("eng")
-        );
-        assert_eq!(
-            prepared.subtitle_streams[0].title.as_deref(),
-            Some("English Signs")
-        );
-        let subtitle_path = prepared.subtitle_streams[0].path.clone();
+        // Preparation advertises the subtitle without fetching it.
+        assert_eq!(subtitle_hits.load(Ordering::Relaxed), 0);
+        assert_eq!(fetcher.pending.len(), 1);
+        assert_eq!(fetcher.pending[0].stream_index, 2);
+        assert_eq!(fetcher.pending[0].language.as_deref(), Some("eng"));
+        assert_eq!(fetcher.pending[0].title.as_deref(), Some("English Signs"));
+
+        let subtitle = fetcher.materialize(&fetcher.pending[0]).await.unwrap();
+        assert_eq!(subtitle_hits.load(Ordering::Relaxed), 1);
+        assert_eq!(subtitle.stream_index, 2);
+        let subtitle_path = subtitle.path.clone();
         assert!(
             fs::read_to_string(&subtitle_path)
                 .unwrap()
@@ -740,7 +829,40 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap(), Bytes::from_static(b"2345"));
 
         prepared.shutdown().await;
+        assert!(
+            subtitle_path.exists(),
+            "the fetcher still owns the subtitle directory"
+        );
+        drop(fetcher);
         assert!(!subtitle_path.exists());
+        upstream.abort();
+    }
+
+    /// The regression guard for the bug this split exists to fix: Jellyfin
+    /// extracts an embedded text track with ffmpeg when it is requested, which
+    /// on a large remux takes minutes, and playback used to wait for it.
+    #[tokio::test]
+    async fn preparation_does_not_wait_for_subtitle_extraction() {
+        let (address, upstream, subtitle_hits) =
+            mock_jellyfin_with_subtitle_delay(Duration::from_secs(2)).await;
+        let session = StoredSession {
+            server_url: format!("http://{address}/"),
+            token: "test-token".to_owned(),
+            user_id: "user".to_owned(),
+        };
+        let config = PlaybackConfig::from_session(&session, "item".to_owned()).unwrap();
+        let started = std::time::Instant::now();
+        let (prepared, fetcher) = prepare_playback(config).await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(fetcher.pending.len(), 1);
+        assert_eq!(subtitle_hits.load(Ordering::Relaxed), 0);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "preparation waited for the subtitle: {elapsed:?}"
+        );
+
+        prepared.shutdown().await;
         upstream.abort();
     }
 
