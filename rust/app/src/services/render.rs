@@ -174,12 +174,29 @@ impl RenderHost {
         Ok(())
     }
 
+    /// Runs mpv's render-thread work on a frame that draws no video.
+    ///
+    /// The advanced-control contract does not lapse because the player screen
+    /// is hidden, and the render context outlives that screen. Deliberately
+    /// does not `ensure_mpv`: a session that never opens the player never pays
+    /// for the context.
+    pub fn pump(&mut self) {
+        if let Some(mpv) = self.mpv.as_ref() {
+            mpv.poll();
+        }
+    }
+
     pub fn render_frame(&mut self, size: PhysicalSize) -> Result<Option<Image>, RenderError> {
         let width = i32::try_from(size.width.max(1)).unwrap_or(i32::MAX);
         let height = i32::try_from(size.height.max(1)).unwrap_or(i32::MAX);
         self.ensure_mpv()?;
         let gl = self.gl.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
         let mpv = self.mpv.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
+
+        // Unconditional, and before the branch below: `&&` would short-circuit
+        // past it on a resize and on the first frame, and mpv's contract has no
+        // exception for either. See `RawRenderContext::poll`.
+        let has_new_frame = mpv.poll();
 
         let resized = self
             .targets
@@ -188,7 +205,7 @@ impl RenderHost {
         // A resize needs new targets, and the first frame has nothing on
         // screen yet; otherwise draw only when mpv says it has a new frame and
         // hand back the texture already being displayed when it does not.
-        if !resized && self.completed_frames > 0 && !mpv.take_frame_request() {
+        if !resized && self.completed_frames > 0 && !has_new_frame {
             self.rendered_this_cycle = false;
             let target = &self.targets.as_ref().expect("targets initialized").frames[self.front];
             let image = unsafe {
@@ -443,7 +460,6 @@ enum RenderWake {
 }
 
 struct UpdateCallbackState {
-    pending: Arc<AtomicBool>,
     queued: Arc<AtomicBool>,
     sender: mpsc::Sender<RenderWake>,
 }
@@ -452,7 +468,6 @@ unsafe extern "C" fn render_update_callback(context: *mut c_void) {
     if let Some(state) = NonNull::new(context.cast::<UpdateCallbackState>()) {
         // SAFETY: user data is boxed for the full registered-callback lifetime.
         let state = unsafe { state.as_ref() };
-        state.pending.store(true, Ordering::Release);
         if !state.queued.swap(true, Ordering::AcqRel) {
             let _ = state.sender.send(RenderWake::Redraw);
         }
@@ -517,7 +532,6 @@ impl RawRenderContext {
         check_mpv(status)?;
         let context = NonNull::new(raw).ok_or_else(|| RenderError::Mpv("null context".into()))?;
 
-        let pending = Arc::new(AtomicBool::new(true));
         let queued = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
         let wake_queued = queued.clone();
@@ -527,8 +541,16 @@ impl RawRenderContext {
                 while let Ok(message) = receiver.recv() {
                     match message {
                         RenderWake::Redraw => {
-                            redraw();
+                            // Cleared before the request, not after. A callback
+                            // that lands while the redraw is still queued is
+                            // covered by it; one that lands after it has been
+                            // requested must be able to queue another, or the
+                            // `mpv_render_context_update` it needs is lost
+                            // until some unrelated repaint happens. The cost of
+                            // being early here is a redundant repaint, which
+                            // Slint coalesces.
                             wake_queued.store(false, Ordering::Release);
+                            redraw();
                         }
                         RenderWake::Shutdown => break,
                     }
@@ -540,11 +562,7 @@ impl RawRenderContext {
                 return Err(RenderError::WakeThread(error));
             }
         };
-        let mut update_state = Box::new(UpdateCallbackState {
-            pending,
-            queued,
-            sender,
-        });
+        let mut update_state = Box::new(UpdateCallbackState { queued, sender });
         unsafe {
             sys::mpv_render_context_set_update_callback(
                 context.as_ptr(),
@@ -562,16 +580,22 @@ impl RawRenderContext {
         })
     }
 
-    /// Whether mpv has a new frame to draw. The update callback only tells us
-    /// that *something* changed; `mpv_render_context_update` returns the flags
-    /// that say what, and `MPV_RENDER_UPDATE_FRAME` is the one that means
-    /// "call render". Discarding those flags made mpv redo the full scale,
-    /// colour-convert and dither pass at display refresh rate for content that
-    /// produces frames far more slowly.
-    fn take_frame_request(&self) -> bool {
-        if !self.update_state.pending.swap(false, Ordering::AcqRel) {
-            return false;
-        }
+    /// Runs mpv's render-thread work and reports whether a new frame is ready.
+    ///
+    /// `mpv_render_context_update` is not a query that can be skipped. Under
+    /// `MPV_RENDER_PARAM_ADVANCED_CONTROL` libmpv documents calling it after
+    /// every update callback as a hard requirement, and it is where mpv
+    /// allocates the textures libavcodec decodes into (`vd-lavc-dr`). Direct
+    /// rendering exists only on the software decode path -- an nvdec frame
+    /// arrives as a CUDA-interop texture and needs none of it -- so gating this
+    /// call behind a cached flag starved the software decoder of buffers and
+    /// left the black first frame on screen while audio kept playing.
+    ///
+    /// The flags it returns still gate `render`: `MPV_RENDER_UPDATE_FRAME` is
+    /// the one that means "call render", and drawing without it made mpv redo
+    /// the full scale, colour-convert and dither pass at display refresh rate
+    /// for content that produces frames far more slowly.
+    fn poll(&self) -> bool {
         let flags = unsafe { sys::mpv_render_context_update(self.context.as_ptr()) };
         flags & u64::from(sys::mpv_render_update_flag_MPV_RENDER_UPDATE_FRAME) != 0
     }

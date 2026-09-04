@@ -148,6 +148,19 @@ JellyBridge intentionally does not request transcoding. Confirm that mpv can
 play the file format, the server can serve the file, the machine can reach the
 server URL used at login, and the user has access to the item.
 
+### Video is black, or a specific item will not decode
+
+JellyBridge direct-plays the original file, so mpv falls back to software
+decoding for anything the GPU will not take -- 10-bit H.264, 4:2:2 or 4:4:4
+chroma, and similar. `JELLYBRIDGE_HWDEC` overrides mpv's `hwdec` setting for a
+run; it defaults to `auto-safe`. Set it to `no` to force software decoding, or
+to `auto` to allow the copy-back modes `auto-safe` excludes:
+
+    JELLYBRIDGE_HWDEC=no jellybridge
+
+The chosen mode is logged at startup, and the path mpv actually took is logged
+when each item loads and shown in the player status line.
+
 ### Login keeps returning to the auth screen
 
 The saved session may be missing, invalid, or revoked. Log in again, or reset

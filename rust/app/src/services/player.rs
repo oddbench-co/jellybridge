@@ -171,9 +171,16 @@ impl Drop for PlayerWorker {
 pub fn create_player(
     event_sink: impl Fn(PlayerEvent) + Send + 'static,
 ) -> Result<(RenderClient, PlayerWorker), PlayerCreateError> {
+    // `config = false` below means mpv reads no configuration file, so without
+    // this there is no way to exercise the software decode path on demand --
+    // which is how a fault specific to it went unnoticed. Matches the
+    // `JELLYBRIDGE_GL_DEBUG` / `JELLYBRIDGE_GL_SENTINEL` convention in
+    // `services/render.rs`.
+    let hwdec = std::env::var("JELLYBRIDGE_HWDEC").unwrap_or_else(|_| "auto-safe".to_owned());
+    tracing::info!(%hwdec, "requested libmpv hardware decoding mode");
     let core = Mpv::with_initializer(|initializer| {
         initializer.set_option("vo", "libmpv")?;
-        initializer.set_option("hwdec", "auto-safe")?;
+        initializer.set_option("hwdec", hwdec.as_str())?;
         initializer.set_option("config", false)?;
         initializer.set_option("terminal", false)?;
         initializer.set_option("input-default-bindings", false)?;

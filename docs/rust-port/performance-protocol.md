@@ -325,42 +325,71 @@ recorded here rather than taken:
   nothing, because the local init it now overlaps is 31 ms, not the ~200 ms the
   plan assumed.
 
-### Still open
+### Software decoding rendered a black picture -- fixed 2026-09-03
 
-- **Software decoding renders a black picture.** Reproducible, and the most
-  serious thing on this list. Measured as mean luma over the video area of
-  five captures, rather than by eye:
+The most serious thing on the previous list, and no longer open. Round two
+described it as reproducible but not isolated, and named round one's frame
+gating as a hypothesis. The cause was in that gating, but the broken half was
+not the one suspected.
+
+`render.h`, on `mpv_render_context_update`:
+
+> This is optional if MPV_RENDER_PARAM_ADVANCED_CONTROL was not set (default).
+> Otherwise, it's a hard requirement that this is called after each update
+> callback. [...] If MPV_RENDER_PARAM_ADVANCED_CONTROL was set, this will do
+> additional work **such as allocating textures for the video decoder**.
+
+The context sets `ADVANCED_CONTROL = 1`, which enables mpv's direct rendering
+(`vd-lavc-dr`, default `auto`): libavcodec decodes straight into textures mpv
+allocates inside `mpv_render_context_update`. **Direct rendering exists only on
+the software path** -- an nvdec frame arrives as a CUDA-interop texture and
+needs none of it. That is the asymmetry the luma table measured, and why three
+rounds of verification against hardware decoding never saw it.
+
+`take_frame_request` returned early without calling `mpv_render_context_update`
+at all whenever its cached `pending` flag was clear, and its caller
+short-circuited past it on a resize and on the first frame; `BeforeRendering`
+for any screen other than the player never called it either, though the render
+context outlives that screen. Separately, the wake bridge cleared its `queued`
+coalescing flag *after* the redraw had already been posted, so a callback
+landing in that window sent nothing and its `update()` was lost until an
+unrelated repaint. The software decoder was starved of buffers and the black
+first frame stayed on screen while audio and `time-pos` carried on.
+
+The fix calls `mpv_render_context_update` unconditionally, on every frame and
+on every screen, and keeps `MPV_RENDER_UPDATE_FRAME` gating only
+`mpv_render_context_render` -- which is where round one's saving actually was,
+and that saving was 4.5% to 4.2% playing CPU, within noise. The `pending` flag
+is gone; `queued` is now cleared before the redraw is requested, so the cost of
+being early is a redundant repaint that Slint coalesces.
+
+Measured the same way as the fault, mean and max luma over the video area, on
+the same machine with `JELLYBRIDGE_HWDEC=no` forcing the path:
 
   | decode path | video area | verdict |
   |---|---|---|
-  | `hardware/direct (nvdec)` | mean 31.7, max 248 | picture |
-  | `hardware/direct (nvdec)` | mean 50.5, max 244 | picture |
-  | `software` | mean 0.3, max 3 | black |
-  | `software` | mean 1.0, max 3 | black |
-  | `software` | mean 1.0, max 3 | black |
+  | `software`, before | mean 0.3, max 3 | black |
+  | `software`, before | mean 1.0, max 3 | black |
+  | `software`, before | mean 1.0, max 3 | black |
+  | `software`, after | mean 21.7, max 251 | picture |
+  | `software`, after | mean 47.1, max 254 | picture |
+  | `software`, after | mean 21.3, max 246 | picture |
 
-  Everything else keeps working while it is black: audio plays, the timeline
-  advances, the track selectors populate, and `render.rs` logs
-  `libmpv rendered into a same-context borrowed texture` at the right size. The
-  decode path is the only thing that correlates.
+The mean varies between captures, which is the part that says frames are
+advancing rather than one frame being handed back forever.
 
-  **Which path mpv picks for the same item is itself not deterministic** -- the
-  same episode reported `nvdec` on one launch and `software` on the next -- so
-  the fault appears intermittently, which is how it survived a smoke test. An
-  earlier entry here described the `software` case as a hardware-decoding
-  question and said playback was otherwise correct; that was wrong, and this
-  replaces it.
+`hwdec` was hard-coded and `config = false` leaves mpv no configuration file,
+so there was no way to exercise this path on demand -- which is how a fault
+specific to it survived a smoke test. `JELLYBRIDGE_HWDEC` now overrides it,
+defaulting to `auto-safe`.
 
-  Not isolated to a cause. The leading suspect is the frame gating added in
-  round one (`take_frame_request`, `services/render.rs`): after the first frame
-  it draws only when mpv reports `MPV_RENDER_UPDATE_FRAME`, and otherwise hands
-  back the existing front texture -- so a path that never sets that flag would
-  leave frame one on screen forever, and frame one at the start of a video is
-  black. That is a hypothesis, **not a measured finding**: the controlled test
-  that would settle it (forcing `hwdec = no` and toggling the gate) has not
-  been run. Round one verified that change against playing, paused,
-  seek-while-paused and resize -- all with hardware decoding active. The
-  software path was never exercised.
+Not chased, ruled out by inspection first: femtovg restores `UNPACK_*`
+pixel-store state itself and uses no PBOs, so stale unpack state -- the other
+thing only a software upload would depend on -- was never a candidate, and
+`GlStateGuard` saves and restores that state regardless.
+
+### Still open
+
 - The **`ImageStore::remove`** cost of tearing down a screen is 9% of the UI
   thread across a browse-and-navigate session. Keeping the catalog and detail
   screens alive behind `visible:` instead of `if` is what would remove it; it

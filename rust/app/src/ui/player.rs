@@ -424,7 +424,14 @@ pub fn install_renderer(
                         (window.get_video_logical_height().max(1.0) * scale).round() as u32;
                     render_host.render_frame(slint::PhysicalSize::new(width, height))
                 }
-                RenderingState::BeforeRendering => Ok(None),
+                RenderingState::BeforeRendering => {
+                    // No video is drawn on this frame, but mpv's
+                    // advanced-control contract still requires its
+                    // render-thread work to run, and the render context
+                    // outlives the player screen.
+                    render_host.pump();
+                    Ok(None)
+                }
                 RenderingState::AfterRendering => {
                     super::startup::note_frame_rendered();
                     if window.get_screen() == super::Screen::Player {
