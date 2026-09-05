@@ -325,12 +325,18 @@ recorded here rather than taken:
   nothing, because the local init it now overlaps is 31 ms, not the ~200 ms the
   plan assumed.
 
-### Software decoding rendered a black picture -- fixed 2026-09-03
+### Software decoding rendered a black picture -- two causes, both now fixed
 
-The most serious thing on the previous list, and no longer open. Round two
-described it as reproducible but not isolated, and named round one's frame
-gating as a hypothesis. The cause was in that gating, but the broken half was
-not the one suspected.
+This had **two** independent causes with one symptom, and the entry below
+originally closed the fault after finding the first. It did not hold: the
+black picture came back on 2026-09-05. Both halves are recorded here, in the
+order they were found.
+
+#### Cause one: starved direct-rendering buffers -- fixed 2026-09-03
+
+Round two described it as reproducible but not isolated, and named round one's
+frame gating as a hypothesis. The cause was in that gating, but the broken half
+was not the one suspected.
 
 `render.h`, on `mpv_render_context_update`:
 
@@ -387,6 +393,55 @@ Not chased, ruled out by inspection first: femtovg restores `UNPACK_*`
 pixel-store state itself and uses no PBOs, so stale unpack state -- the other
 thing only a software upload would depend on -- was never a candidate, and
 `GlStateGuard` saves and restores that state regardless.
+
+**What this measurement missed.** Every capture above was taken with
+`JELLYBRIDGE_HWDEC=no`, so it only ever exercised software chosen *by
+configuration*. Software chosen as a *fallback* is a different path, and it was
+still black. That is cause two.
+
+#### Cause two: `loadfile` ran before the render context existed -- fixed 2026-09-05
+
+`vo=libmpv` has no video output at all until `mpv_render_context_create` has
+run, and since the RSS work above the context is built lazily, on the first
+frame drawn with the player screen showing -- ~320 ms of work. But
+`PlayerCommand::Load` was sent *before* the screen switched, so mpv reached
+decoder init with no GL interop to probe: `hwdec=auto-safe` had nothing to
+select, fell back to software, and configured its video chain against a VO with
+no surface. The picture stayed black while audio and `time-pos` ran on.
+
+Which side won was a race against how fast the file opened. Captured on a
+losing run, timestamps relative to process start:
+
+```
+184787.6ms  libmpv loaded media
+184787.6ms  classified libmpv decode path decode_path=software
+184983.6ms  mpv render context created ms=343.031272
+```
+
+The decode path was chosen **196 ms before the context existed**. Video-area
+luma on that run: mean 0.43, max 3 -- the same black as cause one. A winning run
+has the two lines the other way round and reports `hardware/direct (nvdec)`.
+
+This is also what the previous round recorded but could not explain:
+
+> **Which path mpv picks for the same item is itself not deterministic** -- the
+> same episode reported `nvdec` on one launch and `software` on the next
+
+That was never a separate mystery. It was this race, and it is why a fault that
+only ever appeared on the software path survived three rounds of verification
+against hardware decoding.
+
+The fix keeps the context lazy -- eager creation is what cost 187 MiB of settled
+RSS -- and makes it *ordered* instead. `features/playback.rs` now enters the
+player screen, awaits a `watch` channel that `RenderHost::ensure_mpv` fires on
+success and on failure alike, and only then sends `Load`. The wait is the same
+~320 ms that already elapsed; it just no longer overlaps `loadfile`. A five
+second timeout logs `mpv render context was not ready in time` and loads anyway,
+so a machine that cannot build a context still plays.
+
+Measured after the fix: a session that never opens the player builds no context,
+`time_to_interactive` 298 ms and settled RSS 365 MiB, both unchanged -- the
+laziness the RSS work bought is preserved.
 
 ### Still open
 

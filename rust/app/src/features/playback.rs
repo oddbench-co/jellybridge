@@ -94,6 +94,21 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                 if let Ok(mut tracks) = ctx.player_tracks.lock() {
                     tracks.preference_key = Some(preference_key);
                 }
+                let target = ReportTarget {
+                    item_id: detail.id.clone(),
+                    media_source_id: prepared.media_source_id.clone(),
+                    play_session_id: prepared.play_session_id.clone(),
+                };
+                // Enter the player screen before loading, not after: the
+                // rendering notifier only builds mpv's render context on a
+                // frame drawn with this screen showing.
+                ui::player::present_playback_started(
+                    &ctx,
+                    detail.title,
+                    initial_position,
+                    initial_duration,
+                );
+                wait_for_render_context(&ctx).await;
                 if ctx
                     .player_sender
                     .send(PlayerCommand::Load {
@@ -115,11 +130,6 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                     );
                     return;
                 }
-                let target = ReportTarget {
-                    item_id: detail.id.clone(),
-                    media_source_id: prepared.media_source_id.clone(),
-                    play_session_id: prepared.play_session_id.clone(),
-                };
                 if let Ok(mut slot) = ctx.playback.lock() {
                     *slot = Some(prepared);
                 }
@@ -134,12 +144,6 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                 if let Some(start) = start {
                     send_start_report(&ctx.state, &ctx.runtime, start);
                 }
-                ui::player::present_playback_started(
-                    &ctx,
-                    detail.title,
-                    initial_position,
-                    initial_duration,
-                );
                 fetch_subtitles(&ctx, fetcher, local_url, subtitle_source_index);
             }
             Err(error) => {
@@ -147,6 +151,35 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
             }
         }
     });
+}
+
+/// How long playback waits for mpv's render context before loading regardless.
+/// Creation measured ~320 ms on this machine; five seconds is "something is
+/// badly wrong", not a tuning knob.
+const RENDER_CONTEXT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Holds `loadfile` until mpv has a video output to choose a decode path with.
+///
+/// `vo=libmpv` has no output until `mpv_render_context_create` has run, and the
+/// context is built lazily, on the first frame drawn with the player screen
+/// showing -- roughly 320 ms of work. Loading first meant mpv reached decoder
+/// init with no GL interop to probe: it fell back to software against a VO with
+/// no surface and rendered a black picture while audio played on. Which side
+/// won was a race against how fast the file opened, so the same item played
+/// correctly on one launch and not the next.
+///
+/// Measured on a losing run: `decode_path=software` was logged 196 ms before
+/// `mpv render context created`.
+async fn wait_for_render_context(context: &AppContext) {
+    let mut ready = context.render_ready.clone();
+    if tokio::time::timeout(RENDER_CONTEXT_TIMEOUT, ready.wait_for(|ready| *ready))
+        .await
+        .is_err()
+    {
+        // Deliberately not fatal: a machine that cannot build a context should
+        // still play. This line is what names the fault if it ever returns.
+        tracing::warn!("mpv render context was not ready in time; loading anyway");
+    }
 }
 
 /// Downloads the external text subtitles for a playback that is already on

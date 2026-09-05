@@ -121,6 +121,9 @@ pub struct AppContext {
     /// Tracks what is playing so progress can be reported to the server.
     pub reporter: Arc<Mutex<PlaybackReporter>>,
     pub player_sender: std::sync::mpsc::Sender<PlayerCommand>,
+    /// Goes true once mpv's render context exists. Playback waits on it before
+    /// `loadfile`, so mpv has a video output when it picks a decode path.
+    pub render_ready: tokio::sync::watch::Receiver<bool>,
     pub player_tracks: Arc<Mutex<PlayerTrackState>>,
     pub catalog_request: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
 }

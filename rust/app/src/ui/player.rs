@@ -389,6 +389,7 @@ pub fn install_renderer(
     render_client: RenderClient,
     image_is_cleared: Rc<Cell<bool>>,
     player_ui: Rc<RefCell<PlayerUiState>>,
+    render_ready: tokio::sync::watch::Sender<bool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let redraw_weak = window.as_weak();
     let redraw: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -399,7 +400,7 @@ pub fn install_renderer(
             }
         });
     });
-    let mut render_host = RenderHost::new(render_client, redraw);
+    let mut render_host = RenderHost::new(render_client, redraw, render_ready);
     // The mpv render context is built lazily, on the first frame that needs
     // it, so a failure there recurs every frame rather than once at setup.
     // Report each distinct failure once instead of formatting a status string

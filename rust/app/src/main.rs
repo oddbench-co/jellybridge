@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let player_sender = player_worker.command_sender();
     let player_worker = Rc::new(RefCell::new(Some(player_worker)));
     let image_is_cleared = Rc::new(Cell::new(true));
+    let (render_ready, render_ready_rx) = tokio::sync::watch::channel(false);
     let context = AppContext {
         ui: ui_handle,
         runtime: runtime.handle().clone(),
@@ -173,12 +174,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         playback,
         reporter,
         player_sender,
+        render_ready: render_ready_rx,
         player_tracks,
         catalog_request: Arc::new(Mutex::new(None)),
     };
     ui::connect(&window, &context);
     let player_ui = ui::player::connect(&window, &context, image_is_cleared.clone());
-    ui::player::install_renderer(&window, render_client, image_is_cleared.clone(), player_ui)?;
+    ui::player::install_renderer(
+        &window,
+        render_client,
+        image_is_cleared.clone(),
+        player_ui,
+        render_ready,
+    )?;
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "renderer_installed", "startup_stage");
     let close_worker = player_worker.clone();
     let close_weak = slint::ComponentHandle::as_weak(&window);

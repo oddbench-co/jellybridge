@@ -92,13 +92,29 @@ pub struct RenderHost {
     // swap for frames mpv produced.
     rendered_this_cycle: bool,
     redraw: RedrawRequest,
+    /// Fires once the render context exists, so playback can hold `loadfile`
+    /// until mpv has a video output to choose a decode path against.
+    ready: tokio::sync::watch::Sender<bool>,
     // This must be declared after RawRenderContext so Rust's field drop order
     // cannot destroy the client handle before its render context.
     core: RenderClient,
 }
 
+/// Announces that `ensure_mpv` has finished, on success and on failure alike.
+struct ReadySignal<'a>(&'a tokio::sync::watch::Sender<bool>);
+
+impl Drop for ReadySignal<'_> {
+    fn drop(&mut self) {
+        let _ = self.0.send(true);
+    }
+}
+
 impl RenderHost {
-    pub fn new(core: RenderClient, redraw: RedrawRequest) -> Self {
+    pub fn new(
+        core: RenderClient,
+        redraw: RedrawRequest,
+        ready: tokio::sync::watch::Sender<bool>,
+    ) -> Self {
         Self {
             mpv: None,
             display: None,
@@ -111,6 +127,7 @@ impl RenderHost {
             gl_sentinel_requested: std::env::var_os("JELLYBRIDGE_GL_SENTINEL").is_some(),
             rendered_this_cycle: false,
             redraw,
+            ready,
             core,
         }
     }
@@ -165,6 +182,9 @@ impl RenderHost {
         }
         let display = self.display.ok_or(RenderError::NotNativeOpenGl)?;
         let started = std::time::Instant::now();
+        // Released on the way out whatever happens: a machine that cannot
+        // build a context must still play rather than wait forever for one.
+        let _signal = ReadySignal(&self.ready);
         let raw = RawRenderContext::create(&self.core, display, self.redraw.clone())?;
         tracing::info!(
             ms = started.elapsed().as_secs_f64() * 1000.0,
