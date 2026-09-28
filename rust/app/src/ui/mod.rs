@@ -301,6 +301,28 @@ pub(crate) fn format_playback_time(seconds: f64) -> String {
     }
 }
 
+/// "Ends at 4:47 PM" for `seconds_left` from now, in local time.
+pub(crate) fn ends_at_from_now(seconds_left: f64) -> String {
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return String::new();
+    };
+    let end_epoch = now.as_secs() as i64 + seconds_left.max(0.0).round() as i64;
+    // libc::localtime_r converts the epoch using the local timezone; the
+    // struct tm is fully written by the call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let time: libc::time_t = end_epoch;
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return String::new();
+    }
+    let (hour, meridiem) = match tm.tm_hour {
+        0 => (12, "AM"),
+        1..=11 => (tm.tm_hour, "AM"),
+        12 => (12, "PM"),
+        hour => (hour - 12, "PM"),
+    };
+    format!("Ends at {}:{:02} {}", hour, tm.tm_min, meridiem)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -423,6 +445,18 @@ mod tests {
             role: "Lead".into(),
             artwork: Image::default(),
         }])));
+        ui.set_detail_guest_stars(ModelRc::new(VecModel::from(vec![super::DetailPerson {
+            id: "g1".into(),
+            name: "A Guest".into(),
+            role: "Themselves".into(),
+            artwork: Image::default(),
+        }])));
+        ui.set_detail_current_episode_index(4);
+        ui.set_detail_unplayed_count(3);
+        ui.set_detail_similar(ModelRc::new(VecModel::from(vec![super::DetailCard {
+            id: "similar".into(),
+            ..Default::default()
+        }])));
 
         super::detail::clear_detail_page(&ui);
 
@@ -439,6 +473,10 @@ mod tests {
             assert_eq!(value, "", "{field} survived the reset");
         }
         assert_eq!(ui.get_detail_people().row_count(), 0, "cast survived");
+        assert_eq!(ui.get_detail_guest_stars().row_count(), 0, "guest stars survived");
+        assert_eq!(ui.get_detail_current_episode_index(), -1);
+        assert_eq!(ui.get_detail_unplayed_count(), 0);
+        assert_eq!(ui.get_detail_similar().row_count(), 0, "similar items survived");
         assert!(!ui.get_detail_playable());
         assert!(!ui.get_detail_watched());
     }
@@ -504,7 +542,30 @@ mod tests {
         }
     }
 
-    fn season_episodes(count: usize) -> Vec<super::DetailCard> {
+    #[test]
+    fn episode_page_opens_its_season_shelf_at_the_current_episode() {
+        use slint::{ModelRc, VecModel};
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create window");
+        ui.set_screen(Screen::Detail);
+        ui.set_detail_kind(super::DetailKind::Episode);
+        ui.set_detail_id("e11".into());
+        ui.set_detail_season_name("Season 1".into());
+        ui.set_detail_episodes(ModelRc::new(VecModel::from(season_episodes(20))));
+        ui.set_detail_current_episode_index(11);
+        ui.show().expect("show window");
+        settle(&platform_window);
+
+        let offset = ui.get_detail_episode_shelf_scroll_x();
+        // Card 12 of 20 is far beyond a 1280px viewport; the shelf must have
+        // moved to it rather than opening at the first episode.
+        assert!(
+            offset < -1500.0,
+            "shelf did not scroll to the current episode: {offset}"
+        );
+    }
+
+        fn season_episodes(count: usize) -> Vec<super::DetailCard> {
         (0..count)
             .map(|i| super::DetailCard {
                 id: format!("e{i}").into(),
@@ -1056,7 +1117,9 @@ mod tests {
         let seek_value = Rc::new(Cell::new(None));
         let observed_seek = seek_value.clone();
         ui.on_seek_absolute(move |value| observed_seek.set(Some(value)));
-        let timeline_point = LogicalPosition::new(640.0, 666.0);
+        // Read from the layout rather than hard-coded, so the test follows
+        // the player chrome if it moves.
+        let timeline_point = LogicalPosition::new(640.0, ui.get_probe_timeline_y());
         ui.window().dispatch_event(WindowEvent::PointerPressed {
             position: timeline_point,
             button: PointerEventButton::Left,
@@ -1093,6 +1156,43 @@ mod tests {
         assert_eq!(ui.get_playback_position(), 5.0);
         assert_eq!(ui.get_playback_duration(), 200.0);
         assert_eq!(ui.get_timeline_display_position(), 5.0);
+    }
+
+    #[test]
+    fn skip_segment_button_stays_usable_while_the_controls_are_hidden() {
+        let platform_window = setup_test_window();
+        let ui = JellyBridgeWindow::new().expect("create player UI");
+        ui.set_screen(Screen::Player);
+        ui.invoke_enter_player(40.0, 1500.0);
+        ui.set_controls_visible(false);
+        ui.set_skip_label("Skip Intro".into());
+        ui.set_skip_target(90.0);
+        ui.show().expect("show player UI");
+        slint::platform::update_timers_and_animations();
+        platform_window.draw_if_needed(|_| {});
+
+        let seek_value = Rc::new(Cell::new(None));
+        let observed_seek = seek_value.clone();
+        ui.on_seek_absolute(move |value| observed_seek.set(Some(value)));
+        let toggles = Rc::new(Cell::new(0));
+        let observed_toggles = toggles.clone();
+        ui.on_toggle_playback(move || observed_toggles.set(observed_toggles.get() + 1));
+
+        // Bottom-right, 40px above the edge while the chrome is hidden.
+        let button = LogicalPosition::new(1200.0, 800.0 - 40.0 - 22.0);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: button,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: button,
+            button: PointerEventButton::Left,
+        });
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        slint::platform::update_timers_and_animations();
+
+        assert_eq!(seek_value.get(), Some(90.0), "skip must seek to the segment end");
+        assert_eq!(toggles.get(), 0, "the click must not fall through to the video");
     }
 
     #[test]

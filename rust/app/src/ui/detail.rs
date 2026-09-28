@@ -107,7 +107,11 @@ pub(super) fn clear_detail_page(window: &JellyBridgeWindow) {
     window.set_detail_seasons(ModelRc::new(VecModel::from(Vec::new())));
     window.set_detail_episodes(ModelRc::new(VecModel::from(Vec::new())));
     window.set_detail_next_up(ModelRc::new(VecModel::<DetailCard>::default()));
+    window.set_detail_similar(ModelRc::new(VecModel::<DetailCard>::default()));
     window.set_detail_people(ModelRc::new(VecModel::from(Vec::new())));
+    window.set_detail_guest_stars(ModelRc::new(VecModel::from(Vec::new())));
+    window.set_detail_current_episode_index(-1);
+    window.set_detail_unplayed_count(0);
     // The rest were missing from the old reset, and they are the loudest ones
     // on screen: the hero images, the synopsis and the metadata lines.
     window.set_detail_artwork(Image::default());
@@ -150,6 +154,17 @@ pub fn present_loading(context: &AppContext) {
 
 /// Presents the current detail page and kicks off its artwork loading.
 pub fn present(context: &AppContext, generation: u64) {
+    present_page(context, generation, false);
+}
+
+/// Re-presents the page after a background refresh. Leaves the screen, busy
+/// state, and message alone, so a refresh never pulls the user off the
+/// player or clears a status line.
+pub fn present_refresh(context: &AppContext, generation: u64) {
+    present_page(context, generation, true);
+}
+
+fn present_page(context: &AppContext, generation: u64, background: bool) {
     let (page, error, can_go_back, tracks) = match context.state.lock() {
         Ok(state) => {
             let snapshot = state.detail.snapshot();
@@ -163,6 +178,9 @@ pub fn present(context: &AppContext, generation: u64) {
         Err(_) => return,
     };
     let Some(page) = page else {
+        if background {
+            return;
+        }
         context.ui.update(move |window| {
             window.set_screen(super::Screen::Detail);
             window.set_busy(false);
@@ -174,7 +192,11 @@ pub fn present(context: &AppContext, generation: u64) {
     };
     let detail_id = page.item.id.clone();
     let title = page.item.title.clone();
-    let subtitle = detail_metadata_line(&page.item);
+    let subtitle = detail_info_line(&page);
+    let unplayed_count = matches!(page.item.kind, DetailKind::Series | DetailKind::Season)
+        .then_some(page.item.unplayed_count)
+        .flatten()
+        .unwrap_or(0);
     let overview = page.item.overview.clone();
     let kind = to_ui_kind(page.item.kind);
     let tagline = page.item.tagline.clone();
@@ -212,6 +234,9 @@ pub fn present(context: &AppContext, generation: u64) {
         .then(|| page.play_target().cloned())
         .flatten();
     let people = page.item.people.clone();
+    let similar = page.similar.clone();
+    let guest_stars = page.item.guest_stars.clone();
+    let current_episode_index = current_episode_index(&page);
     let audio_options = page
         .item
         .streams
@@ -255,22 +280,13 @@ pub fn present(context: &AppContext, generation: u64) {
         };
         let seasons = seasons.iter().map(to_detail_card).collect::<Vec<_>>();
         let episodes = episodes.iter().map(to_detail_card).collect::<Vec<_>>();
-        let people = people
-            .iter()
-            .map(|person| DetailPerson {
-                id: person.id.as_deref().unwrap_or_default().into(),
-                name: person.name.as_str().into(),
-                role: person.role.as_str().into(),
-                artwork: person
-                    .image
-                    .as_ref()
-                    .and_then(|image| cached_image(&image_key(image)))
-                    .unwrap_or_default(),
-            })
-            .collect::<Vec<_>>();
-        window.set_screen(super::Screen::Detail);
-        window.set_busy(false);
-        window.set_message(message.into());
+        let people = people.iter().map(to_detail_person).collect::<Vec<_>>();
+        let guest_stars = guest_stars.iter().map(to_detail_person).collect::<Vec<_>>();
+        if !background {
+            window.set_screen(super::Screen::Detail);
+            window.set_busy(false);
+            window.set_message(message.into());
+        }
         window.set_detail_id(detail_id.into());
         window.set_detail_title(title.into());
         window.set_detail_heading(heading.into());
@@ -320,15 +336,26 @@ pub fn present(context: &AppContext, generation: u64) {
         if !patch_rows(&window.get_detail_episodes(), &episodes, |a, b| a.id == b.id) {
             window.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
         }
-        let next_up = next_up.iter().map(to_detail_card).collect::<Vec<_>>();
+        let next_up = next_up.iter().map(to_next_up_card).collect::<Vec<_>>();
         if !patch_rows(&window.get_detail_next_up(), &next_up, |a, b| a.id == b.id) {
             window.set_detail_next_up(ModelRc::new(VecModel::from(next_up)));
+        }
+        let similar = similar.iter().map(to_detail_card).collect::<Vec<_>>();
+        if !patch_rows(&window.get_detail_similar(), &similar, |a, b| a.id == b.id) {
+            window.set_detail_similar(ModelRc::new(VecModel::from(similar)));
         }
         if !patch_rows(&window.get_detail_people(), &people, |a, b| {
             a.id == b.id && a.name == b.name
         }) {
             window.set_detail_people(ModelRc::new(VecModel::from(people)));
         }
+        if !patch_rows(&window.get_detail_guest_stars(), &guest_stars, |a, b| {
+            a.id == b.id && a.name == b.name
+        }) {
+            window.set_detail_guest_stars(ModelRc::new(VecModel::from(guest_stars)));
+        }
+        window.set_detail_current_episode_index(current_episode_index);
+        window.set_detail_unplayed_count(unplayed_count);
         // These back ComboBoxes. Replacing the model rebuilds the popup and
         // resets what it is showing, so only install a genuinely new list --
         // `update_detail_mutation` re-presents the whole page twice for one
@@ -385,15 +412,33 @@ fn to_detail_card(item: &DetailItemData) -> DetailCard {
     }
 }
 
+/// The Next Up card names its season too, as Jellyfin's does:
+/// "S2:E3 - Title".
+fn to_next_up_card(item: &DetailItemData) -> DetailCard {
+    let mut card = to_detail_card(item);
+    card.index_label = next_up_label(item).into();
+    card
+}
+
+fn next_up_label(item: &DetailItemData) -> String {
+    match (item.parent_index_number, item.index_number) {
+        (Some(season), Some(episode)) => format!("S{season}:E{episode} -"),
+        (None, Some(episode)) => format!("E{episode} -"),
+        _ => String::new(),
+    }
+}
+
 fn detail_card_subtitle(item: &DetailItemData) -> String {
-    let runtime = item.runtime_seconds.map(|seconds| {
-        let minutes = (seconds / 60.0).round() as u64;
-        format!("{minutes} min")
-    });
-    // Episode rows carry the episode number in their title and year/rating
-    // as dedicated fields; their subtitle is just the runtime.
+    let runtime = item.runtime_seconds.map(format_runtime);
+    // Episode rows carry the episode number in their title and rating /
+    // ends-at as dedicated fields; their subtitle is when it aired and how
+    // long it runs, as Jellyfin's episode list shows.
     if item.kind == DetailKind::Episode {
-        return runtime.unwrap_or_default();
+        return [item.premiere_date.map(format_air_date), runtime]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" • ");
     }
     let unplayed = item
         .unplayed_count
@@ -420,6 +465,31 @@ fn detail_episode_number(item: &DetailItemData) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn to_detail_person(person: &crate::features::detail::PersonData) -> DetailPerson {
+    DetailPerson {
+        id: person.id.as_deref().unwrap_or_default().into(),
+        name: person.name.as_str().into(),
+        role: person.role.as_str().into(),
+        artwork: person
+            .image
+            .as_ref()
+            .and_then(|image| cached_image(&image_key(image)))
+            .unwrap_or_default(),
+    }
+}
+
+/// Where an episode page's own episode sits in its season list, or -1.
+fn current_episode_index(page: &DetailPageData) -> i32 {
+    if page.item.kind != DetailKind::Episode {
+        return -1;
+    }
+    page.episodes
+        .iter()
+        .position(|episode| episode.id == page.item.id)
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
 }
 
 fn detail_stream_label(stream: &StreamData, fallback: &str, index: usize) -> String {
@@ -460,24 +530,7 @@ fn ends_at_label(item: &DetailItemData) -> String {
     } else {
         0.0
     };
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
-        return String::new();
-    };
-    let end_epoch = now.as_secs() as i64 + (runtime - resume).round() as i64;
-    // libc::localtime_r converts the epoch using the local timezone; the
-    // struct tm is fully written by the call.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let time: libc::time_t = end_epoch;
-    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
-        return String::new();
-    }
-    let (hour, meridiem) = match tm.tm_hour {
-        0 => (12, "AM"),
-        1..=11 => (tm.tm_hour, "AM"),
-        12 => (12, "PM"),
-        hour => (hour - 12, "PM"),
-    };
-    format!("Ends at {}:{:02} {}", hour, tm.tm_min, meridiem)
+    super::ends_at_from_now(runtime - resume)
 }
 
 /// Title strip heading/subheading: episodes and seasons lead with the series
@@ -537,18 +590,84 @@ fn detail_kind_name(kind: DetailKind) -> &'static str {
     }
 }
 
-fn detail_metadata_line(item: &DetailItemData) -> String {
-    let runtime = item.runtime_seconds.map(|seconds| {
-        let minutes = (seconds / 60.0).round() as u64;
-        if minutes >= 60 {
-            format!("{}h {}m", minutes / 60, minutes % 60)
-        } else {
-            format!("{minutes}m")
+/// "49m" or "1h 5m", as Jellyfin writes runtimes.
+fn format_runtime(seconds: f64) -> String {
+    let minutes = (seconds / 60.0).round() as u64;
+    if minutes >= 60 {
+        format!("{}h {}m", minutes / 60, minutes % 60)
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+/// An air date the way Jellyfin's en-US locale prints it: "1/31/2025".
+fn format_air_date((year, month, day): (i32, u32, u32)) -> String {
+    format!("{month}/{day}/{year}")
+}
+
+/// The title strip's info row. A season counts its episodes, as Jellyfin's
+/// does; every other kind reads its own metadata.
+fn detail_info_line(page: &DetailPageData) -> String {
+    let item = &page.item;
+    if item.kind != DetailKind::Season {
+        return detail_metadata_line(item);
+    }
+    let episodes = match page.episodes.len() {
+        0 => None,
+        1 => Some("1 episode".to_owned()),
+        count => Some(format!("{count} episodes")),
+    };
+    [
+        item.production_year.map(|year| year.to_string()),
+        episodes,
+        item.official_rating.clone(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" • ")
+}
+
+fn series_air_span(item: &DetailItemData, start: i32) -> String {
+    if item.series_continuing {
+        format!("{start} – Present")
+    } else {
+        match item.end_year {
+            Some(end) if end != start => format!("{start} – {end}"),
+            _ => start.to_string(),
         }
-    });
+    }
+}
+
+fn detail_metadata_line(item: &DetailItemData) -> String {
+    let runtime = item.runtime_seconds.map(format_runtime);
+    // Episodes read like Jellyfin's: the air date leads, and there is no
+    // S01E03 label because the subheading already carries the number.
+    if item.kind == DetailKind::Episode {
+        let aired = item
+            .premiere_date
+            .map(format_air_date)
+            .or_else(|| item.production_year.map(|year| year.to_string()));
+        return [aired, item.official_rating.clone(), runtime]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" • ");
+    }
+    // A series reads its air span, "2019 – Present" or "2019 – 2022".
+    if item.kind == DetailKind::Series {
+        return [
+            item.production_year.map(|year| series_air_span(item, year)),
+            item.official_rating.clone(),
+            runtime,
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" • ");
+    }
     let leading_label = match item.kind {
         DetailKind::Movie => None,
-        DetailKind::Episode => detail_episode_number(item),
         _ => Some(detail_kind_name(item.kind).to_owned()),
     };
     // Community/critic ratings render as dedicated colored elements in the
@@ -669,7 +788,14 @@ enum DetailArtworkTarget {
     Season { index: usize, id: String },
     Episode { index: usize, id: String },
     NextUp { id: String },
-    Person { index: usize, id: String, name: String },
+    Similar { index: usize, id: String },
+    /// A cast photo; `guest` picks the Guest Stars shelf over Cast & Crew.
+    Person {
+        index: usize,
+        id: String,
+        name: String,
+        guest: bool,
+    },
 }
 
 fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageData) {
@@ -728,24 +854,32 @@ fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageD
                 }),
         );
     }
-    requests.extend(
-        page.item
-            .people
-            .iter()
-            .enumerate()
-            .filter_map(|(index, person)| {
-                person.image.clone().map(|image| {
-                    (
-                        DetailArtworkTarget::Person {
-                            index,
-                            id: person.id.clone().unwrap_or_default(),
-                            name: person.name.clone(),
-                        },
-                        image,
-                    )
-                })
-            }),
-    );
+    requests.extend(page.similar.iter().enumerate().filter_map(|(index, item)| {
+        primary_card_image(item).cloned().map(|image| {
+            (
+                DetailArtworkTarget::Similar {
+                    index,
+                    id: item.id.clone(),
+                },
+                image,
+            )
+        })
+    }));
+    for (guest, people) in [(false, &page.item.people), (true, &page.item.guest_stars)] {
+        requests.extend(people.iter().enumerate().filter_map(|(index, person)| {
+            person.image.clone().map(|image| {
+                (
+                    DetailArtworkTarget::Person {
+                        index,
+                        id: person.id.clone().unwrap_or_default(),
+                        name: person.name.clone(),
+                        guest,
+                    },
+                    image,
+                )
+            })
+        }));
+    }
     for (target, image) in requests {
         load_detail_image(context, generation, target, image);
     }
@@ -864,6 +998,15 @@ fn load_detail_image(
                             model.set_row_data(index, row);
                         }
                     }
+                    DetailArtworkTarget::Similar { index, id } => {
+                        let model = window.get_detail_similar();
+                        if let Some(mut row) = model.row_data(index)
+                            && row.id.as_str() == id
+                        {
+                            row.artwork = image;
+                            model.set_row_data(index, row);
+                        }
+                    }
                     DetailArtworkTarget::NextUp { id } => {
                         let model = window.get_detail_next_up();
                         if let Some(mut row) = model.row_data(0)
@@ -873,8 +1016,17 @@ fn load_detail_image(
                             model.set_row_data(0, row);
                         }
                     }
-                    DetailArtworkTarget::Person { index, id, name } => {
-                        let model = window.get_detail_people();
+                    DetailArtworkTarget::Person {
+                        index,
+                        id,
+                        name,
+                        guest,
+                    } => {
+                        let model = if guest {
+                            window.get_detail_guest_stars()
+                        } else {
+                            window.get_detail_people()
+                        };
                         if let Some(mut row) = model.row_data(index)
                             && row.id.as_str() == id
                             && row.name.as_str() == name
@@ -903,6 +1055,7 @@ mod tests {
             item: DetailItemData::fixture("season", DetailKind::Season),
             seasons: Vec::new(),
             episodes: vec![watched, unwatched],
+            similar: Vec::new(),
             children_error: None,
         };
 
@@ -915,6 +1068,7 @@ mod tests {
             item: DetailItemData::fixture("season", DetailKind::Season),
             seasons: Vec::new(),
             episodes: Vec::new(),
+            similar: Vec::new(),
             children_error: None,
         };
         assert_eq!(detail_season_summary(&page), "No episodes available");
@@ -924,19 +1078,104 @@ mod tests {
     }
 
     #[test]
-    fn episode_metadata_uses_number_without_repeating_its_parents() {
+    fn episode_metadata_leads_with_the_air_date_like_jellyfin() {
         let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
         episode.series_name = Some("Example Show".into());
         episode.season_name = Some("Season 2".into());
         episode.parent_index_number = Some(2);
         episode.index_number = Some(3);
         episode.production_year = Some(2026);
+        episode.premiere_date = Some((2026, 1, 31));
+        episode.official_rating = Some("TV-MA".into());
         episode.runtime_seconds = Some(2_700.0);
 
         let metadata = detail_metadata_line(&episode);
-        assert_eq!(metadata, "S02E03 • 2026 • 45m");
-        assert!(!metadata.contains("Example Show"));
-        assert!(!metadata.contains("Season 2"));
+        // The subheading already carries the number and the parents.
+        assert_eq!(metadata, "1/31/2026 • TV-MA • 45m");
+
+        episode.premiere_date = None;
+        assert_eq!(detail_metadata_line(&episode), "2026 • TV-MA • 45m");
+    }
+
+    #[test]
+    fn series_info_line_reads_the_air_span() {
+        let mut series = DetailItemData::fixture("series", DetailKind::Series);
+        series.production_year = Some(2019);
+        series.official_rating = Some("TV-MA".into());
+        series.runtime_seconds = Some(3_000.0);
+        series.series_continuing = true;
+        assert_eq!(detail_metadata_line(&series), "2019 – Present • TV-MA • 50m");
+
+        series.series_continuing = false;
+        series.end_year = Some(2022);
+        assert_eq!(detail_metadata_line(&series), "2019 – 2022 • TV-MA • 50m");
+
+        series.end_year = Some(2019);
+        assert_eq!(detail_metadata_line(&series), "2019 • TV-MA • 50m");
+
+        series.production_year = None;
+        assert_eq!(detail_metadata_line(&series), "TV-MA • 50m");
+    }
+
+    #[test]
+    fn next_up_cards_name_the_season_and_episode() {
+        let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
+        episode.parent_index_number = Some(2);
+        episode.index_number = Some(3);
+        assert_eq!(next_up_label(&episode), "S2:E3 -");
+        episode.parent_index_number = None;
+        assert_eq!(next_up_label(&episode), "E3 -");
+    }
+
+    #[test]
+    fn season_info_line_counts_its_episodes() {
+        let mut season = DetailItemData::fixture("season", DetailKind::Season);
+        season.production_year = Some(2025);
+        season.official_rating = Some("TV-MA".into());
+        let page = |count: usize| DetailPageData {
+            item: season.clone(),
+            seasons: Vec::new(),
+            episodes: (0..count)
+                .map(|number| DetailItemData::fixture(&format!("e{number}"), DetailKind::Episode))
+                .collect(),
+            similar: Vec::new(),
+            children_error: None,
+        };
+        assert_eq!(detail_info_line(&page(10)), "2025 • 10 episodes • TV-MA");
+        assert_eq!(detail_info_line(&page(1)), "2025 • 1 episode • TV-MA");
+        assert_eq!(detail_info_line(&page(0)), "2025 • TV-MA");
+    }
+
+    #[test]
+    fn episode_cards_show_when_they_aired_and_how_long_they_run() {
+        let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
+        episode.runtime_seconds = Some(2_940.0);
+        assert_eq!(detail_card_subtitle(&episode), "49m");
+        episode.premiere_date = Some((2025, 1, 31));
+        assert_eq!(detail_card_subtitle(&episode), "1/31/2025 • 49m");
+        episode.runtime_seconds = Some(3_900.0);
+        assert_eq!(detail_card_subtitle(&episode), "1/31/2025 • 1h 5m");
+    }
+
+    #[test]
+    fn episode_pages_know_where_the_episode_sits_in_its_season() {
+        let episodes = (1..=20)
+            .map(|number| DetailItemData::fixture(&format!("e{number}"), DetailKind::Episode))
+            .collect::<Vec<_>>();
+        let page = DetailPageData {
+            item: DetailItemData::fixture("e12", DetailKind::Episode),
+            seasons: Vec::new(),
+            episodes,
+            similar: Vec::new(),
+            children_error: None,
+        };
+        assert_eq!(current_episode_index(&page), 11);
+
+        let season = DetailPageData {
+            item: DetailItemData::fixture("e12", DetailKind::Season),
+            ..page
+        };
+        assert_eq!(current_episode_index(&season), -1);
     }
 
     #[test]
@@ -961,6 +1200,7 @@ mod tests {
                 DetailItemData::fixture("season-2", DetailKind::Season),
             ],
             episodes: vec![watched, unwatched],
+            similar: Vec::new(),
             children_error: None,
         };
 
@@ -980,6 +1220,7 @@ mod tests {
             item: DetailItemData::fixture("series", DetailKind::Series),
             seasons: Vec::new(),
             episodes: vec![episode],
+            similar: Vec::new(),
             children_error: None,
         };
 

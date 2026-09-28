@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::api::JellyfinApi;
 use crate::app::{AppContext, AppState};
 use crate::features::detail::{DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData};
+use crate::features::now_playing::{NowPlaying, PlayerOverlay, PreviousAction, previous_action};
 use crate::features::progress::{PlaybackReporter, ProgressReport, ReportTarget};
 use crate::services::playback::{PlaybackConfig, SubtitleFetcher, prepare_playback};
 use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
@@ -29,6 +30,53 @@ pub fn start_playback(context: &AppContext, from_start: bool) {
 }
 
 pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_start: bool) {
+    begin_playback(context, detail, from_start, false);
+}
+
+/// Moves to the next (or previous) episode from inside the player.
+pub fn play_adjacent(context: &AppContext, forward: bool) {
+    let item = context.state.lock().ok().and_then(|state| {
+        let now = state.now_playing.as_ref()?;
+        if forward {
+            now.next.clone()
+        } else {
+            now.previous.clone()
+        }
+    });
+    if let Some(item) = item {
+        begin_playback(context, item, false, true);
+    }
+}
+
+/// Jellyfin's previous button: restart once a few seconds in, otherwise go
+/// back an episode.
+pub fn play_previous(context: &AppContext, position: f64) {
+    let action = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.now_playing.as_ref().map(|now| previous_action(now, position)));
+    match action {
+        Some(PreviousAction::Play(item)) => begin_playback(context, *item, false, true),
+        Some(PreviousAction::Restart) | None => {
+            let _ = context.player_sender.send(PlayerCommand::SeekAbsolute(0.0));
+        }
+    }
+}
+
+/// Hides the Up Next card for this item, which also cancels autoplay.
+pub fn dismiss_up_next(context: &AppContext) {
+    if let Ok(mut state) = context.state.lock()
+        && let Some(now) = state.now_playing.as_mut()
+    {
+        now.up_next_dismissed = true;
+    }
+    ui::player::present_overlay(context, PlayerOverlay::default());
+}
+
+/// `in_player` keeps the player screen up while the stream is prepared,
+/// instead of returning to the detail page's busy overlay.
+fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool, in_player: bool) {
     let Some(session) = context
         .state
         .lock()
@@ -62,7 +110,11 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
         }
     };
     let generation = context.next_generation();
-    ui::set_screen_busy(context, ui::Screen::Detail, true, "Preparing authenticated playback…");
+    if in_player {
+        ui::player::present_player_loading(context);
+    } else {
+        ui::set_screen_busy(context, ui::Screen::Detail, true, "Preparing authenticated playback…");
+    }
     let ctx = context.clone();
     context.runtime.spawn(async move {
         // Settings are read here, off the UI thread, because the store does
@@ -94,6 +146,10 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                 if let Ok(mut tracks) = ctx.player_tracks.lock() {
                     tracks.preference_key = Some(preference_key);
                 }
+                if let Ok(mut state) = ctx.state.lock() {
+                    state.now_playing = Some(NowPlaying::new(detail.clone()));
+                }
+                load_now_playing_context(&ctx, &detail);
                 let target = ReportTarget {
                     item_id: detail.id.clone(),
                     media_source_id: prepared.media_source_id.clone(),
@@ -104,7 +160,7 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                 // frame drawn with this screen showing.
                 ui::player::present_playback_started(
                     &ctx,
-                    detail.title,
+                    player_title(&detail),
                     initial_position,
                     initial_duration,
                 );
@@ -135,7 +191,7 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
                 }
                 // Tell the server the previous item stopped before claiming
                 // the session for this one.
-                finish_report(&ctx.reporter, &ctx.state, &ctx.runtime);
+                finish_report(&ctx.reporter, &ctx.state, &ctx.runtime, &ctx.refresh);
                 let start = ctx
                     .reporter
                     .lock()
@@ -149,6 +205,54 @@ pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_st
             Err(error) => {
                 ui::player::present_playback_failed(&ctx, error.to_string());
             }
+        }
+    });
+}
+
+/// Fetches what the player needs beyond the stream -- the neighbouring
+/// episodes and the media segments -- and installs them if the same item is
+/// still playing. Both are optional extras, so failures are only logged.
+fn load_now_playing_context(context: &AppContext, detail: &DetailItemData) {
+    let Some(api) = context.api() else { return };
+    let item_id = detail.id.clone();
+    let series_id = (detail.kind == DetailKind::Episode)
+        .then(|| detail.series_id.clone())
+        .flatten();
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        let adjacent = async {
+            match &series_id {
+                Some(series_id) => api.adjacent_episodes(series_id, &item_id).await,
+                None => Ok((None, None)),
+            }
+        };
+        let (adjacent, segments) = tokio::join!(adjacent, api.media_segments(&item_id));
+        let (previous, next) = adjacent.unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not load adjacent episodes");
+            (None, None)
+        });
+        let segments = segments.unwrap_or_else(|error| {
+            tracing::warn!(%error, "could not load media segments");
+            Vec::new()
+        });
+        tracing::debug!(
+            segments = segments.len(),
+            previous = previous.is_some(),
+            next = next.is_some(),
+            "loaded now-playing context"
+        );
+        let neighbours = ctx.state.lock().ok().and_then(|mut state| {
+            let now = state
+                .now_playing
+                .as_mut()
+                .filter(|now| now.item.id == item_id)?;
+            now.previous = previous;
+            now.next = next;
+            now.segments = segments;
+            Some((now.previous.is_some(), now.next.is_some()))
+        });
+        if let Some((has_previous, has_next)) = neighbours {
+            ui::player::present_neighbours(&ctx, has_previous, has_next);
         }
     });
 }
@@ -307,13 +411,18 @@ pub fn send_progress_report(
     });
 }
 
+/// Reports the stop, then wakes `refresh`: the server decides from this
+/// report whether the item counts as watched, so re-reading before it lands
+/// would show the old state.
 pub fn send_stop_report(
     state: &Arc<Mutex<AppState>>,
     runtime: &tokio::runtime::Handle,
+    refresh: &Arc<tokio::sync::Notify>,
     target: ReportTarget,
     position_seconds: f64,
 ) {
     let Some(api) = api_of(state) else { return };
+    let refresh = refresh.clone();
     runtime.spawn(async move {
         match api.report_playback_stopped(&target, position_seconds).await {
             Ok(()) => tracing::info!(
@@ -323,6 +432,7 @@ pub fn send_stop_report(
             ),
             Err(error) => tracing::warn!(%error, "could not report playback stop"),
         }
+        refresh.notify_one();
     });
 }
 
@@ -332,10 +442,11 @@ pub fn finish_report(
     reporter: &Arc<Mutex<PlaybackReporter>>,
     state: &Arc<Mutex<AppState>>,
     runtime: &tokio::runtime::Handle,
+    refresh: &Arc<tokio::sync::Notify>,
 ) {
     let finished = reporter.lock().ok().and_then(|mut r| r.finish());
     if let Some((target, position)) = finished {
-        send_stop_report(state, runtime, target, position);
+        send_stop_report(state, runtime, refresh, target, position);
     }
 }
 
@@ -383,7 +494,15 @@ pub fn resolved_playback_sources(
 }
 
 pub fn stop_remote_playback(context: &AppContext) {
-    finish_report(&context.reporter, &context.state, &context.runtime);
+    if let Ok(mut state) = context.state.lock() {
+        state.now_playing = None;
+    }
+    finish_report(
+        &context.reporter,
+        &context.state,
+        &context.runtime,
+        &context.refresh,
+    );
     let remote = context
         .playback
         .lock()
@@ -485,6 +604,42 @@ fn normalized_preference(value: &Option<String>) -> Option<String> {
     clean_preference(value).map(|value| value.to_lowercase())
 }
 
+/// The player's title lines, as Jellyfin shows them: an episode leads with
+/// its series and puts `S1:E3 - Title` underneath; anything else shows its
+/// own title over its year.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerTitle {
+    pub title: String,
+    pub subtitle: String,
+}
+
+pub fn player_title(item: &DetailItemData) -> PlayerTitle {
+    if item.kind == DetailKind::Episode {
+        let series = item
+            .series_name
+            .clone()
+            .filter(|name| !name.is_empty());
+        let number = match (item.parent_index_number, item.index_number) {
+            (Some(season), Some(episode)) => format!("S{season}:E{episode} - "),
+            (None, Some(episode)) => format!("E{episode} - "),
+            _ => String::new(),
+        };
+        if let Some(series) = series {
+            return PlayerTitle {
+                title: series,
+                subtitle: format!("{number}{}", item.title),
+            };
+        }
+    }
+    PlayerTitle {
+        title: item.title.clone(),
+        subtitle: item
+            .production_year
+            .map(|year| year.to_string())
+            .unwrap_or_default(),
+    }
+}
+
 pub fn clean_preference(value: &Option<String>) -> Option<String> {
     value
         .as_deref()
@@ -497,6 +652,33 @@ pub fn clean_preference(value: &Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::services::session::StoredPlaybackPreference;
+
+    #[test]
+    fn episodes_title_the_player_with_series_and_episode_number() {
+        let mut episode = DetailItemData::fixture("episode-1", DetailKind::Episode);
+        episode.title = "Pilot".into();
+        episode.series_name = Some("The Show".into());
+        episode.parent_index_number = Some(1);
+        episode.index_number = Some(3);
+        assert_eq!(
+            player_title(&episode),
+            PlayerTitle {
+                title: "The Show".into(),
+                subtitle: "S1:E3 - Pilot".into(),
+            }
+        );
+
+        let mut movie = DetailItemData::fixture("movie-1", DetailKind::Movie);
+        movie.title = "Alien".into();
+        movie.production_year = Some(1979);
+        assert_eq!(
+            player_title(&movie),
+            PlayerTitle {
+                title: "Alien".into(),
+                subtitle: "1979".into(),
+            }
+        );
+    }
 
     #[test]
     fn episode_preferences_are_scoped_to_the_series() {

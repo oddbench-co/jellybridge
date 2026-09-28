@@ -42,6 +42,19 @@ pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
 /// Presents the current catalog page (home dashboard, browse results, or
 /// search results) and kicks off artwork loading for its items.
 pub fn present(context: &AppContext, message: &str) {
+    present_page(context, Some(message), context.next_generation());
+}
+
+/// Re-presents the page after a background refresh, under a generation the
+/// refresh already claimed -- bumping it again would outdate a navigation the
+/// user started meanwhile. Leaves the screen, busy state, and message alone,
+/// so a refresh never pulls the user off the player or clears a status line.
+pub fn present_refresh(context: &AppContext, generation: u64) {
+    present_page(context, None, generation);
+}
+
+/// `message` is `None` for a background refresh.
+fn present_page(context: &AppContext, message: Option<&str>, generation: u64) {
     let (mut current, account, can_go_back, sort, density) = match context.state.lock() {
         Ok(state) => (
             state.current.clone(),
@@ -73,7 +86,6 @@ pub fn present(context: &AppContext, message: &str) {
     // `current` clone above -- once for the UI mapping and once for the
     // artwork loader. One shared copy serves both.
     let items_data = Arc::new(std::mem::take(&mut current.items));
-    let generation = context.next_generation();
     let artwork_ctx = context.clone();
     let artwork_items = items_data.clone();
     let home_dashboard = current.is_home_dashboard();
@@ -109,12 +121,14 @@ pub fn present(context: &AppContext, message: &str) {
         .into_iter()
         .map(|sort| SharedString::from(sort.label()))
         .collect::<Vec<_>>();
-    let message = message.to_owned();
+    let message = message.map(str::to_owned);
     let ui_items = items_data.clone();
     context.ui.update(move |window| {
-        window.set_screen(super::Screen::Catalog);
-        window.set_busy(false);
-        window.set_message(message.into());
+        if let Some(message) = message {
+            window.set_screen(super::Screen::Catalog);
+            window.set_busy(false);
+            window.set_message(message.into());
+        }
         window.set_page_title(title.into());
         window.set_catalog_summary(summary.into());
         window.set_catalog_home(home_dashboard);

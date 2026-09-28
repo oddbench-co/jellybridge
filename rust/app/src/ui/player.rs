@@ -8,12 +8,15 @@ use std::sync::{Arc, Mutex};
 use slint::{ComponentHandle, Image, Model, ModelRc, RenderingState, SharedString, VecModel};
 
 use super::player_hotkeys::{
-    PlayerHotkeyAction, PlayerUiState, next_track_index, resolve_player_hotkey,
+    PLAYBACK_SPEEDS, PlayerHotkeyAction, PlayerUiState, chapter_target, next_track_index,
+    resolve_player_hotkey, speed_index, stepped_speed,
 };
-use super::{JellyBridgeWindow, format_playback_time};
+use super::{JellyBridgeWindow, ends_at_from_now, format_playback_time};
 use crate::app::{AppContext, PlayerTrackState};
 use crate::features;
-use crate::services::player::{PlayerCommand, PlayerEvent, RenderClient};
+use crate::features::now_playing::PlayerOverlay;
+use crate::features::playback::PlayerTitle;
+use crate::services::player::{AspectMode, PlayerCommand, PlayerEvent, RenderClient};
 
 use super::ChapterMarker;
 use crate::services::render::{RenderHost, native_display};
@@ -45,6 +48,49 @@ pub fn connect(
     window.on_toggle_mute(move || {
         let _ = sender.send(PlayerCommand::ToggleMuted);
     });
+    let sender = context.player_sender.clone();
+    window.on_set_speed(move |index| {
+        if let Some(speed) = usize::try_from(index)
+            .ok()
+            .and_then(|index| PLAYBACK_SPEEDS.get(index))
+        {
+            let _ = sender.send(PlayerCommand::SetSpeed(*speed));
+        }
+    });
+    let sender = context.player_sender.clone();
+    window.on_set_aspect(move |index| {
+        if let Some(mode) = usize::try_from(index)
+            .ok()
+            .and_then(|index| AspectMode::ALL.get(index))
+        {
+            let _ = sender.send(PlayerCommand::SetAspect(*mode));
+        }
+    });
+    let weak = window.as_weak();
+    window.on_chapter_title_at(move |time| {
+        let Some(window) = weak.upgrade() else {
+            return SharedString::default();
+        };
+        let chapters = window.get_chapters();
+        chapters
+            .iter()
+            .take_while(|chapter| chapter.time <= time)
+            .last()
+            .map(|chapter| chapter.title)
+            .unwrap_or_default()
+    });
+    let ctx = context.clone();
+    window.on_play_next(move || features::playback::play_adjacent(&ctx, true));
+    let ctx = context.clone();
+    let weak = window.as_weak();
+    window.on_play_previous(move || {
+        let position = weak
+            .upgrade()
+            .map_or(0.0, |window| f64::from(window.get_playback_position()));
+        features::playback::play_previous(&ctx, position);
+    });
+    let ctx = context.clone();
+    window.on_dismiss_up_next(move || features::playback::dismiss_up_next(&ctx));
 
     let sender = context.player_sender.clone();
     let tracks = context.player_tracks.clone();
@@ -91,8 +137,11 @@ pub fn connect(
         slint::TimerMode::SingleShot,
         std::time::Duration::from_secs(3),
         move || {
-            timer_state.borrow_mut().auto_hide_overlay();
             if let Some(window) = timer_weak.upgrade() {
+                let hold = window.get_paused()
+                    || window.get_player_menu_open()
+                    || window.get_player_chrome_hovered();
+                timer_state.borrow_mut().auto_hide_overlay(hold);
                 let overlay_visible = timer_state.borrow().overlay_visible;
                 window.set_controls_visible(overlay_visible);
                 // The declarative mouse-cursor binding only takes effect on
@@ -118,11 +167,7 @@ pub fn connect(
             window.set_controls_visible(true);
             set_cursor_visible(&window, true);
             window.window().set_fullscreen(fullscreen);
-            if fullscreen {
-                fullscreen_timer.restart();
-            } else {
-                fullscreen_timer.stop();
-            }
+            fullscreen_timer.restart();
         }
     });
     let weak = window.as_weak();
@@ -133,7 +178,7 @@ pub fn connect(
         if let Some(window) = weak.upgrade() {
             window.set_controls_visible(true);
             set_cursor_visible(&window, true);
-            if activity_state.borrow().fullscreen {
+            if window.get_screen() == super::Screen::Player {
                 activity_timer.restart();
             }
         }
@@ -166,6 +211,9 @@ pub fn connect(
                 window.set_screen(super::Screen::Catalog);
             }
         }
+        // The stop report above refreshes once it lands; this covers leaving
+        // after mpv already ended the item and the stop was reported then.
+        ctx.request_refresh();
     });
 
     // The hotkey handler deliberately calls back into the window's own
@@ -194,6 +242,40 @@ pub fn connect(
                 window.invoke_seek_relative(seconds as f32);
             }
             PlayerHotkeyAction::SeekToStart => window.invoke_seek_absolute(0.0),
+            PlayerHotkeyAction::SeekToFraction(fraction) => {
+                let duration = window.get_playback_duration();
+                if duration > 0.0 {
+                    window.invoke_seek_absolute(duration * fraction as f32);
+                }
+            }
+            PlayerHotkeyAction::StepSpeed(steps) => {
+                let current = PLAYBACK_SPEEDS
+                    .get(usize::try_from(window.get_speed_index()).unwrap_or(2))
+                    .copied()
+                    .unwrap_or(1.0);
+                let index = speed_index(stepped_speed(current, steps));
+                let index = i32::try_from(index).unwrap_or(2);
+                window.set_speed_index(index);
+                window.invoke_set_speed(index);
+            }
+            PlayerHotkeyAction::NextChapter | PlayerHotkeyAction::PreviousChapter => {
+                let chapters = window
+                    .get_chapters()
+                    .iter()
+                    .map(|chapter| f64::from(chapter.time))
+                    .collect::<Vec<_>>();
+                let forward = action == PlayerHotkeyAction::NextChapter;
+                let position = f64::from(window.get_playback_position());
+                if let Some(target) = chapter_target(&chapters, position, forward) {
+                    window.invoke_seek_absolute(target as f32);
+                }
+            }
+            PlayerHotkeyAction::NextItem => {
+                if window.get_has_next() {
+                    window.invoke_play_next();
+                }
+            }
+            PlayerHotkeyAction::PreviousItem => window.invoke_play_previous(),
             PlayerHotkeyAction::SeekToEnd => {
                 let duration = window.get_playback_duration();
                 if duration > 0.0 {
@@ -283,17 +365,26 @@ pub fn apply_player_event(
     track_state: &Arc<Mutex<PlayerTrackState>>,
 ) {
     match event {
-        PlayerEvent::Loaded => window.set_player_status("Playing; decode path pending".into()),
-        PlayerEvent::Paused(paused) => {
-            window.set_paused(paused);
-            window.set_player_status(if paused { "Paused" } else { "Playing" }.into());
-        }
+        PlayerEvent::Loaded => window.set_player_status("".into()),
+        PlayerEvent::Paused(paused) => window.set_paused(paused),
         PlayerEvent::Volume(volume) => window.set_volume(volume as f32),
+        PlayerEvent::Muted(muted) => window.set_muted(muted),
+        PlayerEvent::Speed(speed) => {
+            window.set_speed_index(i32::try_from(speed_index(speed)).unwrap_or(2));
+        }
+        PlayerEvent::Buffering(buffering) => window.set_buffering(buffering),
         PlayerEvent::Position { seconds, duration } => {
+            window.set_player_loading(false);
             window.set_playback_position(seconds as f32);
             window.set_playback_duration(duration as f32);
             window.set_playback_position_label(format_playback_time(seconds).into());
             window.set_playback_duration_label(format_playback_time(duration).into());
+            let speed = usize::try_from(window.get_speed_index())
+                .ok()
+                .and_then(|index| PLAYBACK_SPEEDS.get(index))
+                .copied()
+                .unwrap_or(1.0);
+            window.set_ends_at_label(ends_at_from_now((duration - seconds) / speed).into());
         }
         PlayerEvent::Tracks {
             audio,
@@ -341,7 +432,7 @@ pub fn apply_player_event(
         }
         PlayerEvent::HardwarePath(path) => {
             tracing::info!(decode_path = %path, "application playback decode path");
-            window.set_player_status(format!("Decode path: {path}").into());
+            window.set_decode_label(format!("Decode path: {path}").into());
         }
         PlayerEvent::Ended => window.set_player_status("Playback ended".into()),
         PlayerEvent::Error(message) => {
@@ -351,15 +442,68 @@ pub fn apply_player_event(
     }
 }
 
+/// [`apply_player_overlay`] from any thread.
+pub fn present_overlay(context: &AppContext, overlay: PlayerOverlay) {
+    context
+        .ui
+        .update(move |window| apply_player_overlay(window, &overlay));
+}
+
+/// Shows the previous/next buttons once the neighbouring episodes are known.
+pub fn present_neighbours(context: &AppContext, has_previous: bool, has_next: bool) {
+    context.ui.update(move |window| {
+        window.set_has_previous(has_previous);
+        window.set_has_next(has_next);
+    });
+}
+
+/// The player stays up, spinning, while the next item's stream is prepared.
+pub fn present_player_loading(context: &AppContext) {
+    context.ui.update(|window| {
+        window.set_player_loading(true);
+        window.set_player_status("".into());
+        apply_player_overlay(window, &PlayerOverlay::default());
+    });
+}
+
+/// Shows or clears the skip-segment button and the Up Next card.
+pub fn apply_player_overlay(window: &JellyBridgeWindow, overlay: &PlayerOverlay) {
+    match &overlay.skip {
+        Some(skip) => {
+            window.set_skip_label(skip.label.into());
+            window.set_skip_target(skip.target as f32);
+        }
+        None => window.set_skip_label("".into()),
+    }
+    match &overlay.up_next {
+        Some(up_next) => {
+            window.set_up_next_visible(true);
+            window.set_up_next_title(up_next.title.as_str().into());
+            window.set_up_next_subtitle(up_next.subtitle.as_str().into());
+            window.set_up_next_countdown(up_next.seconds_left.ceil() as i32);
+        }
+        None => window.set_up_next_visible(false),
+    }
+}
+
 /// Enters the player screen after a stream was prepared and handed to mpv.
 pub fn present_playback_started(
     context: &AppContext,
-    title: String,
+    title: PlayerTitle,
     initial_position: f64,
     initial_duration: f64,
 ) {
     context.ui.update(move |window| {
-        window.set_detail_title(title.into());
+        window.set_player_title(title.title.into());
+        window.set_player_subtitle(title.subtitle.into());
+        window.set_player_loading(true);
+        window.set_buffering(false);
+        window.set_has_previous(false);
+        window.set_has_next(false);
+        window.set_speed_index(2);
+        window.set_ends_at_label("".into());
+        window.set_decode_label("".into());
+        apply_player_overlay(window, &PlayerOverlay::default());
         window.set_playback_position_label(format_playback_time(initial_position).into());
         window.set_playback_duration_label(format_playback_time(initial_duration).into());
         // The previous item's chapter marks must not linger while the next
@@ -370,7 +514,9 @@ pub fn present_playback_started(
         window.invoke_enter_player(initial_position as f32, initial_duration as f32);
         window.set_busy(false);
         window.set_message("".into());
-        window.set_player_status("Loading media…".into());
+        window.set_player_status("".into());
+        // Shows the chrome and starts its idle timer, as any activity does.
+        window.invoke_player_activity();
         window.window().request_redraw();
     });
 }
@@ -378,6 +524,9 @@ pub fn present_playback_started(
 pub fn present_playback_failed(context: &AppContext, message: String) {
     context.ui.update(move |window| {
         window.set_busy(false);
+        // Also on the player, for a failure while moving to the next item.
+        window.set_player_loading(false);
+        window.set_player_status(message.as_str().into());
         window.set_message(message.into());
     });
 }

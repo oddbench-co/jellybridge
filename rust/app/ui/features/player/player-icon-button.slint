@@ -1,0 +1,68 @@
+import { Theme } from "../../theme.slint";
+
+export component PlayerIcon inherits Path {
+    in property <string> icon;
+    in property <color> color: Theme.text-bright;
+    in property <length> size: 24px;
+    width: self.size;
+    height: self.size;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    commands: self.icon;
+    fill: self.color;
+}
+
+// A round, borderless icon button like the ones in Jellyfin's player OSD.
+// `badge` draws a number inside the icon, for the 10/30 second skip buttons.
+export component PlayerIconButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <string> badge;
+    in property <length> icon-size: 26px;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    width: self.icon-size + 18px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: !root.enabled ? transparent
+        : touch.pressed ? Theme.text-bright.with-alpha(0.22)
+        : touch.has-hover ? Theme.text-bright.with-alpha(0.12)
+        : transparent;
+    animate background { duration: 120ms; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    PlayerIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        size: root.icon-size;
+        icon: root.icon;
+        color: root.enabled ? Theme.text-bright : Theme.text-faint;
+    }
+
+    if root.badge != "": Text {
+        // The replay/forward arrows circle (12, 13) of the 24-unit viewbox.
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - root.icon-size) / 2 + root.icon-size * 13 / 24 - self.height / 2;
+        text: root.badge;
+        color: Theme.text-bright;
+        font-size: root.icon-size * 0.36;
+        font-weight: 700;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+}

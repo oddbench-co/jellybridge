@@ -125,6 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_ui = ui_handle.clone();
     let event_state = state.clone();
     let event_reporter = reporter.clone();
+    let refresh = Arc::new(tokio::sync::Notify::new());
+    let event_refresh = refresh.clone();
     let (render_client, player_worker) = create_player(move |event| {
         let ended = matches!(event, PlayerEvent::Ended);
         // Turn mpv's position and pause events into Jellyfin reports. The
@@ -144,12 +146,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(report) = due {
             features::playback::send_progress_report(&event_state, &event_runtime, report);
         }
+        // Skip Intro and Up Next follow the playhead; the now-playing context
+        // is small, so this is cheap at mpv's 4 Hz position rate.
+        let overlay = match &event {
+            PlayerEvent::Position { seconds, duration } => event_state.lock().ok().and_then(|state| {
+                state.now_playing.as_ref().map(|now| {
+                    features::now_playing::overlay_at(now, *seconds, *duration)
+                })
+            }),
+            _ => None,
+        };
+        let autoplay = ended
+            && event_state.lock().is_ok_and(|state| {
+                state
+                    .now_playing
+                    .as_ref()
+                    .is_some_and(features::now_playing::NowPlaying::autoplays)
+            });
         let tracks = event_tracks.clone();
-        event_ui.update(move |window| ui::player::apply_player_event(window, event, &tracks));
+        event_ui.update(move |window| {
+            ui::player::apply_player_event(window, event, &tracks);
+            if let Some(overlay) = overlay {
+                ui::player::apply_player_overlay(window, &overlay);
+            }
+            // At the natural end, roll into the next episode or, like
+            // Jellyfin, return to where playback started.
+            if ended && window.get_screen() == ui::Screen::Player {
+                if autoplay {
+                    window.invoke_play_next();
+                } else {
+                    window.invoke_leave_player();
+                }
+            }
+        });
         if ended {
             // Commit the final position before the proxy goes away; Jellyfin
             // decides from this whether the item counts as watched.
-            features::playback::finish_report(&event_reporter, &event_state, &event_runtime);
+            features::playback::finish_report(
+                &event_reporter,
+                &event_state,
+                &event_runtime,
+                &event_refresh,
+            );
             if let Ok(mut slot) = event_playback.lock()
                 && let Some(remote) = slot.take()
             {
@@ -177,8 +215,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_ready: render_ready_rx,
         player_tracks,
         catalog_request: Arc::new(Mutex::new(None)),
+        refresh,
     };
     ui::connect(&window, &context);
+    runtime.spawn(features::refresh::run_refresh_loop(context.clone()));
     let player_ui = ui::player::connect(&window, &context, image_is_cleared.clone());
     ui::player::install_renderer(
         &window,

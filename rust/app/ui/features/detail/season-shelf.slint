@@ -1,9 +1,12 @@
 import { Theme } from "../../theme.slint";
+import { Icons } from "../../components/icons.slint";
 import { DetailCard } from "../../types.slint";
 import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
 export component DetailSeasonCard inherits Rectangle {
     in property <DetailCard> season;
+    // The season whose page this is, highlighted like the current episode.
+    in property <bool> current: false;
     callback open();
 
     height: root.width * 1.5 + 50px;
@@ -31,8 +34,10 @@ export component DetailSeasonCard inherits Rectangle {
         Rectangle {
             height: root.width * 1.5;
             background: @linear-gradient(145deg, Theme.surface-hover 0%, Theme.bg 100%);
-            border-color: card-focus.has-focus ? Theme.accent-bright : card-touch.has-hover ? Theme.border-strong : Theme.surface-hover;
-            border-width: card-focus.has-focus ? 3px : card-touch.has-hover ? 2px : 1px;
+            border-color: card-focus.has-focus ? Theme.accent-bright
+                : root.current ? Theme.accent
+                : card-touch.has-hover ? Theme.border-strong : Theme.surface-hover;
+            border-width: card-focus.has-focus || root.current ? 3px : card-touch.has-hover ? 2px : 1px;
             border-radius: Theme.radius-medium;
             clip: true;
             drop-shadow-color: card-touch.has-hover ? Theme.scrim.with-alpha(0.63) : Theme.scrim.with-alpha(0.4);
@@ -71,10 +76,19 @@ export component DetailSeasonCard inherits Rectangle {
                 height: 25px;
                 border-radius: Theme.radius-large;
                 background: Theme.accent;
-                Text { text: "✓"; color: white; font-size: 14px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 16px;
+                    height: 16px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.check;
+                    fill: Theme.text-bright;
+                }
             }
         }
-        Text { text: root.season.title; color: Theme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
+        Text { text: root.season.title; color: root.current ? Theme.accent-bright : Theme.text-primary; font-size: 14px; font-weight: 700; overflow: elide; }
         Text { text: root.season.subtitle; color: Theme.text-faint; font-size: 11px; overflow: elide; }
     }
 }
@@ -82,6 +96,8 @@ export component DetailSeasonCard inherits Rectangle {
 
 export component DetailSeasonShelf inherits Rectangle {
     in property <[DetailCard]> seasons;
+    in property <string> heading: "Seasons";
+    in property <string> current-id;
     in property <string> summary;
     in property <bool> failed: false;
     callback open(string, string);
@@ -97,7 +113,7 @@ export component DetailSeasonShelf inherits Rectangle {
     Text {
         x: root.viewport-x;
         y: 16px;
-        text: "Seasons";
+        text: root.heading;
         color: Theme.text-primary;
         font-size: 22px;
         font-weight: 750;
@@ -156,6 +172,7 @@ export component DetailSeasonShelf inherits Rectangle {
             for season in root.seasons: DetailSeasonCard {
                 width: root.card-width;
                 season: season;
+                current: season.id == root.current-id;
                 open => { root.open(season.id, season.kind); }
             }
         }

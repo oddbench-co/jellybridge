@@ -4,6 +4,7 @@ import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
 export component DetailPeopleShelf inherits Rectangle {
     in property <[DetailPerson]> people;
+    in property <string> heading: "Cast & Crew";
     property <length> card-width: 112px;
     property <length> content-width: max(0px, root.people.length * (root.card-width + 16px) - 16px);
     // Test probe: re-clamping on resize is asserted by a window test.
@@ -17,7 +18,7 @@ export component DetailPeopleShelf inherits Rectangle {
     Text {
         x: root.viewport-x;
         y: 12px;
-        text: "Cast & Crew";
+        text: root.heading;
         color: Theme.text-primary;
         font-size: 21px;
         font-weight: 750;

@@ -6,6 +6,8 @@ import { DetailEpisodeRow } from "episode-row.slint";
 import { EpisodeShelf } from "episode-shelf.slint";
 import { DetailPeopleShelf } from "people-shelf.slint";
 import { DetailIconButton } from "icon-button.slint";
+import { DetailPlayButton } from "play-button.slint";
+import { Icons } from "../../components/icons.slint";
 
 export component DetailScreen inherits Rectangle {
     in property <bool> busy;
@@ -46,8 +48,15 @@ export component DetailScreen inherits Rectangle {
     in property <bool> detail-favorite;
     in property <[DetailCard]> detail-seasons;
     in property <[DetailCard]> detail-next-up;
+    in property <[DetailCard]> detail-similar;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
+    in property <[DetailPerson]> detail-guest-stars;
+    // Position of this episode among `detail-episodes`, or -1; the season
+    // shelf opens scrolled to it.
+    in property <int> detail-current-episode-index: -1;
+    // Unwatched episodes left in a series or season, for the poster badge.
+    in property <int> detail-unplayed-count;
     in property <[string]> detail-audio-options;
     in property <[string]> detail-subtitle-options;
     in-out property <int> detail-audio-index;
@@ -88,6 +97,7 @@ export component DetailScreen inherits Rectangle {
     // The cast shelf lives inside an `if`, so it cannot be named from here;
     // it pushes its offset out through a changed handler instead.
     out property <length> people-scroll-x;
+    out property <length> episode-shelf-scroll-x;
     background: Theme.bg;
 
     // While the next item loads the page is blanked, so show that it is
@@ -220,35 +230,31 @@ export component DetailScreen inherits Rectangle {
 
                                 HorizontalLayout {
                                     spacing: 14px;
-                                    Text {
+                                    if root.detail-subtitle != "": Text {
                                         text: root.detail-subtitle;
                                         color: Theme.text-secondary;
                                         font-size: 13px;
                                         vertical-alignment: center;
-                                        visible: root.detail-subtitle != "";
                                     }
-                                    Text {
+                                    if root.detail-star-rating > 0: Text {
                                         text: "★ " + Math.round(root.detail-star-rating * 10) / 10;
                                         color: Theme.rating-gold;
                                         font-size: 13px;
                                         font-weight: 700;
                                         vertical-alignment: center;
-                                        visible: root.detail-star-rating > 0;
                                     }
-                                    Text {
+                                    if root.detail-critic-rating >= 0: Text {
                                         text: "Critics " + root.detail-critic-rating + "%";
                                         color: root.detail-critic-rating >= 60 ? #7ac96f : Theme.danger-text;
                                         font-size: 13px;
                                         font-weight: 650;
                                         vertical-alignment: center;
-                                        visible: root.detail-critic-rating >= 0;
                                     }
-                                    Text {
+                                    if root.detail-ends-at != "": Text {
                                         text: root.detail-ends-at;
                                         color: Theme.text-muted;
                                         font-size: 13px;
                                         vertical-alignment: center;
-                                        visible: root.detail-ends-at != "";
                                     }
                                     Rectangle { horizontal-stretch: 1; }
                                 }
@@ -258,28 +264,29 @@ export component DetailScreen inherits Rectangle {
                                 spacing: 9px;
                                 alignment: end;
 
-                                DetailIconButton {
-                                    glyph: "▶";
-                                    primary: true;
+                                if root.detail-playable: DetailPlayButton {
+                                    label: root.detail-play-label == "" ? "Play" : root.detail-play-label;
                                     enabled: !root.busy;
-                                    visible: root.detail-playable;
                                     clicked => { root.play-current(); }
                                 }
-                                DetailIconButton {
-                                    glyph: "↻";
+                                if root.detail-playable && root.detail-progress > 0 && root.detail-progress < 1: DetailIconButton {
+                                    icon: Icons.replay;
+                                    label: "Play from beginning";
                                     enabled: !root.busy;
-                                    visible: root.detail-playable && root.detail-progress > 0 && root.detail-progress < 1;
                                     clicked => { root.play-current-from-start(); }
                                 }
                                 DetailIconButton {
-                                    glyph: "✓";
+                                    icon: Icons.check;
+                                    label: root.detail-watched ? "Mark unplayed" : "Mark played";
                                     active: root.detail-watched;
                                     enabled: !root.busy;
                                     clicked => { root.set-detail-watched(root.detail-id, !root.detail-watched); }
                                 }
                                 DetailIconButton {
-                                    glyph: "♥";
+                                    icon: Icons.favorite;
+                                    label: root.detail-favorite ? "Remove from favorites" : "Add to favorites";
                                     active: root.detail-favorite;
+                                    active-color: Theme.danger-text;
                                     enabled: !root.busy;
                                     clicked => { root.set-detail-favorite(root.detail-id, !root.detail-favorite); }
                                 }
@@ -380,18 +387,6 @@ export component DetailScreen inherits Rectangle {
                         font-size: 14px;
                         wrap: word-wrap;
                     }
-                    if root.detail-kind == DetailKind.series && root.detail-series-summary != "": Text {
-                        text: root.detail-series-summary;
-                        color: Theme.accent-bright;
-                        font-size: 13px;
-                        font-weight: 650;
-                    }
-                    if root.detail-kind == DetailKind.season && root.detail-season-summary != "": Text {
-                        text: root.detail-season-summary;
-                        color: Theme.accent-bright;
-                        font-size: 13px;
-                        font-weight: 650;
-                    }
 
                     if root.detail-tags != "": Text {
                         text: "Tags: " + root.detail-tags;
@@ -442,6 +437,8 @@ export component DetailScreen inherits Rectangle {
             if root.detail-kind == DetailKind.series && root.detail-next-up.length > 0: EpisodeShelf {
                 width: root.width;
                 episodes: root.detail-next-up;
+                plays: true;
+                play(id) => { root.play-detail(id); }
                 heading: "Next Up";
                 open(id, kind) => { root.open-detail(id, kind); }
             }
@@ -517,11 +514,23 @@ export component DetailScreen inherits Rectangle {
                 }
             }
 
+            // Jellyfin-style jump between seasons without going back up.
+            if root.detail-kind == DetailKind.season && root.detail-seasons.length > 1: DetailSeasonShelf {
+                width: root.width;
+                height: 360px;
+                heading: "More Seasons";
+                seasons: root.detail-seasons;
+                current-id: root.detail-id;
+                open(id, kind) => { root.open-detail(id, kind); }
+            }
+
             if root.episode-page && root.detail-episodes.length > 0: EpisodeShelf {
                 width: root.width;
                 episodes: root.detail-episodes;
                 heading: root.detail-season-name == "" ? "More from this season" : "More from " + root.detail-season-name;
                 current-id: root.detail-id;
+                current-index: root.detail-current-episode-index;
+                changed offset-x => { root.episode-shelf-scroll-x = self.offset-x; }
                 open(id, kind) => { root.open-detail(id, kind); }
             }
 
@@ -530,6 +539,21 @@ export component DetailScreen inherits Rectangle {
                 height: 220px;
                 people: root.detail-people;
                 changed offset-x => { root.people-scroll-x = self.offset-x; }
+            }
+
+            if root.detail-guest-stars.length > 0: DetailPeopleShelf {
+                width: root.width;
+                height: 220px;
+                heading: "Guest Stars";
+                people: root.detail-guest-stars;
+            }
+
+            if root.detail-similar.length > 0: DetailSeasonShelf {
+                width: root.width;
+                height: 360px;
+                heading: "More Like This";
+                seasons: root.detail-similar;
+                open(id, kind) => { root.open-detail(id, kind); }
             }
         }
 
@@ -557,6 +581,44 @@ export component DetailScreen inherits Rectangle {
                 vertical-alignment: center;
             }
             Image { source: root.detail-artwork; width: 100%; height: 100%; image-fit: cover; }
+
+            // Jellyfin's corner indicator: what is left to watch, or a check
+            // once a series or season is done.
+            if root.detail-unplayed-count > 0: Rectangle {
+                x: parent.width - self.width - 10px;
+                y: 10px;
+                width: max(30px, unplayed-text.preferred-width + 16px);
+                height: 30px;
+                border-radius: self.height / 2;
+                background: Theme.accent;
+                unplayed-text := Text {
+                    text: root.detail-unplayed-count;
+                    color: Theme.text-bright;
+                    font-size: 13px;
+                    font-weight: 750;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if root.detail-unplayed-count == 0 && root.detail-watched
+                && (root.detail-kind == DetailKind.season || root.detail-kind == DetailKind.series): Rectangle {
+                x: parent.width - self.width - 10px;
+                y: 10px;
+                width: 30px;
+                height: 30px;
+                border-radius: self.height / 2;
+                background: Theme.accent;
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 18px;
+                    height: 18px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.check;
+                    fill: Theme.text-bright;
+                }
+            }
         }
       }
     }

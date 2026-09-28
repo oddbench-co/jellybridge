@@ -113,6 +113,13 @@ pub struct DetailItemData {
     pub writers: Vec<String>,
     pub studios: Vec<String>,
     pub people: Vec<PersonData>,
+    /// An episode's guest cast, listed apart from the regulars as Jellyfin does.
+    pub guest_stars: Vec<PersonData>,
+    /// First air / release date as (year, month, day).
+    pub premiere_date: Option<(i32, u32, u32)>,
+    /// When a series stopped airing, and whether it still airs.
+    pub end_year: Option<i32>,
+    pub series_continuing: bool,
     pub media_summary: String,
     pub poster: Option<ImageRef>,
     pub backdrop: Option<ImageRef>,
@@ -155,6 +162,10 @@ impl DetailItemData {
             writers: Vec::new(),
             studios: Vec::new(),
             people: Vec::new(),
+            guest_stars: Vec::new(),
+            premiere_date: None,
+            end_year: None,
+            series_continuing: false,
             media_summary: String::new(),
             poster: None,
             backdrop: None,
@@ -176,6 +187,8 @@ pub struct DetailPageData {
     pub item: DetailItemData,
     pub seasons: Vec<DetailItemData>,
     pub episodes: Vec<DetailItemData>,
+    /// "More Like This", for series and movie pages.
+    pub similar: Vec<DetailItemData>,
     pub children_error: Option<String>,
 }
 
@@ -211,6 +224,9 @@ impl DetailPageData {
 pub enum DetailMessage {
     Open(DetailTarget),
     Loaded(Box<DetailPageData>),
+    /// A background re-read of the page already on screen. Unlike `Loaded`
+    /// it never lands over a navigation or an optimistic toggle.
+    Refreshed(Box<DetailPageData>),
     LoadFailed(String),
     Play,
     SetWatched {
@@ -281,6 +297,16 @@ impl DetailModel {
                     self.page = Some(*page);
                     self.pending = None;
                     self.error = None;
+                }
+                Vec::new()
+            }
+            DetailMessage::Refreshed(page) => {
+                let same_page = self
+                    .page
+                    .as_ref()
+                    .is_some_and(|current| current.item.id == page.item.id);
+                if same_page && self.pending.is_none() && self.mutations.is_empty() {
+                    self.page = Some(*page);
                 }
                 Vec::new()
             }
@@ -355,6 +381,11 @@ impl DetailModel {
             error: self.error.as_deref(),
             can_go_back: self.page.is_some() || !self.history.is_empty(),
         }
+    }
+
+    /// Whether a watched/favorite toggle is still waiting on the server.
+    pub fn has_pending_mutations(&self) -> bool {
+        !self.mutations.is_empty()
     }
 
     pub fn item_by_id(&self, id: &str) -> Option<DetailItemData> {
@@ -489,6 +520,7 @@ pub fn update_detail_mutation(context: &AppContext, message: DetailMessage) {
                 Ok(Err(error)) => Some(error),
                 Err(error) => Some(format!("detail update task failed: {error}")),
             };
+            let succeeded = error.is_none();
             if let Ok(mut state) = ctx.state.lock() {
                 state
                     .detail
@@ -496,6 +528,11 @@ pub fn update_detail_mutation(context: &AppContext, message: DetailMessage) {
             }
             if ctx.is_current(generation) {
                 ui::detail::present(&ctx, generation);
+            }
+            // The server recomputes what the toggle implies -- unplayed
+            // counts, Next Up -- so read the page back once it has.
+            if succeeded {
+                ctx.request_refresh();
             }
         });
     }
@@ -636,6 +673,7 @@ mod tests {
             item: DetailItemData::fixture(id, kind),
             seasons: Vec::new(),
             episodes: Vec::new(),
+            similar: Vec::new(),
             children_error: None,
         }
     }
@@ -832,5 +870,102 @@ mod tests {
 
         assert!(model.snapshot().page.is_none());
         assert!(model.snapshot().busy);
+    }
+
+    fn watched_page(id: &str, kind: DetailKind) -> Box<DetailPageData> {
+        let mut page = page(id, kind);
+        page.item.watched = true;
+        Box::new(page)
+    }
+
+    #[test]
+    fn refresh_replaces_the_shown_page_and_keeps_history() {
+        let mut model = DetailModel::default();
+        model.update(DetailMessage::Open(DetailTarget::new(
+            "series",
+            DetailKind::Series,
+        )));
+        model.update(DetailMessage::Loaded(Box::new(page(
+            "series",
+            DetailKind::Series,
+        ))));
+        model.update(DetailMessage::Open(DetailTarget::new(
+            "episode",
+            DetailKind::Episode,
+        )));
+        model.update(DetailMessage::Loaded(Box::new(page(
+            "episode",
+            DetailKind::Episode,
+        ))));
+
+        let effects = model.update(DetailMessage::Refreshed(watched_page(
+            "episode",
+            DetailKind::Episode,
+        )));
+
+        assert!(effects.is_empty());
+        assert!(model.snapshot().page.unwrap().item.watched);
+        model.update(DetailMessage::Back);
+        assert_eq!(model.snapshot().page.unwrap().item.id, "series");
+    }
+
+    #[test]
+    fn refresh_is_ignored_for_another_page() {
+        let mut model = DetailModel::default();
+        model.update(DetailMessage::Loaded(Box::new(page(
+            "episode",
+            DetailKind::Episode,
+        ))));
+
+        model.update(DetailMessage::Refreshed(watched_page(
+            "other",
+            DetailKind::Episode,
+        )));
+
+        let snapshot = model.snapshot();
+        assert_eq!(snapshot.page.unwrap().item.id, "episode");
+        assert!(!snapshot.page.unwrap().item.watched);
+    }
+
+    #[test]
+    fn refresh_does_not_land_over_a_pending_navigation() {
+        let mut model = DetailModel::default();
+        model.update(DetailMessage::Loaded(Box::new(page(
+            "series",
+            DetailKind::Series,
+        ))));
+        model.update(DetailMessage::Open(DetailTarget::new(
+            "season",
+            DetailKind::Season,
+        )));
+
+        model.update(DetailMessage::Refreshed(watched_page(
+            "series",
+            DetailKind::Series,
+        )));
+
+        assert!(model.snapshot().page.is_none());
+        assert!(model.snapshot().busy);
+    }
+
+    #[test]
+    fn refresh_does_not_clobber_an_optimistic_toggle() {
+        let mut model = DetailModel::default();
+        model.update(DetailMessage::Loaded(Box::new(page(
+            "episode",
+            DetailKind::Episode,
+        ))));
+        model.update(DetailMessage::SetFavorite {
+            id: "episode".into(),
+            favorite: true,
+        });
+        assert!(model.has_pending_mutations());
+
+        model.update(DetailMessage::Refreshed(Box::new(page(
+            "episode",
+            DetailKind::Episode,
+        ))));
+
+        assert!(model.snapshot().page.unwrap().item.favorite);
     }
 }

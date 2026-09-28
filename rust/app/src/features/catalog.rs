@@ -277,6 +277,9 @@ pub fn show_home(context: &AppContext, clear_history: bool) {
         state.detail.update(DetailMessage::Reset);
     }
     ui::catalog::present(context, "");
+    // The cached dashboard shows instantly; the refresh patches in whatever
+    // was watched since it was fetched.
+    context.request_refresh();
 }
 
 pub fn open_item(context: &AppContext, id: &str) {
@@ -472,6 +475,8 @@ pub fn go_back(context: &AppContext) {
             let generation = context.current_generation();
             ui::detail::present(context, generation);
         }
+        // Restored pages are snapshots from when they were left.
+        context.request_refresh();
         return;
     }
     let mut show_catalog = false;
@@ -483,6 +488,7 @@ pub fn go_back(context: &AppContext) {
     }
     if show_catalog {
         ui::catalog::present(context, "");
+        context.request_refresh();
     }
 }
 

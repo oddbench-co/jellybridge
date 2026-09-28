@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use crate::api::{CatalogItemData, CatalogSectionData, JellyfinApi};
 use crate::features::catalog::{CatalogDensity, CatalogSort, CatalogSectionRange, flatten_sections};
 use crate::features::detail::{DetailModel, DetailTarget};
+use crate::features::now_playing::NowPlaying;
 use crate::features::progress::PlaybackReporter;
 use crate::services::playback::PreparedPlayback;
 use crate::services::player::{PlayerCommand, PlayerTrack};
@@ -73,6 +74,8 @@ pub struct AppState {
     pub retry: RetryAction,
     pub catalog_sort: CatalogSort,
     pub catalog_density: CatalogDensity,
+    /// The item in the player and its neighbours/segments, while playing.
+    pub now_playing: Option<NowPlaying>,
 }
 
 #[derive(Clone, Default)]
@@ -103,6 +106,7 @@ impl Default for AppState {
             retry: RetryAction::Home,
             catalog_sort: CatalogSort::default(),
             catalog_density: CatalogDensity::default(),
+            now_playing: None,
         }
     }
 }
@@ -126,6 +130,9 @@ pub struct AppContext {
     pub render_ready: tokio::sync::watch::Receiver<bool>,
     pub player_tracks: Arc<Mutex<PlayerTrackState>>,
     pub catalog_request: Arc<Mutex<Option<tokio::task::AbortHandle>>>,
+    /// Wakes the background refresh loop so the visible screen re-reads
+    /// watched state from the server. See [`crate::features::refresh`].
+    pub refresh: Arc<tokio::sync::Notify>,
 }
 
 impl AppContext {
@@ -141,9 +148,28 @@ impl AppContext {
         self.generation.load(Ordering::Acquire) == generation
     }
 
+    /// Advances the navigation generation only if it is still `expected`.
+    /// A silent refresh uses this so it never invalidates a navigation the
+    /// user started while the refresh was in flight.
+    pub fn claim_generation(&self, expected: u64) -> Option<u64> {
+        claim_generation(&self.generation, expected)
+    }
+
+    /// Asks the refresh loop to re-read the visible screen. Bursts coalesce.
+    pub fn request_refresh(&self) {
+        self.refresh.notify_one();
+    }
+
     pub fn api(&self) -> Option<JellyfinApi> {
         self.state.lock().ok()?.api.clone()
     }
+}
+
+fn claim_generation(generation: &AtomicU64, expected: u64) -> Option<u64> {
+    generation
+        .compare_exchange(expected, expected + 1, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|previous| previous + 1)
 }
 
 pub fn replace_catalog_request(context: &AppContext, request: tokio::task::AbortHandle) {
@@ -159,5 +185,19 @@ pub fn cancel_catalog_request(context: &AppContext) {
         && let Some(request) = active.take()
     {
         request.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_generation_only_advances_an_unchanged_generation() {
+        let generation = AtomicU64::new(4);
+        assert_eq!(claim_generation(&generation, 3), None);
+        assert_eq!(generation.load(Ordering::Acquire), 4);
+        assert_eq!(claim_generation(&generation, 4), Some(5));
+        assert_eq!(generation.load(Ordering::Acquire), 5);
     }
 }

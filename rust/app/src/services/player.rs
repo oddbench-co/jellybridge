@@ -13,7 +13,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use libmpv2::events::{Event, PropertyData};
-use libmpv2::{Format, Mpv};
+use libmpv2::{Format, Mpv, mpv_end_file_reason};
 use libmpv2_sys as sys;
 
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(20);
@@ -40,6 +40,8 @@ pub enum PlayerCommand {
     SeekAbsolute(f64),
     SetVolume(f64),
     ToggleMuted,
+    SetSpeed(f64),
+    SetAspect(AspectMode),
     SelectAudio(i64),
     SelectSubtitle(Option<i64>),
     Stop,
@@ -62,6 +64,32 @@ pub struct PlayerSubtitleFile {
     pub source_index: Option<i64>,
     pub language: Option<String>,
     pub title: Option<String>,
+}
+
+/// How the video fills the window, as in Jellyfin's aspect ratio menu.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AspectMode {
+    /// Letterboxed at the source aspect.
+    #[default]
+    Auto,
+    /// Zoomed to fill, cropping the overflow.
+    Cover,
+    /// Stretched to the window, ignoring the source aspect.
+    Fill,
+}
+
+impl AspectMode {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Cover, Self::Fill];
+
+    /// mpv's `keepaspect` and `panscan` for this mode. They are global
+    /// options, so a choice carries over to the next file.
+    fn mpv_properties(self) -> (bool, f64) {
+        match self {
+            Self::Auto => (true, 0.0),
+            Self::Cover => (true, 1.0),
+            Self::Fill => (false, 0.0),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -92,6 +120,10 @@ pub enum PlayerEvent {
     Loaded,
     Paused(bool),
     Volume(f64),
+    Muted(bool),
+    Speed(f64),
+    /// mpv stalled waiting for the network cache.
+    Buffering(bool),
     Position {
         seconds: f64,
         duration: f64,
@@ -104,6 +136,7 @@ pub enum PlayerEvent {
     },
     Chapters(Vec<PlayerChapter>),
     HardwarePath(HardwareDecodePath),
+    /// The media played to its end (not stopped or replaced).
     Ended,
     Error(String),
 }
@@ -295,14 +328,51 @@ fn worker_loop(mpv: Mpv, receiver: Receiver<PlayerCommand>, event_sink: impl Fn(
                     event_sink(PlayerEvent::Volume(value));
                 }
                 Ok(Event::PropertyChange {
+                    name: "mute",
+                    change: PropertyData::Flag(value),
+                    ..
+                }) => {
+                    event_sink(PlayerEvent::Muted(value));
+                }
+                Ok(Event::PropertyChange {
+                    name: "speed",
+                    change: PropertyData::Double(value),
+                    ..
+                }) => {
+                    event_sink(PlayerEvent::Speed(value));
+                }
+                Ok(Event::PropertyChange {
+                    name: "paused-for-cache",
+                    change: PropertyData::Flag(value),
+                    ..
+                }) => {
+                    event_sink(PlayerEvent::Buffering(value));
+                }
+                Ok(Event::PropertyChange {
                     name: "hwdec-current",
                     change: PropertyData::Str(value),
                     ..
                 }) => {
                     event_sink(PlayerEvent::HardwarePath(classify_hwdec(value)));
                 }
-                Ok(Event::EndFile(_)) => {
-                    tracing::info!("libmpv ended media");
+                // With keep-open, a file that plays to the end stays open and
+                // reports `eof-reached` instead; END_FILE then only means the
+                // file was stopped or replaced (leaving, or the next episode),
+                // which must not read as "ended" -- that starts autoplay.
+                Ok(Event::EndFile(reason)) => {
+                    tracing::info!(reason, "libmpv ended media");
+                    if reason == mpv_end_file_reason::Eof {
+                        event_sink(PlayerEvent::Ended);
+                    } else if reason == mpv_end_file_reason::Error {
+                        event_sink(PlayerEvent::Error("The stream could not be played".into()));
+                    }
+                }
+                Ok(Event::PropertyChange {
+                    name: "eof-reached",
+                    change: PropertyData::Flag(true),
+                    ..
+                }) => {
+                    tracing::info!("libmpv reached the end of the media");
                     event_sink(PlayerEvent::Ended);
                 }
                 Ok(Event::Shutdown) => return,
@@ -338,6 +408,10 @@ fn configure_observers(mpv: &Mpv) -> Result<(), libmpv2::Error> {
     mpv.observe_property("pause", Format::Flag, 1)?;
     mpv.observe_property("volume", Format::Double, 2)?;
     mpv.observe_property("hwdec-current", Format::String, 3)?;
+    mpv.observe_property("mute", Format::Flag, 4)?;
+    mpv.observe_property("speed", Format::Double, 5)?;
+    mpv.observe_property("paused-for-cache", Format::Flag, 6)?;
+    mpv.observe_property("eof-reached", Format::Flag, 7)?;
     Ok(())
 }
 
@@ -361,6 +435,8 @@ fn apply_command(
                 audio_source_index,
                 subtitle_source_index,
             });
+            // Speed is a global option; like Jellyfin, each item starts at 1x.
+            mpv.set_property("speed", 1.0)?;
             mpv.command("loadfile", &[&uri, "replace"])
         }
         PlayerCommand::AddSubtitle {
@@ -401,6 +477,12 @@ fn apply_command(
         }
         PlayerCommand::SetVolume(volume) => mpv.set_property("volume", volume.clamp(0.0, 100.0)),
         PlayerCommand::ToggleMuted => mpv.command("cycle", &["mute"]),
+        PlayerCommand::SetSpeed(speed) => mpv.set_property("speed", speed.clamp(0.25, 4.0)),
+        PlayerCommand::SetAspect(mode) => {
+            let (keep_aspect, panscan) = mode.mpv_properties();
+            mpv.set_property("keepaspect", keep_aspect)?;
+            mpv.set_property("panscan", panscan)
+        }
         PlayerCommand::SelectAudio(id) => mpv.set_property("aid", id),
         PlayerCommand::SelectSubtitle(Some(id)) => mpv.set_property("sid", id),
         PlayerCommand::SelectSubtitle(None) => mpv.set_property("sid", "no"),
@@ -649,5 +731,12 @@ mod tests {
         assert_eq!(sub_add_flag(Some(-1), &subtitle(Some(2))), "cached");
         // No preference and no default stream: unchanged from before, mpv picks.
         assert_eq!(sub_add_flag(None, &subtitle(Some(2))), "auto");
+    }
+
+    #[test]
+    fn aspect_modes_map_to_mpv_geometry_options() {
+        assert_eq!(AspectMode::Auto.mpv_properties(), (true, 0.0));
+        assert_eq!(AspectMode::Cover.mpv_properties(), (true, 1.0));
+        assert_eq!(AspectMode::Fill.mpv_properties(), (false, 0.0));
     }
 }

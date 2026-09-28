@@ -1,4 +1,5 @@
 import { Theme } from "../../theme.slint";
+import { Icons } from "../../components/icons.slint";
 import { DetailCard } from "../../types.slint";
 import { DetailIconButton } from "icon-button.slint";
 
@@ -47,7 +48,16 @@ export component DetailEpisodeRow inherits Rectangle {
                 height: 25px;
                 border-radius: Theme.radius-large;
                 background: Theme.accent;
-                Text { text: "✓"; color: white; font-size: 14px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; }
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 16px;
+                    height: 16px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.check;
+                    fill: Theme.text-bright;
+                }
             }
 
             if root.episode.progress > 0 && root.episode.progress < 1: Rectangle {
@@ -72,12 +82,15 @@ export component DetailEpisodeRow inherits Rectangle {
                 height: 46px;
                 border-radius: 23px;
                 background: Theme.scrim.with-alpha(0.63);
-                Text {
-                    text: "▶";
-                    color: Theme.text-bright;
-                    font-size: 19px;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                Path {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 26px;
+                    height: 26px;
+                    viewbox-width: 24;
+                    viewbox-height: 24;
+                    commands: Icons.play;
+                    fill: Theme.text-bright;
                 }
             }
 
@@ -108,27 +121,24 @@ export component DetailEpisodeRow inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 12px;
-                Text {
+                if root.episode.subtitle != "": Text {
                     text: root.episode.subtitle;
                     color: Theme.text-secondary;
                     font-size: 12px;
                     vertical-alignment: center;
-                    visible: root.episode.subtitle != "";
                 }
-                Text {
+                if root.episode.rating > 0: Text {
                     text: "★ " + Math.round(root.episode.rating * 10) / 10;
                     color: Theme.rating-gold;
                     font-size: 12px;
                     font-weight: 700;
                     vertical-alignment: center;
-                    visible: root.episode.rating > 0;
                 }
-                Text {
+                if root.episode.ends-at != "": Text {
                     text: root.episode.ends-at;
                     color: Theme.text-muted;
                     font-size: 12px;
                     vertical-alignment: center;
-                    visible: root.episode.ends-at != "";
                 }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -151,19 +161,17 @@ export component DetailEpisodeRow inherits Rectangle {
                 spacing: 8px;
                 padding-top: 4px;
                 DetailIconButton {
-                    glyph: "ⓘ";
-                    size: 34px;
-                    clicked => { root.open(root.episode.id, root.episode.kind); }
-                }
-                DetailIconButton {
-                    glyph: "✓";
+                    icon: Icons.check;
+                    label: "Played";
                     size: 34px;
                     active: root.episode.watched;
                     enabled: !root.busy;
                     clicked => { root.set-watched(root.episode.id, !root.episode.watched); }
                 }
                 DetailIconButton {
-                    glyph: "♥";
+                    icon: Icons.favorite;
+                    label: "Favorite";
+                    active-color: Theme.danger-text;
                     size: 34px;
                     active: root.episode.favorite;
                     enabled: !root.busy;

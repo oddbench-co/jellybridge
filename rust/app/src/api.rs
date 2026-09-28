@@ -10,6 +10,7 @@ use crate::features::catalog::CatalogSort;
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageRef, ImageType, PersonData, StreamData,
 };
+use crate::features::now_playing::{MediaSegment, SegmentKind, split_adjacent};
 use crate::features::progress::{ReportTarget, position_ticks};
 use crate::services::session::StoredSession;
 
@@ -300,33 +301,78 @@ impl JellyfinApi {
     pub async fn detail_page(&self, item_id: &str) -> Result<DetailPageData, ApiError> {
         let item = self.detail_item(item_id).await?;
         let kind = DetailKind::from_jellyfin(&item.kind);
-        let (seasons, episodes, children_error) = match kind {
-            DetailKind::Series => {
-                let (seasons, episodes) =
-                    tokio::join!(self.series_seasons(item_id), self.episodes(item_id, true),);
-                combine_detail_children(seasons, episodes)
+        // "More Like This" on series and movie pages, fetched alongside the
+        // children. Like the season extras it degrades silently.
+        let similar = async {
+            if !matches!(kind, DetailKind::Series | DetailKind::Movie) {
+                return Vec::new();
             }
-            DetailKind::Season => match self.episodes(item_id, false).await {
-                Ok(episodes) => (Vec::new(), episodes, None),
-                Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
-            },
-            // An episode page shows its season's episodes ("More from
-            // Season N"); failure only degrades the shelf.
-            DetailKind::Episode => match item.season_id.as_deref() {
-                Some(season_id) => match self.episodes(season_id, false).await {
-                    Ok(episodes) => (Vec::new(), episodes, None),
-                    Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
-                },
-                None => (Vec::new(), Vec::new(), None),
-            },
-            _ => (Vec::new(), Vec::new(), None),
+            self.similar_items(item_id).await.unwrap_or_else(|error| {
+                tracing::warn!(%error, "could not load similar items");
+                Vec::new()
+            })
         };
+        let children = async {
+            match kind {
+                DetailKind::Series => {
+                    let (seasons, episodes) =
+                        tokio::join!(self.series_seasons(item_id), self.episodes(item_id, true),);
+                    combine_detail_children(seasons, episodes)
+                }
+                // A season page also lists its series' other seasons ("More
+                // Seasons"). That shelf is an extra: failing it must not raise
+                // the page's error banner the way failed episodes do.
+                DetailKind::Season => {
+                    let other_seasons = async {
+                        match item.series_id.as_deref() {
+                            Some(series_id) => self.series_seasons(series_id).await,
+                            None => Ok(Vec::new()),
+                        }
+                    };
+                    let (episodes, seasons) =
+                        tokio::join!(self.episodes(item_id, false), other_seasons);
+                    let seasons = seasons.unwrap_or_else(|error| {
+                        tracing::warn!(%error, "could not load the series' other seasons");
+                        Vec::new()
+                    });
+                    match episodes {
+                        Ok(episodes) => (seasons, episodes, None),
+                        Err(error) => (seasons, Vec::new(), Some(error.to_string())),
+                    }
+                }
+                // An episode page shows its season's episodes ("More from
+                // Season N"); failure only degrades the shelf.
+                DetailKind::Episode => match item.season_id.as_deref() {
+                    Some(season_id) => match self.episodes(season_id, false).await {
+                        Ok(episodes) => (Vec::new(), episodes, None),
+                        Err(error) => (Vec::new(), Vec::new(), Some(error.to_string())),
+                    },
+                    None => (Vec::new(), Vec::new(), None),
+                },
+                _ => (Vec::new(), Vec::new(), None),
+            }
+        };
+        let ((seasons, episodes, children_error), similar) = tokio::join!(children, similar);
         Ok(DetailPageData {
             item: item.into(),
             seasons: seasons.into_iter().map(Into::into).collect(),
             episodes: episodes.into_iter().map(Into::into).collect(),
+            similar: similar.into_iter().map(Into::into).collect(),
             children_error,
         })
+    }
+
+    /// The server's "More Like This" for an item.
+    async fn similar_items(&self, item_id: &str) -> Result<Vec<LibraryItem>, ApiError> {
+        self.items_request(
+            &format!("Items/{}/Similar", encode_path_segment(item_id)),
+            &[
+                ("UserId", self.session.user_id.as_str()),
+                ("Limit", "12"),
+            ],
+            "loading similar items",
+        )
+        .await
     }
 
     /// Tells the server playback began, which makes this client the item's
@@ -419,6 +465,56 @@ impl JellyfinApi {
             .await?;
         check_status(response, "updating favorite state")?;
         Ok(())
+    }
+
+    /// The episodes either side of `item_id` in its series, across season
+    /// boundaries, for the player's previous/next and Up Next.
+    pub async fn adjacent_episodes(
+        &self,
+        series_id: &str,
+        item_id: &str,
+    ) -> Result<(Option<DetailItemData>, Option<DetailItemData>), ApiError> {
+        let response: ItemsResponse = self
+            .send_json(
+                self.request(
+                    Method::GET,
+                    &format!("Shows/{}/Episodes", encode_path_segment(series_id)),
+                )?
+                .query(&[
+                    ("UserId", self.session.user_id.as_str()),
+                    ("AdjacentTo", item_id),
+                    ("Fields", DETAIL_FIELDS),
+                    ("EnableUserData", "true"),
+                    ("EnableImages", "true"),
+                    ("EnableImageTypes", "Primary,Thumb,Backdrop"),
+                ]),
+                "loading adjacent episodes",
+            )
+            .await?;
+        let episodes = response
+            .items
+            .into_iter()
+            .map(DetailItemData::from)
+            .collect();
+        Ok(split_adjacent(episodes, item_id))
+    }
+
+    /// The item's intro/credits/recap segments. Servers before Jellyfin 10.10
+    /// have no such endpoint, which reads as "no segments".
+    pub async fn media_segments(&self, item_id: &str) -> Result<Vec<MediaSegment>, ApiError> {
+        let response = self
+            .request(
+                Method::GET,
+                &format!("MediaSegments/{}", encode_path_segment(item_id)),
+            )?
+            .send()
+            .await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(Vec::new());
+        }
+        let response = check_status(response, "loading media segments")?;
+        let segments: SegmentsResponse = response.json().await?;
+        Ok(segments.into_segments())
     }
 
     pub async fn fetch_detail_image(
@@ -1118,30 +1214,35 @@ impl From<LibraryItem> for DetailItemData {
             .collect();
         let directors = person_names(&item.people, "Director");
         let writers = person_names(&item.people, "Writer");
-        let people = item
+        let (guest_stars, people): (Vec<_>, Vec<_>) = item
             .people
             .into_iter()
-            .filter(|person| person.kind.is_empty() || person.kind.eq_ignore_ascii_case("Actor"))
-            .take(24)
-            .map(|person| {
-                let image = person
-                    .id
-                    .as_ref()
-                    .zip(person.primary_image_tag.as_ref())
-                    .map(|(id, tag)| ImageRef {
-                        item_id: id.clone(),
-                        image_type: ImageType::Primary,
-                        index: None,
-                        tag: tag.clone(),
-                    });
-                PersonData {
-                    id: person.id,
-                    name: person.name,
-                    role: person.role,
-                    image,
-                }
+            .filter(|person| {
+                person.kind.is_empty()
+                    || person.kind.eq_ignore_ascii_case("Actor")
+                    || person.kind.eq_ignore_ascii_case("GuestStar")
             })
-            .collect();
+            .partition(|person| person.kind.eq_ignore_ascii_case("GuestStar"));
+        let to_person = |person: BaseItemPerson| {
+            let image = person
+                .id
+                .as_ref()
+                .zip(person.primary_image_tag.as_ref())
+                .map(|(id, tag)| ImageRef {
+                    item_id: id.clone(),
+                    image_type: ImageType::Primary,
+                    index: None,
+                    tag: tag.clone(),
+                });
+            PersonData {
+                id: person.id,
+                name: person.name,
+                role: person.role,
+                image,
+            }
+        };
+        let people = people.into_iter().take(24).map(to_person).collect();
+        let guest_stars = guest_stars.into_iter().take(24).map(to_person).collect();
         Self {
             id: item.id,
             title: item.name,
@@ -1183,6 +1284,17 @@ impl From<LibraryItem> for DetailItemData {
                 .filter(|name| !name.is_empty())
                 .collect(),
             people,
+            guest_stars,
+            premiere_date: item.premiere_date.as_deref().and_then(parse_iso_date),
+            end_year: item
+                .end_date
+                .as_deref()
+                .and_then(parse_iso_date)
+                .map(|(year, _, _)| year),
+            series_continuing: item
+                .status
+                .as_deref()
+                .is_some_and(|status| status.eq_ignore_ascii_case("Continuing")),
             media_summary,
             poster,
             backdrop,
@@ -1204,6 +1316,16 @@ impl From<LibraryItem> for DetailItemData {
             streams,
         }
     }
+}
+
+/// The calendar date of an ISO 8601 timestamp such as
+/// "2025-01-31T00:00:00.0000000Z", as (year, month, day).
+fn parse_iso_date(value: &str) -> Option<(i32, u32, u32)> {
+    let mut parts = value.get(..10)?.split('-');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok().filter(|month| (1..=12).contains(month))?;
+    let day = parts.next()?.parse().ok().filter(|day| (1..=31).contains(day))?;
+    Some((year, month, day))
 }
 
 fn person_names(people: &[BaseItemPerson], kind: &str) -> Vec<String> {
@@ -1279,21 +1401,49 @@ fn stream_label(stream: &ItemMediaStream) -> String {
     {
         return display_title.to_owned();
     }
-    [
-        stream.language.as_deref().map(str::to_uppercase),
-        stream.codec.as_deref().map(str::to_uppercase),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|part| !part.is_empty())
-    .collect::<Vec<_>>()
-    .join(" - ")
+    let codec = stream
+        .codec
+        .as_deref()
+        .map(str::to_uppercase)
+        .filter(|codec| !codec.is_empty())
+        .map(|codec| match stream.channels.and_then(channel_layout) {
+            Some(layout) => format!("{codec} {layout}"),
+            None => codec,
+        });
+    [stream.language.as_deref().map(str::to_uppercase), codec]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - ")
 }
 
+/// "5.1" for six channels, as Jellyfin names audio layouts.
+fn channel_layout(channels: i32) -> Option<&'static str> {
+    Some(match channels {
+        1 => "Mono",
+        2 => "Stereo",
+        6 => "5.1",
+        7 => "6.1",
+        8 => "7.1",
+        _ => return None,
+    })
+}
+
+/// The Video line: the server's own title for the video stream ("4K HEVC
+/// HDR10", "1080p H264 SDR"), which is what Jellyfin shows, or one built
+/// from its parts.
 fn media_summary(streams: &[ItemMediaStream]) -> String {
     let video = streams
         .iter()
         .find(|stream| stream.kind.eq_ignore_ascii_case("video"));
+    if let Some(title) = video
+        .and_then(|stream| stream.display_title.as_deref())
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+    {
+        return title.to_owned();
+    }
     let audio = streams
         .iter()
         .find(|stream| stream.kind.eq_ignore_ascii_case("audio"));
@@ -1302,9 +1452,14 @@ fn media_summary(streams: &[ItemMediaStream]) -> String {
         (Some(width), _) if width > 0 => Some(format!("{width}px")),
         _ => None,
     });
+    // SDR is the unremarkable default; Jellyfin only calls out HDR kinds.
+    let range = video
+        .and_then(|stream| stream.video_range_type.clone())
+        .filter(|range| !range.is_empty() && !range.eq_ignore_ascii_case("SDR"));
     [
         resolution,
         video.and_then(|stream| stream.codec.as_deref().map(str::to_uppercase)),
+        range,
         audio.and_then(|stream| stream.codec.as_deref().map(str::to_uppercase)),
     ]
     .into_iter()
@@ -1387,6 +1542,36 @@ struct JellyfinUser {
 }
 
 #[derive(Deserialize)]
+struct SegmentsResponse {
+    #[serde(rename = "Items", default)]
+    items: Vec<SegmentItem>,
+}
+
+#[derive(Deserialize)]
+struct SegmentItem {
+    #[serde(rename = "Type", default)]
+    kind: String,
+    #[serde(rename = "StartTicks", default)]
+    start_ticks: i64,
+    #[serde(rename = "EndTicks", default)]
+    end_ticks: i64,
+}
+
+impl SegmentsResponse {
+    fn into_segments(self) -> Vec<MediaSegment> {
+        self.items
+            .into_iter()
+            .filter(|item| item.end_ticks > item.start_ticks)
+            .map(|item| MediaSegment {
+                kind: SegmentKind::from_jellyfin(&item.kind),
+                start: item.start_ticks as f64 / 10_000_000.0,
+                end: item.end_ticks as f64 / 10_000_000.0,
+            })
+            .collect()
+    }
+}
+
+#[derive(Deserialize)]
 struct ItemsResponse {
     #[serde(rename = "Items", default)]
     items: Vec<LibraryItem>,
@@ -1411,6 +1596,13 @@ impl From<ItemsResponse> for CatalogPage {
 struct LibraryItem {
     #[serde(rename = "Id")]
     id: String,
+    #[serde(rename = "PremiereDate")]
+    premiere_date: Option<String>,
+    #[serde(rename = "EndDate")]
+    end_date: Option<String>,
+    /// A series' airing state: "Continuing" or "Ended".
+    #[serde(rename = "Status")]
+    status: Option<String>,
     #[serde(rename = "Name", default)]
     name: String,
     #[serde(rename = "Type", default)]
@@ -1553,6 +1745,10 @@ struct ItemMediaStream {
     width: Option<i32>,
     #[serde(rename = "Height")]
     height: Option<i32>,
+    #[serde(rename = "VideoRangeType")]
+    video_range_type: Option<String>,
+    #[serde(rename = "Channels")]
+    channels: Option<i32>,
 }
 
 #[cfg(test)]
@@ -1685,6 +1881,40 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn media_segments_parse_into_seconds_and_drop_empty_spans() {
+        let response: SegmentsResponse = serde_json::from_str(
+            r#"{"Items":[
+                {"Id":"a","ItemId":"e","Type":"Intro","StartTicks":300000000,"EndTicks":900000000},
+                {"Id":"b","ItemId":"e","Type":"Outro","StartTicks":14000000000,"EndTicks":15000000000},
+                {"Id":"c","ItemId":"e","Type":"Recap","StartTicks":0,"EndTicks":0},
+                {"Id":"d","ItemId":"e","Type":"Something","StartTicks":1,"EndTicks":2}
+            ],"TotalRecordCount":4}"#,
+        )
+        .unwrap();
+        let segments = response.into_segments();
+        assert_eq!(
+            segments,
+            vec![
+                MediaSegment {
+                    kind: SegmentKind::Intro,
+                    start: 30.0,
+                    end: 90.0,
+                },
+                MediaSegment {
+                    kind: SegmentKind::Outro,
+                    start: 1400.0,
+                    end: 1500.0,
+                },
+                MediaSegment {
+                    kind: SegmentKind::Unknown,
+                    start: 0.0000001,
+                    end: 0.0000002,
+                },
+            ]
+        );
+    }
+
     fn fields(set: &str) -> Vec<&str> {
         set.split(',').collect()
     }
@@ -1782,6 +2012,83 @@ mod tests {
 
         assert_eq!(item.image_item_id, "series-1");
         assert_eq!(item.image_tag.as_deref(), Some("series-poster-tag"));
+    }
+
+    #[test]
+    fn series_details_read_whether_the_show_still_airs() {
+        let continuing: LibraryItem = serde_json::from_str(
+            r#"{"Id":"s","Name":"Show","Type":"Series","ProductionYear":2019,"Status":"Continuing"}"#,
+        )
+        .unwrap();
+        let continuing: DetailItemData = continuing.into();
+        assert!(continuing.series_continuing);
+        assert_eq!(continuing.end_year, None);
+
+        let ended: LibraryItem = serde_json::from_str(
+            r#"{"Id":"s","Name":"Show","Type":"Series","Status":"Ended","EndDate":"2022-05-20T00:00:00.0000000Z"}"#,
+        )
+        .unwrap();
+        let ended: DetailItemData = ended.into();
+        assert!(!ended.series_continuing);
+        assert_eq!(ended.end_year, Some(2022));
+    }
+
+    #[test]
+    fn episode_details_read_the_air_date_and_list_guest_stars_apart() {
+        let item: LibraryItem = serde_json::from_str(
+            r#"{
+                "Id":"episode-1",
+                "Name":"Pilot",
+                "Type":"Episode",
+                "PremiereDate":"2025-01-31T00:00:00.0000000Z",
+                "People":[
+                    {"Id":"a","Name":"Regular","Role":"Lead","Type":"Actor"},
+                    {"Id":"g","Name":"Visitor","Role":"Themselves","Type":"GuestStar"},
+                    {"Id":"d","Name":"Helmer","Type":"Director"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let detail: DetailItemData = item.into();
+
+        assert_eq!(detail.premiere_date, Some((2025, 1, 31)));
+        let names = |people: &[PersonData]| {
+            people.iter().map(|person| person.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&detail.people), ["Regular"]);
+        assert_eq!(names(&detail.guest_stars), ["Visitor"]);
+        assert_eq!(detail.directors, ["Helmer"]);
+
+        assert_eq!(parse_iso_date("not a date"), None);
+        assert_eq!(parse_iso_date("2025-13-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn media_info_prefers_the_servers_video_title() {
+        let streams: Vec<ItemMediaStream> = serde_json::from_str(
+            r#"[
+                {"Index":0,"Type":"Video","Codec":"hevc","Height":2160,"DisplayTitle":"4K HEVC HDR10","VideoRangeType":"HDR10"},
+                {"Index":1,"Type":"Audio","Codec":"eac3","Channels":6,"Language":"eng"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(media_summary(&streams), "4K HEVC HDR10");
+        // Without a DisplayTitle, the audio label names the channel layout.
+        assert_eq!(stream_label(&streams[1]), "ENG - EAC3 5.1");
+
+        let untitled: Vec<ItemMediaStream> = serde_json::from_str(
+            r#"[
+                {"Index":0,"Type":"Video","Codec":"h264","Height":1080,"VideoRangeType":"SDR"},
+                {"Index":1,"Type":"Audio","Codec":"aac"}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(media_summary(&untitled), "1080p • H264 • AAC");
+        let hdr: Vec<ItemMediaStream> = serde_json::from_str(
+            r#"[{"Index":0,"Type":"Video","Codec":"hevc","Height":2160,"VideoRangeType":"DOVI"}]"#,
+        )
+        .unwrap();
+        assert_eq!(media_summary(&hdr), "2160p • HEVC • DOVI");
     }
 
     #[test]

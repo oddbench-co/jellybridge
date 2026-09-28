@@ -1,0 +1,147 @@
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../components/icons.slint";
+import { PlayerIcon } from "player-icon-button.slint";
+
+// One of the player's pop-up lists (audio, subtitles, settings and its
+// submenus), in the style of Jellyfin's OSD action sheets. `selected` rows
+// get a check; `details` fill an optional right-hand column; `drills` marks
+// rows that open a submenu.
+export component PlayerMenu inherits Rectangle {
+    in property <string> heading;
+    in property <[string]> options;
+    in property <[string]> details;
+    in property <int> selected: -1;
+    in property <bool> drills;
+    in property <bool> can-go-back;
+    in property <string> footer;
+    callback picked(int);
+    callback back();
+
+    property <length> row-height: 40px;
+    property <length> list-height: min(root.options.length * root.row-height, 320px);
+
+    width: 300px;
+    height: layout.preferred-height;
+    border-radius: Theme.radius-medium;
+    background: Theme.overlay-raised;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: Theme.scrim.with-alpha(0.5);
+    clip: true;
+
+    // Swallows clicks between rows so they do not close the menu.
+    TouchArea { }
+
+    layout := VerticalLayout {
+        padding-top: 6px;
+        padding-bottom: 6px;
+
+        Rectangle {
+            height: 40px;
+            background: back-touch.has-hover && root.can-go-back ? Theme.text-bright.with-alpha(0.08) : transparent;
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                spacing: 8px;
+                if root.can-go-back: Rectangle {
+                    width: 20px;
+                    PlayerIcon {
+                        y: (parent.height - self.height) / 2;
+                        icon: Icons.arrow-back;
+                        size: 20px;
+                    }
+                }
+                Text {
+                    text: root.heading;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-subtitle;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+            back-touch := TouchArea {
+                enabled: root.can-go-back;
+                mouse-cursor: root.can-go-back ? pointer : default;
+                clicked => {
+                    root.back();
+                }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.border;
+        }
+
+        Flickable {
+            height: root.list-height;
+            viewport-height: root.options.length * root.row-height;
+
+            for option[index] in root.options: Rectangle {
+                y: index * root.row-height;
+                width: parent.width;
+                height: root.row-height;
+                background: row-touch.has-hover ? Theme.text-bright.with-alpha(0.08) : transparent;
+
+                HorizontalLayout {
+                    padding-left: 12px;
+                    padding-right: 12px;
+                    spacing: 10px;
+                    // Always laid out, so labels line up whether checked or not.
+                    Rectangle {
+                        width: 20px;
+                        PlayerIcon {
+                            y: (parent.height - self.height) / 2;
+                            icon: Icons.check;
+                            size: 20px;
+                            color: Theme.accent-bright;
+                            visible: index == root.selected;
+                        }
+                    }
+                    Text {
+                        text: option;
+                        color: Theme.text-primary;
+                        font-size: Theme.font-body-large;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.details[index] != "": Text {
+                        text: root.details[index];
+                        color: Theme.text-muted;
+                        font-size: Theme.font-body;
+                        vertical-alignment: center;
+                    }
+                    if root.drills: Rectangle {
+                        width: 20px;
+                        PlayerIcon {
+                            y: (parent.height - self.height) / 2;
+                            icon: Icons.chevron-right;
+                            size: 20px;
+                            color: Theme.text-muted;
+                        }
+                    }
+                }
+
+                row-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.picked(index);
+                    }
+                }
+            }
+        }
+
+        if root.footer != "": HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 4px;
+            Text {
+                text: root.footer;
+                color: Theme.text-faint;
+                font-size: Theme.font-caption;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

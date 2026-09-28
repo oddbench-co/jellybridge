@@ -1,4 +1,5 @@
 import { Theme } from "../../theme.slint";
+import { Icons } from "../../components/icons.slint";
 import { DetailCard } from "../../types.slint";
 import { ShelfScrollArea } from "../../components/shelf-scroll-area.slint";
 
@@ -8,6 +9,13 @@ export component EpisodeShelf inherits Rectangle {
     in property <[DetailCard]> episodes;
     in property <string> heading: "More from this season";
     in property <string> current-id;
+    // Index of `current-id` in `episodes` (-1 when absent). The shelf opens
+    // scrolled so that card is centered, as Jellyfin scrolls to it.
+    in property <int> current-index: -1;
+    // Next Up plays the episode on click, as Jellyfin's does; other uses
+    // open the episode's page.
+    in property <bool> plays: false;
+    callback play(id: string);
     callback open(id: string, kind: string);
 
     property <length> card-width: 264px;
@@ -16,8 +24,21 @@ export component EpisodeShelf inherits Rectangle {
     property <length> viewport-width: min(root.width - 96px, 1400px);
     property <length> viewport-x: (root.width - root.viewport-width) / 2;
     property <length> minimum-offset: min(0px, root.viewport-width - root.content-width);
-    property <length> offset-x: 0px;
+    out property <length> offset-x: 0px;
     animate offset-x { duration: 120ms; easing: ease-out; }
+
+    function scroll-to-current() {
+        if root.current-index >= 0 {
+            root.offset-x = clamp(
+                root.viewport-width / 2 - (root.current-index * (root.card-width + 16px) + root.card-width / 2),
+                root.minimum-offset,
+                0px
+            );
+        }
+    }
+    init => { root.scroll-to-current(); }
+    changed current-index => { root.scroll-to-current(); }
+    changed content-width => { root.scroll-to-current(); }
 
     height: root.card-height + 116px;
     background: Theme.bg;
@@ -56,7 +77,8 @@ export component EpisodeShelf inherits Rectangle {
                 background: transparent;
 
                 VerticalLayout {
-                    spacing: 7px;
+                    spacing: 4px;
+                    alignment: start;
                     Rectangle {
                         height: root.card-height;
                         background: Theme.surface;
@@ -104,17 +126,47 @@ export component EpisodeShelf inherits Rectangle {
                             }
                         }
 
+                        if root.plays && episode-touch.has-hover: Rectangle {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            width: 52px;
+                            height: 52px;
+                            border-radius: self.width / 2;
+                            background: Theme.scrim.with-alpha(0.63);
+                            Path {
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                                width: 28px;
+                                height: 28px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: Icons.play;
+                                fill: Theme.text-bright;
+                            }
+                        }
+
                         episode-touch := TouchArea {
                             mouse-cursor: pointer;
-                            clicked => { root.open(episode.id, episode.kind); }
+                            clicked => {
+                                if root.plays {
+                                    root.play(episode.id);
+                                } else {
+                                    root.open(episode.id, episode.kind);
+                                }
+                            }
                         }
                     }
                     Text {
-                        text: episode.title;
+                        text: episode.index-label == "" ? episode.title : episode.index-label + " " + episode.title;
                         color: episode.id == root.current-id ? Theme.text-primary : Theme.text-secondary;
-                        font-size: 12px;
+                        font-size: 13px;
                         font-weight: episode.id == root.current-id ? 700 : 500;
-                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                    if episode.subtitle != "": Text {
+                        text: episode.subtitle;
+                        color: Theme.text-muted;
+                        font-size: 12px;
                         overflow: elide;
                     }
                 }

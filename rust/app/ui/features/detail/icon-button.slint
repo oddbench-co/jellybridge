@@ -1,10 +1,14 @@
 import { Theme } from "../../theme.slint";
 
-// Round icon action button (play, replay, watched, favorite, info, ...).
+// Round icon action button (restart, played, favorite, info, ...), drawn from
+// the shared Material `Icons` path data. `active` marks a toggled state;
+// `active-color` tints the icon then (the favorite heart turns red).
 export component DetailIconButton inherits Rectangle {
-    in property <string> glyph;
+    in property <string> icon;
+    in property <string> label;
     in property <bool> primary: false;
     in property <bool> active: false;
+    in property <color> active-color: Theme.text-bright;
     in property <bool> enabled: true;
     in property <length> size: 44px;
     callback clicked();
@@ -21,12 +25,25 @@ export component DetailIconButton inherits Rectangle {
     border-width: 1px;
     opacity: root.enabled ? 1.0 : 0.45;
 
-    Text {
-        text: root.glyph;
-        color: root.primary ? Theme.bg : root.active ? Theme.text-bright : Theme.text-secondary;
-        font-size: root.size * 0.43;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: root.size * 0.5;
+        height: self.width;
+        viewbox-width: 24;
+        viewbox-height: 24;
+        commands: root.icon;
+        fill: root.primary ? Theme.bg
+            : root.active ? root.active-color
+            : Theme.text-secondary;
     }
     icon-touch := TouchArea {
         mouse-cursor: pointer;

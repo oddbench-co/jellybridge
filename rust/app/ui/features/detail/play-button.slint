@@ -1,0 +1,54 @@
+import { Theme } from "../../theme.slint";
+import { Icons } from "../../components/icons.slint";
+
+// Jellyfin's primary detail action: a pill with the play icon and what it
+// will do ("Resume", "Play", "Play again").
+export component DetailPlayButton inherits Rectangle {
+    in property <string> label: "Play";
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 44px;
+    width: layout.preferred-width;
+    border-radius: self.height / 2;
+    background: touch.has-hover ? Theme.accent-bright : Theme.accent;
+    opacity: root.enabled ? 1.0 : 0.45;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    layout := HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 22px;
+        spacing: 6px;
+        Rectangle {
+            width: 24px;
+            Path {
+                y: (parent.height - self.height) / 2;
+                width: 24px;
+                height: 24px;
+                viewbox-width: 24;
+                viewbox-height: 24;
+                commands: Icons.play;
+                fill: Theme.bg;
+            }
+        }
+        Text {
+            text: root.label;
+            color: Theme.bg;
+            font-size: Theme.font-subtitle;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+}

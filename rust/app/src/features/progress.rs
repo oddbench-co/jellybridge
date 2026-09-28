@@ -132,6 +132,11 @@ impl PlaybackReporter {
         })
     }
 
+    /// Whether an item is playing and has not been reported stopped yet.
+    pub fn is_active(&self) -> bool {
+        self.target.is_some()
+    }
+
     /// Playback ended or the user left the player. Clears the target so a
     /// stop is reported exactly once, and returns the final position -- which
     /// is what Jellyfin uses to decide whether the item counts as watched.

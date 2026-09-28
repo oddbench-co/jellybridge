@@ -75,16 +75,42 @@ export component JellyBridgeWindow inherits Window {
     in property <bool> detail-favorite: false;
     in property <[DetailCard]> detail-seasons;
     in property <[DetailCard]> detail-next-up;
+    in property <[DetailCard]> detail-similar;
     in property <[DetailCard]> detail-episodes;
     in property <[DetailPerson]> detail-people;
+    in property <[DetailPerson]> detail-guest-stars;
+    in property <int> detail-current-episode-index: -1;
+    in property <int> detail-unplayed-count;
     in property <[string]> detail-audio-options;
     in property <[string]> detail-subtitle-options;
     in-out property <int> detail-audio-index: 0;
     in-out property <int> detail-subtitle-index: 0;
 
     in property <image> video-frame;
-    in property <string> player-status: "Preparing playback…";
+    in property <string> player-status;
+    in property <string> player-title;
+    in property <string> player-subtitle;
+    in property <string> decode-label;
     in property <bool> paused: false;
+    in property <bool> muted: false;
+    in property <bool> player-loading: false;
+    in property <bool> buffering: false;
+    in property <string> ends-at-label;
+    in property <bool> has-previous: false;
+    in property <bool> has-next: false;
+    in property <string> skip-label;
+    in property <float> skip-target;
+    in property <bool> up-next-visible: false;
+    in property <string> up-next-title;
+    in property <string> up-next-subtitle;
+    in property <int> up-next-countdown;
+    in-out property <int> speed-index: 2;
+    in-out property <int> aspect-index: 0;
+    // Read by the idle timer: the player chrome stays up while either holds.
+    out property <bool> player-menu-open;
+    out property <bool> player-chrome-hovered;
+    // Test probe: vertical center of the player's seek bar.
+    out property <length> probe-timeline-y;
     in-out property <float> volume: 100;
     in property <bool> fullscreen-player: false;
     in property <bool> controls-visible: true;
@@ -105,6 +131,7 @@ export component JellyBridgeWindow inherits Window {
     out property <length> detail-page-height;
     out property <length> detail-page-scroll-y;
     out property <length> detail-people-scroll-x;
+    out property <length> detail-episode-shelf-scroll-x;
     out property <length> catalog-home-scroll-y;
     out property <float> video-logical-width: root.width / 1px;
     // Full window height: `player-surface` is `parent.height` and the top and
@@ -139,6 +166,12 @@ export component JellyBridgeWindow inherits Window {
     callback select-audio(int);
     callback select-subtitle(int);
     callback toggle-fullscreen();
+    callback set-speed(int);
+    callback set-aspect(int);
+    callback play-previous();
+    callback play-next();
+    callback dismiss-up-next();
+    pure callback chapter-title-at(float) -> string;
     callback player-activity();
     callback leave-player();
     callback player-key-pressed(string, bool, bool, bool) -> bool;
@@ -228,6 +261,7 @@ export component JellyBridgeWindow inherits Window {
                 changed page-height => { root.detail-page-height = self.page-height; }
                 changed page-scroll-y => { root.detail-page-scroll-y = self.page-scroll-y; }
                 changed people-scroll-x => { root.detail-people-scroll-x = self.people-scroll-x; }
+                changed episode-shelf-scroll-x => { root.detail-episode-shelf-scroll-x = self.episode-shelf-scroll-x; }
                 busy: root.busy;
                 message: root.message;
                 detail-id: root.detail-id;
@@ -266,8 +300,12 @@ export component JellyBridgeWindow inherits Window {
                 detail-favorite: root.detail-favorite;
                 detail-seasons: root.detail-seasons;
                 detail-next-up: root.detail-next-up;
+                detail-similar: root.detail-similar;
                 detail-episodes: root.detail-episodes;
                 detail-people: root.detail-people;
+                detail-guest-stars: root.detail-guest-stars;
+                detail-current-episode-index: root.detail-current-episode-index;
+                detail-unplayed-count: root.detail-unplayed-count;
                 detail-audio-options: root.detail-audio-options;
                 detail-subtitle-options: root.detail-subtitle-options;
                 detail-audio-index <=> root.detail-audio-index;
@@ -287,9 +325,25 @@ export component JellyBridgeWindow inherits Window {
 
         if root.screen == Screen.player: PlayerScreen {
             video-frame: root.video-frame;
-            title: root.detail-title;
+            title: root.player-title;
+            subtitle: root.player-subtitle;
             player-status: root.player-status;
+            decode-label: root.decode-label;
             paused: root.paused;
+            muted: root.muted;
+            loading: root.player-loading;
+            buffering: root.buffering;
+            ends-at-label: root.ends-at-label;
+            has-previous: root.has-previous;
+            has-next: root.has-next;
+            skip-label: root.skip-label;
+            skip-target: root.skip-target;
+            up-next-visible: root.up-next-visible;
+            up-next-title: root.up-next-title;
+            up-next-subtitle: root.up-next-subtitle;
+            up-next-countdown: root.up-next-countdown;
+            speed-index <=> root.speed-index;
+            aspect-index <=> root.aspect-index;
             fullscreen-player: root.fullscreen-player;
             controls-visible: root.controls-visible;
             playback-position-label: root.playback-position-label;
@@ -304,7 +358,22 @@ export component JellyBridgeWindow inherits Window {
             timeline-position <=> root.timeline-position;
             timeline-scrubbing <=> root.timeline-scrubbing;
             changed probe-played-ratio => { root.timeline-played-ratio = self.probe-played-ratio; }
+            changed probe-timeline-y => { root.probe-timeline-y = self.probe-timeline-y; }
+            changed menu-open => { root.player-menu-open = self.menu-open; }
+            changed chrome-hovered => { root.player-chrome-hovered = self.chrome-hovered; }
+            init => {
+                root.probe-timeline-y = self.probe-timeline-y;
+                root.player-menu-open = false;
+                root.player-chrome-hovered = false;
+            }
             toggle-playback => { root.toggle-playback(); }
+            toggle-mute => { root.toggle-mute(); }
+            set-speed(index) => { root.set-speed(index); }
+            set-aspect(index) => { root.set-aspect(index); }
+            play-previous => { root.play-previous(); }
+            play-next => { root.play-next(); }
+            dismiss-up-next => { root.dismiss-up-next(); }
+            chapter-title-at(time) => { return root.chapter-title-at(time); }
             toggle-fullscreen => { root.toggle-fullscreen(); }
             seek-relative(seconds) => { root.seek-relative(seconds); }
             seek-absolute(seconds) => { root.seek-absolute(seconds); }
