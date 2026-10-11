@@ -1,5 +1,9 @@
 # Embedded Player Gate Report
 
+> **Historical (Slint era).** Recorded while the UI was Slint 1.17.1. Since
+> October 2026 the UI is egui/eframe; Slint-specific findings below no longer
+> apply, the measured budgets and the mpv render contract still do.
+
 Decision: **NO-GO for browser/core implementation — certification is incomplete.**
 
 ## Required physical certifications

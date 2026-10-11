@@ -1,4 +1,11 @@
-//! Audited Slint/OpenGL/libmpv seam for the feasibility slice.
+//! The libmpv ↔ egui OpenGL seam.
+//!
+//! mpv renders into a framebuffer we own, on the window's own GL context,
+//! from inside an egui paint callback (the one place egui guarantees that
+//! context is current). Each frame that framebuffer is blitted into the
+//! window at the video's place in the layout. mpv draws only when it has a new
+//! frame or the size changed; every other repaint -- the pointer moving over
+//! the controls, the chrome fading -- is a single GPU blit.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::marker::PhantomData;
@@ -8,14 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
-use glow::HasContext;
+use eframe::glow::{self, HasContext};
 use libloading::Library;
 use libmpv2_sys as sys;
 #[cfg(target_os = "linux")]
-use raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
-use slint::{
-    BorrowedOpenGLTextureBuilder, BorrowedOpenGLTextureOrigin, GraphicsAPI, Image, PhysicalSize,
-};
+use raw_window_handle::RawDisplayHandle;
+use raw_window_handle::HasDisplayHandle;
 
 use crate::services::player::RenderClient;
 
@@ -23,8 +28,6 @@ type RedrawRequest = Arc<dyn Fn() + Send + Sync + 'static>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
-    #[error("Slint did not provide its native OpenGL context")]
-    NotNativeOpenGl,
     #[error("failed to load the platform OpenGL resolver")]
     Resolver,
     // Only constructed on Linux, where display-handle resolution can fail.
@@ -50,11 +53,11 @@ pub enum NativeDisplay {
     Wayland(*const c_void),
 }
 
-pub fn native_display(window: &slint::Window) -> Result<NativeDisplay, RenderError> {
+/// The window system display mpv needs for hardware-decode interop.
+pub fn native_display(window: &impl HasDisplayHandle) -> Result<NativeDisplay, RenderError> {
     #[cfg(target_os = "linux")]
     {
-        let window_handle = window.window_handle();
-        let handle = window_handle
+        let handle = window
             .display_handle()
             .map_err(|_| RenderError::UnsupportedDisplay)?;
         match handle.as_raw() {
@@ -75,22 +78,28 @@ pub fn native_display(window: &slint::Window) -> Result<NativeDisplay, RenderErr
     }
 }
 
+/// Where in the window, in physical pixels with a bottom-left origin (GL's),
+/// the video goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoViewport {
+    pub left: i32,
+    pub bottom: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
 pub struct RenderHost {
     mpv: Option<RawRenderContext>,
-    // Kept from `setup` so the mpv render context can be built on first use
-    // rather than at startup. Valid for the lifetime of the window.
-    display: Option<NativeDisplay>,
-    gl: Option<glow::Context>,
-    targets: Option<FrameTargets>,
-    retired: Vec<(u64, FrameTargets)>,
-    front: usize,
-    completed_frames: u64,
+    /// Valid for the lifetime of the window. `None` until the window exists,
+    /// and when it could not be resolved (mpv then renders without hardware
+    /// interop).
+    display: NativeDisplay,
+    target: Option<FrameTarget>,
+    /// Set when mpv drew the last frame, so the swap is reported for frames
+    /// mpv actually produced.
+    swap_pending: bool,
+    debug_checked: bool,
     debug_enabled_by_us: bool,
-    // Read once: this used to take the global environment lock on every frame.
-    gl_sentinel_requested: bool,
-    // Set when `render_frame` actually drew, so `finish_frame` only reports a
-    // swap for frames mpv produced.
-    rendered_this_cycle: bool,
     redraw: RedrawRequest,
     /// Fires once the render context exists, so playback can hold `loadfile`
     /// until mpv has a video output to choose a decode path against.
@@ -112,80 +121,58 @@ impl Drop for ReadySignal<'_> {
 impl RenderHost {
     pub fn new(
         core: RenderClient,
+        display: NativeDisplay,
         redraw: RedrawRequest,
         ready: tokio::sync::watch::Sender<bool>,
     ) -> Self {
         Self {
             mpv: None,
-            display: None,
-            gl: None,
-            targets: None,
-            retired: Vec::new(),
-            front: 0,
-            completed_frames: 0,
+            display,
+            target: None,
+            swap_pending: false,
+            debug_checked: false,
             debug_enabled_by_us: false,
-            gl_sentinel_requested: std::env::var_os("JELLYBRIDGE_GL_SENTINEL").is_some(),
-            rendered_this_cycle: false,
             redraw,
             ready,
             core,
         }
     }
 
-    pub fn setup(
-        &mut self,
-        graphics_api: &GraphicsAPI,
-        display: NativeDisplay,
-    ) -> Result<(), RenderError> {
-        self.teardown(false);
-        let GraphicsAPI::NativeOpenGL { get_proc_address } = graphics_api else {
-            return Err(RenderError::NotNativeOpenGl);
-        };
-        // SAFETY: Slint documents that its GL context is current throughout the
-        // rendering notifier. glow copies the resolved function pointers.
-        let mut gl =
-            unsafe { glow::Context::from_loader_function_cstr(|name| get_proc_address(name)) };
+    fn enable_debug_output(&mut self, gl: &glow::Context) {
+        if std::mem::replace(&mut self.debug_checked, true) {
+            return;
+        }
         let version = unsafe { gl.get_parameter_string(glow::VERSION) };
         let vendor = unsafe { gl.get_parameter_string(glow::VENDOR) };
         let renderer = unsafe { gl.get_parameter_string(glow::RENDERER) };
-        tracing::info!(%version, %vendor, %renderer, "Slint OpenGL context acquired");
-
-        let debug_requested = std::env::var_os("JELLYBRIDGE_GL_DEBUG").is_some();
-        if debug_requested && gl.supports_debug() {
+        tracing::info!(%version, %vendor, %renderer, "window OpenGL context");
+        if std::env::var_os("JELLYBRIDGE_GL_DEBUG").is_some() && gl.supports_debug() {
             let was_enabled = unsafe { gl.is_enabled(glow::DEBUG_OUTPUT) };
             unsafe {
                 gl.enable(glow::DEBUG_OUTPUT);
                 gl.enable(glow::DEBUG_OUTPUT_SYNCHRONOUS);
-                gl.debug_message_callback(|source, kind, id, severity, message| {
-                    tracing::warn!(source, kind, id, severity, message, "OpenGL debug message");
-                });
             }
             self.debug_enabled_by_us = !was_enabled;
         }
-
-        // The mpv render context is deliberately NOT built here. Creating it
-        // loads the GL entry points and builds mpv's whole render pipeline,
-        // which measured 310 ms of a 539 ms time-to-interactive -- all of it
-        // spent on a video path the user has not opened. `ensure_mpv` builds
-        // it on the first frame that actually needs it.
-        self.gl = Some(gl);
-        self.display = Some(display);
-        Ok(())
     }
 
     /// Builds mpv's render context the first time a frame needs it. Runs
-    /// inside the rendering notifier, so the GL context is current, which is
-    /// what `mpv_render_context_create` requires.
+    /// inside a paint callback, so the GL context is current, which is what
+    /// `mpv_render_context_create` requires.
+    ///
+    /// Deliberately lazy: creating it loads the GL entry points and builds
+    /// mpv's whole render pipeline, which measured 310 ms of a 539 ms
+    /// time-to-interactive -- all of it spent on a video path the user has
+    /// not opened.
     fn ensure_mpv(&mut self) -> Result<(), RenderError> {
         if self.mpv.is_some() {
             return Ok(());
         }
-        let display = self.display.ok_or(RenderError::NotNativeOpenGl)?;
         let started = std::time::Instant::now();
         // Released on the way out whatever happens: a machine that cannot
         // build a context must still play rather than wait forever for one.
         let _signal = ReadySignal(&self.ready);
-        let raw = RawRenderContext::create(&self.core, display, self.redraw.clone())?;
+        let raw = RawRenderContext::create(&self.core, self.display, self.redraw.clone())?;
         tracing::info!(
             ms = started.elapsed().as_secs_f64() * 1000.0,
             "mpv render context created"
@@ -206,271 +193,189 @@ impl RenderHost {
         }
     }
 
-    pub fn render_frame(&mut self, size: PhysicalSize) -> Result<Option<Image>, RenderError> {
-        let width = i32::try_from(size.width.max(1)).unwrap_or(i32::MAX);
-        let height = i32::try_from(size.height.max(1)).unwrap_or(i32::MAX);
-        self.ensure_mpv()?;
-        let gl = self.gl.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
-        let mpv = self.mpv.as_ref().ok_or(RenderError::NotNativeOpenGl)?;
+    /// Whether a render context exists whose work must be pumped.
+    pub fn is_active(&self) -> bool {
+        self.mpv.is_some()
+    }
 
+    /// Draws the current video frame into the bound framebuffer at
+    /// `viewport`. Must run with the window's GL context current.
+    pub fn draw(&mut self, gl: &glow::Context, viewport: VideoViewport) -> Result<(), RenderError> {
+        self.enable_debug_output(gl);
+        self.ensure_mpv()?;
+        let mpv = self.mpv.as_ref().expect("ensured above");
+        // The previous frame mpv drew has been presented by now: the window
+        // swaps between our paint callbacks.
+        if std::mem::take(&mut self.swap_pending) {
+            mpv.report_swap();
+        }
         // Unconditional, and before the branch below: `&&` would short-circuit
         // past it on a resize and on the first frame, and mpv's contract has no
         // exception for either. See `RawRenderContext::poll`.
         let has_new_frame = mpv.poll();
+        let width = viewport.width.max(1);
+        let height = viewport.height.max(1);
 
+        let state = GlStateGuard::capture(gl);
         let resized = self
-            .targets
+            .target
             .as_ref()
-            .is_none_or(|targets| targets.size != (width, height));
-        // A resize needs new targets, and the first frame has nothing on
-        // screen yet; otherwise draw only when mpv says it has a new frame and
-        // hand back the texture already being displayed when it does not.
-        if !resized && self.completed_frames > 0 && !has_new_frame {
-            self.rendered_this_cycle = false;
-            let target = &self.targets.as_ref().expect("targets initialized").frames[self.front];
-            let image = unsafe {
-                BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                    target.texture.0,
-                    [width as u32, height as u32].into(),
-                )
-            }
-            .origin(BorrowedOpenGLTextureOrigin::BottomLeft)
-            .build();
-            return Ok(Some(image));
-        }
-        self.rendered_this_cycle = true;
-
+            .is_none_or(|target| target.size != (width, height));
         if resized {
-            let new_targets = FrameTargets::create(gl, width, height)?;
-            if let Some(old_targets) = self.targets.replace(new_targets) {
-                // The old image can remain cached through this render. Release it
-                // only after Slint has completed a cycle with the replacement.
-                self.retired.push((self.completed_frames + 1, old_targets));
+            if let Some(old) = self.target.take() {
+                old.destroy(gl);
             }
-            self.front = 0;
-        } else {
-            self.front ^= 1;
+            self.target = Some(FrameTarget::create(gl, width, height)?);
+        }
+        let target = self.target.as_ref().expect("created above");
+        if resized || has_new_frame {
+            unsafe {
+                gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
+                gl.viewport(0, 0, width, height);
+                gl.disable(glow::SCISSOR_TEST);
+                gl.clear_color(0.0, 0.0, 0.0, 1.0);
+                gl.clear(glow::COLOR_BUFFER_BIT);
+            }
+            mpv.render(target.framebuffer.0.get() as i32, width, height)?;
+            self.swap_pending = true;
         }
 
-        let target = &self.targets.as_ref().expect("targets initialized").frames[self.front];
-        let _state = GlStateGuard::capture(gl);
+        // Copy into the window. The guard captured the framebuffer egui is
+        // drawing into, and restores everything when it drops.
         unsafe {
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
-            gl.viewport(0, 0, width, height);
             gl.disable(glow::SCISSOR_TEST);
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(target.framebuffer));
+            gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, state.draw_framebuffer);
+            gl.blit_framebuffer(
+                0,
+                0,
+                width,
+                height,
+                viewport.left,
+                viewport.bottom,
+                viewport.left + width,
+                viewport.bottom + height,
+                glow::COLOR_BUFFER_BIT,
+                glow::NEAREST,
+            );
+            // mpv leaves its alpha channel unspecified, and the window's alpha
+            // reaches the compositor: without this the desktop showed through
+            // the video. Only alpha is written, only inside the video.
+            gl.enable(glow::SCISSOR_TEST);
+            gl.scissor(viewport.left, viewport.bottom, width, height);
+            gl.color_mask(false, false, false, true);
             gl.clear_color(0.0, 0.0, 0.0, 1.0);
             gl.clear(glow::COLOR_BUFFER_BIT);
         }
-        mpv.render(target.framebuffer.0.get() as i32, width, height)?;
-
-        let image = unsafe {
-            BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(
-                target.texture.0,
-                [width as u32, height as u32].into(),
-            )
-        }
-        .origin(BorrowedOpenGLTextureOrigin::BottomLeft)
-        .build();
-        Ok(Some(image))
+        Ok(())
     }
 
-    pub fn finish_frame(&mut self, window_size: PhysicalSize) {
-        if self.rendered_this_cycle
-            && let Some(mpv) = self.mpv.as_ref()
-        {
-            mpv.report_swap();
-        }
-        self.completed_frames = self.completed_frames.saturating_add(1);
-        if self.completed_frames == 1
-            && let Some(targets) = self.targets.as_ref()
-        {
-            tracing::info!(
-                width = targets.size.0,
-                height = targets.size.1,
-                "libmpv rendered into a same-context borrowed texture"
-            );
-        }
-        if let Some(gl) = self.gl.as_ref() {
-            let mut retained = Vec::new();
-            for (release_after, targets) in self.retired.drain(..) {
-                if release_after <= self.completed_frames {
-                    targets.destroy(gl);
-                } else {
-                    retained.push((release_after, targets));
-                }
-            }
-            self.retired = retained;
-            if self.gl_sentinel_requested
-                && (self.completed_frames == 1 || self.completed_frames.is_multiple_of(120))
-            {
-                verify_magenta_sentinel(gl, window_size);
-            }
-        }
-    }
-
-    /// Must be called from RenderingTeardown while Slint's GL context is current.
-    /// If Slint still owns a borrowed image during an unexpected context loss,
-    /// the dying context reclaims texture/FBO storage instead of us deleting
-    /// objects that the scene can still name.
-    pub fn teardown(&mut self, image_cleared: bool) {
-        let had_resources = self.mpv.is_some() || self.gl.is_some();
-        self.display = None;
+    /// Frees mpv's render context and our framebuffer. Must run with the
+    /// window's GL context current (eframe's `on_exit` provides it).
+    pub fn teardown(&mut self, gl: Option<&glow::Context>) {
+        let had_resources = self.mpv.is_some() || self.target.is_some();
         self.mpv.take(); // unregister callback and free mpv GL resources first
-        if let Some(gl) = self.gl.take() {
-            if image_cleared {
-                if let Some(targets) = self.targets.take() {
-                    targets.destroy(&gl);
-                }
-                for (_, targets) in self.retired.drain(..) {
-                    targets.destroy(&gl);
-                }
-            } else {
-                // FrameTargets intentionally has no Drop implementation. Slint
-                // is tearing down this exact context, which releases its GL
-                // objects after the notifier returns. A new context replaces
-                // the stale component image in BeforeRendering before drawing.
-                self.targets.take();
-                self.retired.clear();
-                tracing::warn!(
-                    "borrowed image was still set during context loss; deferred texture reclamation to the GL context"
-                );
+        // Without a context it is being destroyed, which releases the objects.
+        if let (Some(target), Some(gl)) = (self.target.take(), gl) {
+            target.destroy(gl);
+        }
+        if let Some(gl) = gl
+            && self.debug_enabled_by_us
+        {
+            unsafe {
+                gl.disable(glow::DEBUG_OUTPUT_SYNCHRONOUS);
+                gl.disable(glow::DEBUG_OUTPUT);
             }
-            if self.debug_enabled_by_us {
-                unsafe {
-                    gl.disable(glow::DEBUG_OUTPUT_SYNCHRONOUS);
-                    gl.disable(glow::DEBUG_OUTPUT);
-                }
-                self.debug_enabled_by_us = false;
-            }
-            // glow's Drop implementation unregisters its debug callback.
-            drop(gl);
+            self.debug_enabled_by_us = false;
         }
         if had_resources {
-            tracing::info!("libmpv render context and OpenGL targets torn down");
+            tracing::info!("libmpv render context and OpenGL target torn down");
         }
     }
 }
 
 impl Drop for RenderHost {
     fn drop(&mut self) {
-        // This is only a fallback. A passing gate always reaches RenderingTeardown
-        // while the GL context is current.
-        if self.mpv.is_some() || self.targets.is_some() || !self.retired.is_empty() {
-            tracing::error!("render host dropped without a complete RenderingTeardown");
+        // Only a fallback: a clean exit tears down in `on_exit` with the GL
+        // context current.
+        if self.mpv.is_some() || self.target.is_some() {
+            tracing::error!("render host dropped without a teardown");
         }
     }
 }
 
+/// mpv's render target: one texture-backed framebuffer at the video's size.
+/// One is enough -- the blit into the window happens before this callback
+/// returns, so nothing samples it while mpv draws the next frame.
 struct FrameTarget {
+    size: (i32, i32),
     texture: glow::NativeTexture,
     framebuffer: glow::NativeFramebuffer,
 }
 
-struct FrameTargets {
-    size: (i32, i32),
-    frames: [FrameTarget; 2],
-}
-
-impl FrameTargets {
+impl FrameTarget {
     fn create(gl: &glow::Context, width: i32, height: i32) -> Result<Self, RenderError> {
-        let _state = GlStateGuard::capture(gl);
-        let first = create_frame_target(gl, width, height)?;
-        let second = match create_frame_target(gl, width, height) {
-            Ok(target) => target,
-            Err(error) => {
-                destroy_frame_target(gl, first);
-                return Err(error);
+        unsafe {
+            let texture = gl
+                .create_texture()
+                .map_err(|error| RenderError::OpenGl(error.to_owned()))?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+            for (parameter, value) in [
+                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
+                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
+                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
+                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
+            ] {
+                gl.tex_parameter_i32(glow::TEXTURE_2D, parameter, value as i32);
             }
-        };
-        Ok(Self {
-            size: (width, height),
-            frames: [first, second],
-        })
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                width,
+                height,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(None),
+            );
+            let framebuffer = match gl.create_framebuffer() {
+                Ok(framebuffer) => framebuffer,
+                Err(error) => {
+                    gl.delete_texture(texture);
+                    return Err(RenderError::OpenGl(error));
+                }
+            };
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            gl.framebuffer_texture_2d(
+                glow::FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(texture),
+                0,
+            );
+            let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
+            if status != glow::FRAMEBUFFER_COMPLETE {
+                gl.delete_framebuffer(framebuffer);
+                gl.delete_texture(texture);
+                return Err(RenderError::OpenGl(format!(
+                    "incomplete video framebuffer 0x{status:04x}"
+                )));
+            }
+            Ok(Self {
+                size: (width, height),
+                texture,
+                framebuffer,
+            })
+        }
     }
 
     fn destroy(self, gl: &glow::Context) {
         let _state = GlStateGuard::capture(gl);
-        for target in self.frames {
-            destroy_frame_target(gl, target);
+        unsafe {
+            gl.delete_framebuffer(self.framebuffer);
+            gl.delete_texture(self.texture);
         }
-    }
-}
-
-fn create_frame_target(
-    gl: &glow::Context,
-    width: i32,
-    height: i32,
-) -> Result<FrameTarget, RenderError> {
-    unsafe {
-        let texture = gl
-            .create_texture()
-            .map_err(|error| RenderError::OpenGl(error.to_owned()))?;
-        gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MIN_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_MAG_FILTER,
-            glow::LINEAR as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_S,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_parameter_i32(
-            glow::TEXTURE_2D,
-            glow::TEXTURE_WRAP_T,
-            glow::CLAMP_TO_EDGE as i32,
-        );
-        gl.tex_image_2d(
-            glow::TEXTURE_2D,
-            0,
-            glow::RGBA8 as i32,
-            width,
-            height,
-            0,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelUnpackData::Slice(None),
-        );
-        let framebuffer = match gl.create_framebuffer() {
-            Ok(framebuffer) => framebuffer,
-            Err(error) => {
-                gl.delete_texture(texture);
-                return Err(RenderError::OpenGl(error));
-            }
-        };
-        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-        gl.framebuffer_texture_2d(
-            glow::FRAMEBUFFER,
-            glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D,
-            Some(texture),
-            0,
-        );
-        let status = gl.check_framebuffer_status(glow::FRAMEBUFFER);
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            gl.delete_framebuffer(framebuffer);
-            gl.delete_texture(texture);
-            return Err(RenderError::OpenGl(format!(
-                "incomplete video framebuffer 0x{status:04x}"
-            )));
-        }
-        Ok(FrameTarget {
-            texture,
-            framebuffer,
-        })
-    }
-}
-
-fn destroy_frame_target(gl: &glow::Context, target: FrameTarget) {
-    unsafe {
-        gl.delete_framebuffer(target.framebuffer);
-        gl.delete_texture(target.texture);
     }
 }
 
@@ -568,7 +473,7 @@ impl RawRenderContext {
                             // `mpv_render_context_update` it needs is lost
                             // until some unrelated repaint happens. The cost of
                             // being early here is a redundant repaint, which
-                            // Slint coalesces.
+                            // egui coalesces.
                             wake_queued.store(false, Ordering::Release);
                             redraw();
                         }
@@ -945,47 +850,4 @@ unsafe fn set_enabled(gl: &glow::Context, capability: u32, enabled: bool) {
     } else {
         unsafe { gl.disable(capability) };
     }
-}
-
-fn verify_magenta_sentinel(gl: &glow::Context, size: PhysicalSize) {
-    const SAMPLE_EDGE: i32 = 32;
-    if size.width < SAMPLE_EDGE as u32 || size.height < SAMPLE_EDGE as u32 {
-        return;
-    }
-    let _state = GlStateGuard::capture(gl);
-    let mut top = vec![0_u8; SAMPLE_EDGE as usize * SAMPLE_EDGE as usize * 4];
-    let mut bottom = vec![0_u8; SAMPLE_EDGE as usize * SAMPLE_EDGE as usize * 4];
-    unsafe {
-        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
-        gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
-        gl.read_pixels(
-            0,
-            size.height as i32 - SAMPLE_EDGE,
-            SAMPLE_EDGE,
-            SAMPLE_EDGE,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut top)),
-        );
-        gl.read_pixels(
-            0,
-            0,
-            SAMPLE_EDGE,
-            SAMPLE_EDGE,
-            glow::RGBA,
-            glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut bottom)),
-        );
-    }
-    if !contains_magenta(&top) && !contains_magenta(&bottom) {
-        tracing::error!("post-mpv Slint sentinel did not survive GL state restoration");
-    }
-}
-
-fn contains_magenta(bytes: &[u8]) -> bool {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .any(|pixel| pixel[0] > 180 && pixel[1] < 100 && pixel[2] > 180 && pixel[3] > 180)
 }

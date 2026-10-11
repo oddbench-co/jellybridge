@@ -7,40 +7,30 @@ license.workspace = true
 publish = false
 build = "build.rs"
 
-[features]
-default = ["renderer-femtovg"]
-renderer-femtovg = ["slint/renderer-femtovg"]
-renderer-skia-opengl = ["slint/renderer-skia-opengl"]
-
 [dependencies]
+eframe = { version = "=0.36.2", default-features = false, features = ["glow", "wayland", "x11", "accesskit", "default_fonts"] }
+egui = "=0.36.2"
 futures-util = "=0.3.31"
 getrandom = { version = "=0.3.4", features = ["std"] }
-glow = "=0.18.0"
 http-body-util = "=0.1.5"
 hyper = { version = "=1.11.1", default-features = false, features = ["http1", "server"] }
 hyper-util = { version = "=0.1.20", default-features = false, features = ["tokio"] }
-i-slint-backend-winit = { version = "=1.17.1", default-features = false }
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 libc = "=0.2.189"
 libloading = "=0.8.9"
 libmpv2 = "=6.0.0"
 libmpv2-sys = "=4.0.1"
 raw-window-handle = "=0.6.2"
 reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "json", "query", "stream"] }
+resvg = { version = "=0.47.0", default-features = false }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.145"
-slint = { version = "=1.17.1", default-features = false, features = ["std", "backend-winit", "raw-window-handle-06", "accessibility", "compat-1-2"] }
-thiserror = "=2.0.17"
+thiserror = "=2.0.21"
 tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "io-util"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
 tracing = "=0.1.41"
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "env-filter"] }
 url = "=2.5.7"
-
-[build-dependencies]
-slint-build = "=1.17.1"
-
-[dev-dependencies]
-slint = { version = "=1.17.1", default-features = false, features = ["renderer-software"] }
 
 [package.metadata.packager]
 product-name = "JellyBridge"

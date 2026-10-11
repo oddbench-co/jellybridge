@@ -2,12 +2,12 @@
 
 ## Project Structure & Module Organization
 
-JellyBridge is a Rust + Slint desktop Jellyfin client with embedded libmpv
-playback. The single production crate lives in `rust/app`:
+JellyBridge is a Rust + egui (eframe) desktop Jellyfin client with embedded
+libmpv playback. The single production crate lives in `rust/app`:
 
 - `src/main.rs` — composition root only: startup, dependency construction,
-  `ui::connect`, `window.run()`, and the ordered teardown.
-- `src/app.rs` — `AppState`/`AppContext`. Must not name any Slint type; the
+  `eframe::run_native` with the glow renderer, and the ordered teardown.
+- `src/app.rs` — `AppState`/`AppContext`. Must not name any UI type; the
   window is reached through the opaque `ui::UiHandle`.
 - `src/api.rs` — the one Jellyfin HTTP client (browsing, auth, images).
 - `src/features/` — use-cases by feature: `auth`, `catalog`, `detail`
@@ -15,20 +15,24 @@ playback. The single production crate lives in `rust/app`:
 - `src/services/` — infrastructure: `artwork` (disk cache), `session`
   (hardened session/settings stores), `playback` (PlaybackInfo + subtitle
   materialization), `player` (mpv worker thread), `proxy` (token-hiding
-  loopback proxy), `render` (mpv↔Slint OpenGL bridge).
-- `src/ui/` — the only module that imports `slint`: `UiHandle` (the single
-  event-loop funnel), callback wiring, presenters, formatters, the in-memory
-  image cache, and the window tests.
-- `ui/` — Slint markup: `app-window.slint` (composition root and the
-  Rust-facing property/callback boundary), `theme.slint` (design tokens),
-  `types.slint` (boundary structs/enums), `components/` (genuinely shared),
-  `features/<feature>/` (screens and feature-local components).
+  loopback proxy), `render` (mpv renders into its own framebuffer inside an
+  egui paint callback and is blitted into the window).
+- `src/ui/` — the only module that knows egui: `UiHandle` (queues closures
+  over `UiState` and wakes the window), the view models and presenters per
+  screen, `app.rs` (the `eframe::App`: drains updates, draws, dispatches
+  `UiAction`s to features), `theme.rs` (design tokens and fonts),
+  `widgets.rs` (shared drawing), `images.rs` (artwork pipeline and texture
+  LRU), `icons.rs` (Material icons rasterized per size), and
+  `input_script.rs` (debug builds: scripted input for driving the real app).
 
-Architecture rules: Rust owns business/application state; Slint owns
-presentation and ephemeral UI state; use `Theme` tokens instead of literal
-colors; use precise `in`/`out`/`in-out` property directions; keep blocking
-work off the UI thread; update Slint models incrementally (`patch_rows`)
-rather than replacing them when identity is unchanged.
+Architecture rules: Rust owns all state, as plain view-model structs in
+`UiState`; drawing reads them each frame and records `UiAction`s instead of
+calling features directly, so draw code is testable without a server; use the
+`theme` tokens instead of literal colors; keep blocking work (I/O, image
+decode) off the UI thread; request repaints only when something changes
+(`UiHandle::update`, timers via `request_repaint_after`) so an idle window
+costs no CPU; draw only what is visible (`show_rows`, shelf culling) and
+request artwork only for what is drawn.
 
 ## Build, Test, and Development Commands
 
@@ -45,7 +49,7 @@ at the local libmpv (Homebrew on macOS):
 ## Coding Style & Naming Conventions
 
 Standard rustfmt style, edition 2024, toolchain pinned in
-`rust-toolchain.toml`. Slint files use kebab-case file and property names.
+`rust-toolchain.toml`.
 Errors are `thiserror` enums; avoid silently swallowing errors in new code.
 Tests live in `#[cfg(test)]` modules next to the code they cover; pure logic
 belongs in `features/`/`services/` where it is testable without a window.

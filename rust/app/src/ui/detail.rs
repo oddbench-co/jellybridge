@@ -1,170 +1,127 @@
-//! Detail screen: callback wiring, presentation, formatters, and artwork.
+//! Detail screen: presentation into the view model, drawing, formatters.
 
-use slint::{Image, Model, ModelRc, SharedString, VecModel};
+use egui::{Align2, Color32, Id, Rect, ScrollArea, Sense, Ui, pos2, vec2};
 
-use super::{
-    DetailCard, DetailPerson, JellyBridgeWindow, cached_image, format_playback_time, image_key,
-    patch_rows, primary_card_image, store_cached_image,
-};
+use super::app::UiAction;
+use super::icons::{self, Icon};
+use super::images::{Art, ImageCache};
+use super::top_bar;
+use super::widgets::{self, RoundIconButton, Shelf};
+use super::{Screen, UiState, detail_art, format_playback_time, primary_card_image, theme};
 use crate::app::AppContext;
-use crate::features;
 use crate::features::detail::{
-    DetailItemData, DetailKind, DetailMessage, DetailPageData, DetailTarget, ImageRef, ImageType,
-    StreamData,
+    DetailItemData, DetailKind, DetailPageData, ImageType, PersonData, StreamData,
 };
 use crate::features::playback::clean_preference;
-use crate::services::artwork::{existing_cached_image, image_cache_path, write_cached_image};
 
-pub fn connect(window: &JellyBridgeWindow, context: &AppContext) {
-    let ctx = context.clone();
-    window.on_open_detail(move |id, kind| {
-        features::detail::start_detail(
-            &ctx,
-            DetailTarget::new(id.as_str(), DetailKind::from_jellyfin(kind.as_str())),
-        );
-    });
-
-    let ctx = context.clone();
-    window.on_play_current(move || features::playback::start_playback(&ctx, false));
-
-    let ctx = context.clone();
-    window.on_play_current_from_start(move || features::playback::start_playback(&ctx, true));
-
-    window.on_open_external_url(move |url| open_in_browser(url.as_str()));
-
-    let ctx = context.clone();
-    window.on_play_detail(move |id| {
-        let item = ctx
-            .state
-            .lock()
-            .ok()
-            .and_then(|state| state.detail.item_by_id(id.as_str()));
-        if let Some(item) = item {
-            features::playback::start_playback_item(&ctx, item, false);
-        }
-    });
-
-    let ctx = context.clone();
-    window.on_set_detail_watched(move |id, watched| {
-        features::detail::update_detail_mutation(
-            &ctx,
-            DetailMessage::SetWatched {
-                id: id.as_str().to_owned(),
-                watched,
-            },
-        );
-    });
-
-    let ctx = context.clone();
-    window.on_set_detail_favorite(move |id, favorite| {
-        features::detail::update_detail_mutation(
-            &ctx,
-            DetailMessage::SetFavorite {
-                id: id.as_str().to_owned(),
-                favorite,
-            },
-        );
-    });
-
-    let ctx = context.clone();
-    window.on_detail_audio_selected(move |index| {
-        features::detail::select_detail_track(&ctx, index, true);
-    });
-
-    let ctx = context.clone();
-    window.on_detail_subtitle_selected(move |index| {
-        features::detail::select_detail_track(&ctx, index, false);
-    });
+/// What the detail page shows. `Default` is the blank page: resetting is
+/// replacing the whole value, so nothing can be left behind from the previous
+/// item -- the class of bug that made opening a second movie flash the first
+/// one's poster, tagline and cast.
+#[derive(Default)]
+pub struct DetailVm {
+    pub id: String,
+    pub title: String,
+    pub heading: String,
+    pub subheading: String,
+    pub ends_at: String,
+    pub tags: String,
+    pub links: Vec<(String, String)>,
+    pub director: String,
+    pub writers: String,
+    pub star_rating: f32,
+    pub critic_rating: Option<i32>,
+    pub subtitle: String,
+    pub overview: String,
+    pub artwork: Option<Art>,
+    pub backdrop: Option<Art>,
+    pub logo: Option<Art>,
+    pub kind: Option<DetailKind>,
+    pub tagline: String,
+    pub genres: String,
+    pub studios: String,
+    pub media_info: String,
+    pub series_id: String,
+    pub series_summary: String,
+    pub play_context: String,
+    pub season_id: String,
+    pub season_name: String,
+    pub season_summary: String,
+    pub play_label: String,
+    pub progress: f32,
+    pub progress_label: String,
+    pub playable: bool,
+    pub watched: bool,
+    pub favorite: bool,
+    pub seasons: Vec<DetailCard>,
+    pub next_up: Vec<DetailCard>,
+    pub similar: Vec<DetailCard>,
+    pub episodes: Vec<DetailCard>,
+    pub people: Vec<DetailPerson>,
+    pub guest_stars: Vec<DetailPerson>,
+    /// Position of this episode among `episodes`; its shelf opens there.
+    pub current_episode_index: Option<usize>,
+    /// Unwatched episodes left in a series or season, for the poster badge.
+    pub unplayed_count: i32,
+    pub audio_options: Vec<String>,
+    pub subtitle_options: Vec<String>,
+    pub audio_index: i32,
+    pub subtitle_index: i32,
 }
 
-/// Blanks every property the detail page renders.
-///
-/// This must cover *everything* on the page. Anything left behind is shown
-/// against the next item, which is what made opening a second movie flash the
-/// first one's poster, tagline and cast for a few hundred milliseconds.
-pub(super) fn clear_detail_page(window: &JellyBridgeWindow) {
-    window.set_detail_id("".into());
-    window.set_detail_title("".into());
-    window.set_detail_heading("".into());
-    window.set_detail_subheading("".into());
-    window.set_detail_ends_at("".into());
-    window.set_detail_tags("".into());
-    window.set_detail_links(ModelRc::new(VecModel::default()));
-    window.set_detail_director("".into());
-    window.set_detail_writers("".into());
-    window.set_detail_star_rating(0.0);
-    window.set_detail_critic_rating(-1);
-    window.set_detail_series_id("".into());
-    window.set_detail_series_name("".into());
-    window.set_detail_season_id("".into());
-    window.set_detail_season_name("".into());
-    window.set_detail_series_summary("".into());
-    window.set_detail_play_context("".into());
-    window.set_detail_season_summary("".into());
-    window.set_detail_play_label("".into());
-    window.set_detail_progress(0.0);
-    window.set_detail_progress_label("".into());
-    window.set_detail_seasons(ModelRc::new(VecModel::from(Vec::new())));
-    window.set_detail_episodes(ModelRc::new(VecModel::from(Vec::new())));
-    window.set_detail_next_up(ModelRc::new(VecModel::<DetailCard>::default()));
-    window.set_detail_similar(ModelRc::new(VecModel::<DetailCard>::default()));
-    window.set_detail_people(ModelRc::new(VecModel::from(Vec::new())));
-    window.set_detail_guest_stars(ModelRc::new(VecModel::from(Vec::new())));
-    window.set_detail_current_episode_index(-1);
-    window.set_detail_unplayed_count(0);
-    // The rest were missing from the old reset, and they are the loudest ones
-    // on screen: the hero images, the synopsis and the metadata lines.
-    window.set_detail_artwork(Image::default());
-    window.set_detail_backdrop(Image::default());
-    window.set_detail_logo(Image::default());
-    window.set_detail_overview("".into());
-    window.set_detail_tagline("".into());
-    window.set_detail_genres("".into());
-    window.set_detail_studios("".into());
-    window.set_detail_media_info("".into());
-    window.set_detail_subtitle("".into());
-    window.set_detail_playable(false);
-    window.set_detail_watched(false);
-    window.set_detail_favorite(false);
-    window.set_detail_audio_options(ModelRc::new(VecModel::<SharedString>::default()));
-    window.set_detail_subtitle_options(ModelRc::new(VecModel::<SharedString>::default()));
-    window.set_detail_audio_index(-1);
-    window.set_detail_subtitle_index(-1);
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetailCard {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub overview: String,
+    pub kind: &'static str,
+    pub art: Option<Art>,
+    pub watched: bool,
+    pub favorite: bool,
+    pub progress: f32,
+    pub unplayed_count: i32,
+    pub rating: f32,
+    pub ends_at: String,
+    pub index_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetailPerson {
+    pub name: String,
+    pub role: String,
+    pub art: Option<Art>,
 }
 
 /// Switches to an empty detail page while the real one loads.
-///
-/// `DetailMessage::Open` already drops the outgoing page from the state
-/// machine, but nothing told the window, so it kept rendering the previous
-/// item until the fetch landed.
 pub fn present_loading(context: &AppContext) {
     let can_go_back = context
         .state
         .lock()
         .map(|state| state.detail.snapshot().can_go_back)
         .unwrap_or(false);
-    context.ui.update(move |window| {
-        window.set_screen(super::Screen::Detail);
-        window.set_busy(true);
-        window.set_message("".into());
-        window.set_can_go_back(can_go_back);
-        clear_detail_page(window);
+    context.ui.update(move |state| {
+        state.screen = Screen::Detail;
+        state.busy = true;
+        state.message.clear();
+        state.can_go_back = can_go_back;
+        state.detail = DetailVm::default();
     });
 }
 
-/// Presents the current detail page and kicks off its artwork loading.
-pub fn present(context: &AppContext, generation: u64) {
-    present_page(context, generation, false);
+/// Presents the current detail page.
+pub fn present(context: &AppContext, _generation: u64) {
+    present_page(context, false);
 }
 
 /// Re-presents the page after a background refresh. Leaves the screen, busy
 /// state, and message alone, so a refresh never pulls the user off the
 /// player or clears a status line.
-pub fn present_refresh(context: &AppContext, generation: u64) {
-    present_page(context, generation, true);
+pub fn present_refresh(context: &AppContext, _generation: u64) {
+    present_page(context, true);
 }
 
-fn present_page(context: &AppContext, generation: u64, background: bool) {
+fn present_page(context: &AppContext, background: bool) {
     let (page, error, can_go_back, tracks) = match context.state.lock() {
         Ok(state) => {
             let snapshot = state.detail.snapshot();
@@ -181,243 +138,1802 @@ fn present_page(context: &AppContext, generation: u64, background: bool) {
         if background {
             return;
         }
-        context.ui.update(move |window| {
-            window.set_screen(super::Screen::Detail);
-            window.set_busy(false);
-            window.set_message(error.into());
-            window.set_can_go_back(can_go_back);
-            clear_detail_page(window);
+        context.ui.update(move |state| {
+            state.screen = Screen::Detail;
+            state.busy = false;
+            state.message = error;
+            state.can_go_back = can_go_back;
+            state.detail = DetailVm::default();
         });
         return;
     };
-    let detail_id = page.item.id.clone();
-    let title = page.item.title.clone();
-    let subtitle = detail_info_line(&page);
-    let unplayed_count = matches!(page.item.kind, DetailKind::Series | DetailKind::Season)
-        .then_some(page.item.unplayed_count)
-        .flatten()
-        .unwrap_or(0);
-    let overview = page.item.overview.clone();
-    let kind = to_ui_kind(page.item.kind);
-    let tagline = page.item.tagline.clone();
-    let genres = page.item.genres.join(" • ");
-    let studios = page.item.studios.join(" • ");
-    let media_info = page.item.media_summary.clone();
-    let series_id = page.item.series_id.clone().unwrap_or_default();
-    let series_name = page.item.series_name.clone().unwrap_or_default();
-    let season_id = (page.item.kind == DetailKind::Episode)
-        .then(|| page.item.season_id.clone())
-        .flatten()
-        .unwrap_or_default();
-    let season_name = (page.item.kind == DetailKind::Episode)
-        .then(|| page.item.season_name.clone())
-        .flatten()
-        .unwrap_or_default();
-    let playable = page.item.playable || !page.episodes.is_empty();
-    let watched = page.item.watched;
-    let favorite = page.item.favorite;
-    let series_summary = detail_series_summary(&page);
-    let season_summary = detail_season_summary(&page);
-    let play_label = page.primary_play_label().unwrap_or_default().to_owned();
-    let play_context = detail_series_play_context(&page);
-    let progress_item = if page.item.kind == DetailKind::Series {
-        page.play_target().unwrap_or(&page.item)
-    } else {
-        &page.item
-    };
-    let progress = progress_item.progress;
-    let progress_label = detail_progress_label(progress_item);
     let message = page.children_error.clone().unwrap_or(error);
-    let seasons = page.seasons.clone();
-    let episodes = page.episodes.clone();
-    let next_up = (page.item.kind == DetailKind::Series)
-        .then(|| page.play_target().cloned())
-        .flatten();
-    let people = page.item.people.clone();
-    let similar = page.similar.clone();
-    let guest_stars = page.item.guest_stars.clone();
-    let current_episode_index = current_episode_index(&page);
-    let audio_options = page
-        .item
+    let vm = detail_vm(&page, &tracks);
+    context.ui.update(move |state| {
+        if !background {
+            state.screen = Screen::Detail;
+            state.busy = false;
+            state.message = message;
+        }
+        state.can_go_back = can_go_back;
+        state.detail = vm;
+    });
+}
+
+/// Everything the page draws, derived from the loaded page in one place.
+fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -> DetailVm {
+    let item = &page.item;
+    let episode_page = item.kind == DetailKind::Episode;
+    let progress_item = if item.kind == DetailKind::Series {
+        page.play_target().unwrap_or(item)
+    } else {
+        item
+    };
+    let (heading, subheading) = detail_headings(item);
+    // `next_up` is only shown on series pages, so only they carry it.
+    let next_up = (item.kind == DetailKind::Series)
+        .then(|| page.play_target())
+        .flatten()
+        .map(to_next_up_card)
+        .into_iter()
+        .collect();
+    let audio_options = item
         .streams
         .iter()
         .filter(|stream| stream.kind.eq_ignore_ascii_case("audio"))
         .enumerate()
         .map(|(index, stream)| detail_stream_label(stream, "Audio", index))
-        .collect::<Vec<_>>();
+        .collect();
     let subtitle_options = std::iter::once("Off".to_owned())
         .chain(
-            page.item
-                .streams
+            item.streams
                 .iter()
                 .filter(|stream| stream.kind.eq_ignore_ascii_case("subtitle"))
                 .enumerate()
                 .map(|(index, stream)| detail_stream_label(stream, "Subtitle", index)),
         )
-        .collect::<Vec<_>>();
-    let audio_index = tracks.audio_index;
-    let subtitle_index = tracks.subtitle_index;
-    let (heading, subheading) = detail_headings(&page.item);
-    let ends_at = ends_at_label(&page.item);
-    let tags_line = page.item.tags.join(", ");
-    let links = page.item.external_urls.clone();
-    let director = page.item.directors.join(", ");
-    let writers_line = page.item.writers.join(", ");
-    let star_rating = page.item.community_rating.unwrap_or(0.0);
-    let critic_rating = page
-        .item
-        .critic_rating
-        .map(|value| value.round() as i32)
-        .unwrap_or(-1);
-    let hero_poster_key = primary_card_image(&page.item).map(image_key);
-    let hero_backdrop_key = page.item.backdrop.as_ref().map(image_key);
-    let hero_logo_key = page.item.logo.as_ref().map(image_key);
-    context.ui.update(move |window| {
-        let hero_image = |key: Option<String>| {
-            key.as_deref()
-                .and_then(cached_image)
-                .unwrap_or_default()
-        };
-        let seasons = seasons.iter().map(to_detail_card).collect::<Vec<_>>();
-        let episodes = episodes.iter().map(to_detail_card).collect::<Vec<_>>();
-        let people = people.iter().map(to_detail_person).collect::<Vec<_>>();
-        let guest_stars = guest_stars.iter().map(to_detail_person).collect::<Vec<_>>();
-        if !background {
-            window.set_screen(super::Screen::Detail);
-            window.set_busy(false);
-            window.set_message(message.into());
-        }
-        window.set_detail_id(detail_id.into());
-        window.set_detail_title(title.into());
-        window.set_detail_heading(heading.into());
-        window.set_detail_subheading(subheading.into());
-        window.set_detail_ends_at(ends_at.into());
-        window.set_detail_tags(tags_line.into());
-        let links = links
-            .into_iter()
-            .map(|(name, url)| super::ExternalLink {
-                name: name.into(),
-                url: url.into(),
-            })
-            .collect::<Vec<_>>();
-        if !patch_rows(&window.get_detail_links(), &links, |a, b| a.name == b.name) {
-            window.set_detail_links(ModelRc::new(VecModel::from(links)));
-        }
-        window.set_detail_director(director.into());
-        window.set_detail_writers(writers_line.into());
-        window.set_detail_star_rating(star_rating);
-        window.set_detail_critic_rating(critic_rating);
-        window.set_detail_subtitle(subtitle.into());
-        window.set_detail_overview(overview.into());
-        window.set_detail_kind(kind);
-        window.set_detail_tagline(tagline.into());
-        window.set_detail_genres(genres.into());
-        window.set_detail_studios(studios.into());
-        window.set_detail_media_info(media_info.into());
-        window.set_detail_series_id(series_id.into());
-        window.set_detail_series_name(series_name.into());
-        window.set_detail_season_id(season_id.into());
-        window.set_detail_season_name(season_name.into());
-        window.set_detail_series_summary(series_summary.into());
-        window.set_detail_play_context(play_context.into());
-        window.set_detail_season_summary(season_summary.into());
-        window.set_detail_play_label(play_label.into());
-        window.set_detail_progress(progress);
-        window.set_detail_progress_label(progress_label.into());
-        window.set_detail_playable(playable);
-        window.set_detail_watched(watched);
-        window.set_detail_favorite(favorite);
-        window.set_detail_artwork(hero_image(hero_poster_key));
-        window.set_detail_backdrop(hero_image(hero_backdrop_key));
-        window.set_detail_logo(hero_image(hero_logo_key));
-        if !patch_rows(&window.get_detail_seasons(), &seasons, |a, b| a.id == b.id) {
-            window.set_detail_seasons(ModelRc::new(VecModel::from(seasons)));
-        }
-        if !patch_rows(&window.get_detail_episodes(), &episodes, |a, b| a.id == b.id) {
-            window.set_detail_episodes(ModelRc::new(VecModel::from(episodes)));
-        }
-        let next_up = next_up.iter().map(to_next_up_card).collect::<Vec<_>>();
-        if !patch_rows(&window.get_detail_next_up(), &next_up, |a, b| a.id == b.id) {
-            window.set_detail_next_up(ModelRc::new(VecModel::from(next_up)));
-        }
-        let similar = similar.iter().map(to_detail_card).collect::<Vec<_>>();
-        if !patch_rows(&window.get_detail_similar(), &similar, |a, b| a.id == b.id) {
-            window.set_detail_similar(ModelRc::new(VecModel::from(similar)));
-        }
-        if !patch_rows(&window.get_detail_people(), &people, |a, b| {
-            a.id == b.id && a.name == b.name
-        }) {
-            window.set_detail_people(ModelRc::new(VecModel::from(people)));
-        }
-        if !patch_rows(&window.get_detail_guest_stars(), &guest_stars, |a, b| {
-            a.id == b.id && a.name == b.name
-        }) {
-            window.set_detail_guest_stars(ModelRc::new(VecModel::from(guest_stars)));
-        }
-        window.set_detail_current_episode_index(current_episode_index);
-        window.set_detail_unplayed_count(unplayed_count);
-        // These back ComboBoxes. Replacing the model rebuilds the popup and
-        // resets what it is showing, so only install a genuinely new list --
-        // `update_detail_mutation` re-presents the whole page twice for one
-        // watched toggle, and the track lists are identical both times.
-        let audio_options = audio_options
-            .into_iter()
-            .map(SharedString::from)
-            .collect::<Vec<_>>();
-        if !patch_rows(&window.get_detail_audio_options(), &audio_options, |a, b| {
-            a == b
-        }) {
-            window.set_detail_audio_options(ModelRc::new(VecModel::from(audio_options)));
-        }
-        let subtitle_options = subtitle_options
-            .into_iter()
-            .map(SharedString::from)
-            .collect::<Vec<_>>();
-        if !patch_rows(
-            &window.get_detail_subtitle_options(),
-            &subtitle_options,
-            |a, b| a == b,
-        ) {
-            window.set_detail_subtitle_options(ModelRc::new(VecModel::from(subtitle_options)));
-        }
-        window.set_detail_audio_index(audio_index);
-        window.set_detail_subtitle_index(subtitle_index);
-        window.set_can_go_back(can_go_back);
-    });
-    load_detail_artwork(context, generation, &page);
+        .collect();
+    DetailVm {
+        id: item.id.clone(),
+        title: item.title.clone(),
+        heading,
+        subheading,
+        ends_at: ends_at_label(item),
+        tags: item.tags.join(", "),
+        links: item.external_urls.clone(),
+        director: item.directors.join(", "),
+        writers: item.writers.join(", "),
+        star_rating: item.community_rating.unwrap_or(0.0),
+        critic_rating: item.critic_rating.map(|value| value.round() as i32),
+        subtitle: detail_info_line(page),
+        overview: item.overview.clone(),
+        // The hero poster asks for a still-sized thumbnail on episode pages.
+        artwork: primary_card_image(item).map(|image| {
+            detail_art(
+                image,
+                if image.image_type == ImageType::Thumb {
+                    900
+                } else {
+                    600
+                },
+            )
+        }),
+        backdrop: item.backdrop.as_ref().map(|image| detail_art(image, 1600)),
+        logo: item.logo.as_ref().map(|image| detail_art(image, 600)),
+        kind: Some(item.kind),
+        tagline: item.tagline.clone(),
+        genres: item.genres.join(" • "),
+        studios: item.studios.join(" • "),
+        media_info: item.media_summary.clone(),
+        series_id: item.series_id.clone().unwrap_or_default(),
+        series_summary: detail_series_summary(page),
+        play_context: detail_series_play_context(page),
+        season_id: episode_page
+            .then(|| item.season_id.clone())
+            .flatten()
+            .unwrap_or_default(),
+        season_name: episode_page
+            .then(|| item.season_name.clone())
+            .flatten()
+            .unwrap_or_default(),
+        season_summary: detail_season_summary(page),
+        play_label: page.primary_play_label().unwrap_or_default().to_owned(),
+        progress: progress_item.progress,
+        progress_label: detail_progress_label(progress_item),
+        playable: item.playable || !page.episodes.is_empty(),
+        watched: item.watched,
+        favorite: item.favorite,
+        seasons: page
+            .seasons
+            .iter()
+            .map(|season| to_detail_card(season, 600))
+            .collect(),
+        next_up,
+        similar: page
+            .similar
+            .iter()
+            .map(|similar| to_detail_card(similar, 600))
+            .collect(),
+        // Episode stills are wide thumbnails and ask for more pixels.
+        episodes: page
+            .episodes
+            .iter()
+            .map(|episode| to_detail_card(episode, 900))
+            .collect(),
+        people: item.people.iter().map(to_detail_person).collect(),
+        guest_stars: item.guest_stars.iter().map(to_detail_person).collect(),
+        current_episode_index: usize::try_from(current_episode_index(page)).ok(),
+        unplayed_count: matches!(item.kind, DetailKind::Series | DetailKind::Season)
+            .then_some(item.unplayed_count)
+            .flatten()
+            .unwrap_or(0),
+        audio_options,
+        subtitle_options,
+        audio_index: tracks.audio_index,
+        subtitle_index: tracks.subtitle_index,
+    }
 }
 
-fn to_detail_card(item: &DetailItemData) -> DetailCard {
+/// `thumb_width` is the size asked for when the card art is a 16:9 still.
+fn to_detail_card(item: &DetailItemData, thumb_width: u32) -> DetailCard {
     let index_label = (item.kind == DetailKind::Episode)
         .then_some(item.index_number)
         .flatten()
         .map(|number| format!("{number}."))
         .unwrap_or_default();
     DetailCard {
-        id: item.id.as_str().into(),
-        title: item.title.as_str().into(),
-        subtitle: detail_card_subtitle(item).into(),
-        overview: item.overview.as_str().into(),
-        kind: detail_kind_name(item.kind).into(),
-        artwork: primary_card_image(item)
-            .and_then(|image| cached_image(&image_key(image)))
-            .unwrap_or_default(),
+        id: item.id.clone(),
+        title: item.title.clone(),
+        subtitle: detail_card_subtitle(item),
+        overview: item.overview.clone(),
+        kind: detail_kind_name(item.kind),
+        art: primary_card_image(item).map(|image| {
+            detail_art(
+                image,
+                if image.image_type == ImageType::Thumb {
+                    thumb_width
+                } else {
+                    600
+                },
+            )
+        }),
         watched: item.watched,
         favorite: item.favorite,
         progress: item.progress,
         unplayed_count: item.unplayed_count.unwrap_or(0),
         rating: item.community_rating.unwrap_or(0.0),
-        ends_at: ends_at_label(item).into(),
-        index_label: index_label.into(),
+        ends_at: ends_at_label(item),
+        index_label,
     }
 }
 
 /// The Next Up card names its season too, as Jellyfin's does:
 /// "S2:E3 - Title".
 fn to_next_up_card(item: &DetailItemData) -> DetailCard {
-    let mut card = to_detail_card(item);
-    card.index_label = next_up_label(item).into();
+    let mut card = to_detail_card(item, 600);
+    card.index_label = next_up_label(item);
     card
+}
+
+fn to_detail_person(person: &PersonData) -> DetailPerson {
+    DetailPerson {
+        name: person.name.clone(),
+        role: person.role.clone(),
+        art: person.image.as_ref().map(|image| detail_art(image, 320)),
+    }
+}
+
+/// Opens an external metadata link in the default browser, off the UI
+/// thread's critical path (spawning a process can take milliseconds).
+pub fn open_external_url(url: String) {
+    std::thread::spawn(move || open_in_browser(&url));
+}
+
+const HERO_HEIGHT: f32 = 320.0;
+const CONTENT_MARGIN: f32 = 48.0;
+const POSTER_OVERLAP: f32 = 96.0;
+const LABEL_WIDTH: f32 = 86.0;
+
+/// Page geometry shared by the sections.
+struct Layout {
+    width: f32,
+    poster: egui::Vec2,
+    content_left: f32,
+}
+
+impl Layout {
+    fn new(width: f32, kind: Option<DetailKind>) -> Self {
+        let poster = if kind == Some(DetailKind::Episode) {
+            let width = (width * 0.30).clamp(260.0, 380.0);
+            vec2(width, width * 9.0 / 16.0)
+        } else {
+            let width = (width * 0.22).clamp(220.0, 300.0);
+            vec2(width, width * 1.5)
+        };
+        Self {
+            width,
+            poster,
+            content_left: CONTENT_MARGIN + poster.x + 40.0,
+        }
+    }
+
+    fn content_width(&self) -> f32 {
+        (self.width - self.content_left - CONTENT_MARGIN).max(80.0)
+    }
+}
+
+pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
+    let screen = ui.max_rect();
+    let bar = Rect::from_min_size(screen.min, vec2(screen.width(), top_bar::HEIGHT));
+    top_bar::draw(ui, state, bar, actions);
+    let body = Rect::from_min_max(pos2(screen.left(), bar.bottom()), screen.max);
+    ui.painter().rect_filled(body, 0.0, theme::BG);
+    let mut body_ui = widgets::clipped_child(ui, body);
+    if state.busy {
+        body_ui.painter().text(
+            body.center(),
+            Align2::CENTER_CENTER,
+            "Loading…",
+            theme::regular(16.0),
+            theme::TEXT_MUTED,
+        );
+        return;
+    }
+    let layout = Layout::new(body.width(), state.detail.kind);
+    ScrollArea::vertical()
+        .id_salt(("detail-page", state.detail.id.as_str()))
+        .auto_shrink(false)
+        .show(&mut body_ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let page_top = ui.cursor().top();
+            draw_hero(ui, state, &layout);
+            let block_top = ui.cursor().top();
+            draw_title_strip(ui, state, &layout, actions);
+            if !state.message.is_empty() {
+                draw_error_banner(ui, state, &layout, actions);
+            }
+            draw_info(ui, state, &layout, actions);
+            // Keep the block at least as tall as the poster's overhang, so the
+            // shelves below never slide underneath the poster card.
+            let minimum = layout.poster.y - POSTER_OVERLAP + 24.0;
+            let used = ui.cursor().top() - block_top;
+            if used < minimum {
+                ui.allocate_exact_size(vec2(layout.width, minimum - used), Sense::hover());
+            }
+            draw_shelves(ui, state, &layout, actions);
+            draw_poster_card(ui, state, &layout, page_top);
+        });
+}
+
+fn draw_hero(ui: &mut Ui, state: &mut UiState, layout: &Layout) {
+    let (hero, _) = ui.allocate_exact_size(vec2(layout.width, HERO_HEIGHT), Sense::hover());
+    if !ui.is_rect_visible(hero) {
+        return;
+    }
+    let painter = ui.painter().with_clip_rect(hero.intersect(ui.clip_rect()));
+    painter.rect_filled(hero, 0.0, theme::BG);
+    if let Some((texture, size)) = resident(&mut state.images, state.detail.backdrop.as_ref()) {
+        widgets::image_cover(&painter, texture, size, hero, 0.0);
+    }
+    painter.rect_filled(hero, 0.0, theme::with_alpha(theme::SCRIM, 0.44));
+    widgets::vertical_gradient(
+        &painter,
+        hero,
+        theme::with_alpha(theme::BG, 0.13),
+        theme::with_alpha(theme::BG, 0.86),
+    );
+    if let Some((texture, size)) = resident(&mut state.images, state.detail.logo.as_ref()) {
+        let logo = Rect::from_center_size(
+            hero.center() - vec2(0.0, 10.0),
+            vec2((hero.width() * 0.45).min(460.0), 130.0),
+        );
+        widgets::image_contain(&painter, texture, size, logo);
+    }
+}
+
+/// The resident texture for `art`, queueing its fetch when missing.
+fn resident(images: &mut ImageCache, art: Option<&Art>) -> Option<(egui::TextureId, [usize; 2])> {
+    let art = art?;
+    images.texture(art).zip(images.size(&art.key))
+}
+
+fn draw_title_strip(
+    ui: &mut Ui,
+    state: &mut UiState,
+    layout: &Layout,
+    actions: &mut Vec<UiAction>,
+) {
+    let detail = &state.detail;
+    let busy = state.busy;
+    let kind = detail.kind;
+    let heading_links = !detail.series_id.is_empty()
+        && matches!(kind, Some(DetailKind::Episode | DetailKind::Season));
+
+    // Actions on the right: play pill, play-from-start, played, favorite.
+    let play_label = if detail.play_label.is_empty() {
+        "Play"
+    } else {
+        detail.play_label.as_str()
+    };
+    let play_width = 16.0
+        + 24.0
+        + 6.0
+        + widgets::text_width(ui, play_label, theme::bold(theme::FONT_SUBTITLE))
+        + 22.0;
+    let restart = detail.playable && detail.progress > 0.0 && detail.progress < 1.0;
+    let buttons: f32 = (if detail.playable {
+        play_width + 9.0
+    } else {
+        0.0
+    }) + (if restart { 44.0 + 9.0 } else { 0.0 })
+        + 44.0 * 2.0
+        + 9.0;
+    let text_width = (layout.content_width() - buttons - 12.0).max(80.0);
+
+    let heading = if detail.heading.is_empty() {
+        &detail.title
+    } else {
+        &detail.heading
+    };
+    let heading = widgets::elided(
+        ui,
+        heading,
+        theme::bold(27.0),
+        theme::TEXT_BRIGHT,
+        text_width,
+    );
+    let subheading = (!detail.subheading.is_empty()).then(|| {
+        widgets::elided(
+            ui,
+            &detail.subheading,
+            theme::bold(16.0),
+            theme::TEXT_PRIMARY,
+            text_width,
+        )
+    });
+    let info_height = 16.0;
+    let column_height = heading.size().y
+        + subheading
+            .as_ref()
+            .map_or(0.0, |galley| 5.0 + galley.size().y)
+        + 5.0
+        + info_height;
+    let height = column_height.max(44.0) + 32.0;
+    let (strip, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
+    let painter = ui.painter().clone();
+    painter.rect_filled(strip, 0.0, theme::with_alpha(theme::SURFACE_DIM, 0.85));
+
+    let left = strip.left() + layout.content_left;
+    let mut y = strip.top() + 16.0;
+    let heading_rect = Rect::from_min_size(pos2(left, y), heading.size());
+    let heading_sense = if heading_links {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let heading_response = ui.interact(heading_rect, Id::new("detail-heading"), heading_sense);
+    let heading_color = if heading_links && heading_response.hovered() {
+        theme::ACCENT_BRIGHT
+    } else {
+        theme::TEXT_BRIGHT
+    };
+    painter.galley(heading_rect.min, heading, heading_color);
+    if heading_links {
+        widgets::pointer_on_hover(&heading_response);
+        if heading_response.clicked() {
+            actions.push(UiAction::OpenDetail {
+                id: detail.series_id.clone(),
+                kind: "Series".to_owned(),
+            });
+        }
+    }
+    y = heading_rect.bottom() + 5.0;
+    if let Some(subheading) = subheading {
+        let rect = Rect::from_min_size(pos2(left, y), subheading.size());
+        let links = !detail.season_id.is_empty();
+        let sense = if links {
+            Sense::click()
+        } else {
+            Sense::hover()
+        };
+        let response = ui.interact(rect, Id::new("detail-subheading"), sense);
+        let color = if links && response.hovered() {
+            theme::ACCENT_BRIGHT
+        } else {
+            theme::TEXT_PRIMARY
+        };
+        painter.galley(rect.min, subheading, color);
+        if links {
+            widgets::pointer_on_hover(&response);
+            if response.clicked() {
+                actions.push(UiAction::OpenDetail {
+                    id: detail.season_id.clone(),
+                    kind: "Season".to_owned(),
+                });
+            }
+        }
+        y = rect.bottom() + 5.0;
+    }
+
+    // Info row: metadata, community rating, critic rating, ends-at.
+    let center_y = y + info_height / 2.0;
+    let mut x = left;
+    let mut info = |text: &str, font: egui::FontId, color: Color32| {
+        if text.is_empty() || x > left + text_width {
+            return;
+        }
+        let galley = widgets::elided(ui, text, font, color, left + text_width - x);
+        let rect = widgets::galley_v_centered(&painter, x, center_y, galley);
+        x = rect.right() + 14.0;
+    };
+    info(
+        &detail.subtitle,
+        theme::regular(13.0),
+        theme::TEXT_SECONDARY,
+    );
+    if detail.star_rating > 0.0 {
+        info(
+            &format!("★ {}", (detail.star_rating * 10.0).round() / 10.0),
+            theme::bold(13.0),
+            theme::RATING_GOLD,
+        );
+    }
+    if let Some(critic) = detail.critic_rating {
+        let color = if critic >= 60 {
+            theme::CRITIC_FRESH
+        } else {
+            theme::DANGER_TEXT
+        };
+        info(&format!("Critics {critic}%"), theme::bold(13.0), color);
+    }
+    info(&detail.ends_at, theme::regular(13.0), theme::TEXT_MUTED);
+
+    // Buttons, right-aligned and vertically centered on the text column.
+    let button_y = strip.top() + 16.0 + (column_height.max(44.0) - 44.0) / 2.0;
+    let mut x = strip.right() - CONTENT_MARGIN - buttons + 9.0;
+    if detail.playable {
+        let rect = Rect::from_min_size(pos2(x, button_y), vec2(play_width, 44.0));
+        if play_pill(ui, rect, play_label, !busy) {
+            actions.push(UiAction::PlayCurrent { from_start: false });
+        }
+        x = rect.right() + 9.0;
+    }
+    let mut round = |icon: Icon, label: &str, active: bool, active_color: Color32, id: &str| {
+        let rect = Rect::from_min_size(pos2(x, button_y), vec2(44.0, 44.0));
+        x = rect.right() + 9.0;
+        RoundIconButton {
+            icon,
+            label,
+            size: 44.0,
+            active,
+            active_color,
+            enabled: !busy,
+        }
+        .show(ui, rect, Id::new(("detail-action", id)))
+        .clicked()
+    };
+    if restart
+        && round(
+            Icon::Replay,
+            "Play from beginning",
+            false,
+            theme::TEXT_BRIGHT,
+            "restart",
+        )
+    {
+        actions.push(UiAction::PlayCurrent { from_start: true });
+    }
+    let watched_label = if detail.watched {
+        "Mark unplayed"
+    } else {
+        "Mark played"
+    };
+    if round(
+        Icon::Check,
+        watched_label,
+        detail.watched,
+        theme::TEXT_BRIGHT,
+        "watched",
+    ) {
+        actions.push(UiAction::SetWatched {
+            id: detail.id.clone(),
+            watched: !detail.watched,
+        });
+    }
+    let favorite_label = if detail.favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    };
+    if round(
+        Icon::Favorite,
+        favorite_label,
+        detail.favorite,
+        theme::DANGER_TEXT,
+        "favorite",
+    ) {
+        actions.push(UiAction::SetFavorite {
+            id: detail.id.clone(),
+            favorite: !detail.favorite,
+        });
+    }
+}
+
+/// Jellyfin's primary detail action: a pill with the play icon and what it
+/// will do ("Resume", "Play", "Play again").
+fn play_pill(ui: &mut Ui, rect: Rect, label: &str, enabled: bool) -> bool {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, Id::new("detail-play"), sense);
+    widgets::describe_button(&response, enabled, label);
+    let opacity = if enabled { 1.0 } else { 0.45 };
+    let painter = ui.painter();
+    let fill = if response.hovered() && enabled {
+        theme::ACCENT_BRIGHT
+    } else {
+        theme::ACCENT
+    };
+    painter.rect_filled(rect, rect.height() / 2.0, fill.gamma_multiply(opacity));
+    if response.has_focus() {
+        widgets::border(
+            painter,
+            rect.expand(2.0),
+            rect.height() / 2.0 + 2.0,
+            2.0,
+            theme::TEXT_BRIGHT,
+        );
+    }
+    icons::paint(
+        painter,
+        Icon::Play,
+        Rect::from_min_size(
+            pos2(rect.left() + 16.0, rect.center().y - 12.0),
+            vec2(24.0, 24.0),
+        ),
+        theme::BG.gamma_multiply(opacity),
+    );
+    painter.text(
+        pos2(rect.left() + 46.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        label,
+        theme::bold(theme::FONT_SUBTITLE),
+        theme::BG.gamma_multiply(opacity),
+    );
+    if enabled {
+        widgets::pointer_on_hover(&response);
+    }
+    response.clicked()
+}
+
+fn draw_error_banner(ui: &mut Ui, state: &UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
+    let (rect, _) = ui.allocate_exact_size(vec2(layout.width, 38.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0.0, theme::DANGER_SURFACE);
+    let galley = widgets::elided(
+        ui,
+        &state.message,
+        theme::regular(12.0),
+        theme::DANGER_TEXT,
+        rect.width() - 220.0,
+    );
+    widgets::galley_centered(painter, rect, galley);
+    let button = Rect::from_min_size(
+        pos2(rect.right() - 92.0, rect.top() + 4.0),
+        vec2(80.0, 30.0),
+    );
+    let response = ui.put(button, egui::Button::new("Retry"));
+    widgets::pointer_on_hover(&response);
+    if response.clicked() {
+        actions.push(UiAction::Retry);
+    }
+}
+
+fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
+    let detail = &mut state.detail;
+    let left = layout.content_left;
+    let width = layout.content_width();
+    ui.allocate_exact_size(vec2(layout.width, 18.0), Sense::hover());
+    let mut first = true;
+    let mut row = |ui: &mut Ui, height: f32| -> Rect {
+        if !first {
+            ui.allocate_exact_size(vec2(layout.width, 12.0), Sense::hover());
+        }
+        first = false;
+        let (rect, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
+        Rect::from_min_size(pos2(rect.left() + left, rect.top()), vec2(width, height))
+    };
+
+    if detail.progress > 0.0 && detail.progress < 1.0 {
+        let rect = row(ui, 18.0);
+        let label = if detail.kind == Some(DetailKind::Series) {
+            &detail.play_context
+        } else {
+            &detail.progress_label
+        };
+        let painter = ui.painter();
+        let mut x = rect.left();
+        if !label.is_empty() {
+            let galley = widgets::elided(
+                ui,
+                label,
+                theme::regular(11.0),
+                theme::TEXT_MUTED,
+                width * 0.55,
+            );
+            x = widgets::galley_v_centered(painter, x, rect.center().y, galley).right() + 10.0;
+        }
+        let bar = Rect::from_min_size(
+            pos2(x, rect.center().y - 2.5),
+            vec2((width * 0.4).min(300.0), 5.0),
+        );
+        painter.rect_filled(bar, 2.0, theme::SURFACE_HOVER);
+        painter.rect_filled(
+            Rect::from_min_size(bar.min, vec2(bar.width() * detail.progress, bar.height())),
+            2.0,
+            theme::ACCENT,
+        );
+    }
+
+    let labeled_line = |ui: &mut Ui, rect: Rect, label: &str, value: &str| {
+        let painter = ui.painter();
+        painter.text(
+            pos2(rect.left(), rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            theme::regular(13.0),
+            theme::TEXT_MUTED,
+        );
+        let galley = widgets::elided(
+            ui,
+            value,
+            theme::regular(13.0),
+            theme::TEXT_PRIMARY,
+            rect.width() - LABEL_WIDTH - 12.0,
+        );
+        widgets::galley_v_centered(
+            painter,
+            rect.left() + LABEL_WIDTH + 12.0,
+            rect.center().y,
+            galley,
+        );
+    };
+    if !detail.media_info.is_empty() {
+        let rect = row(ui, 16.0);
+        labeled_line(ui, rect, "Video", &detail.media_info);
+    }
+    if detail.audio_options.len() == 1 {
+        let rect = row(ui, 16.0);
+        labeled_line(ui, rect, "Audio", &detail.audio_options[0]);
+    }
+    let combo_width = (width - LABEL_WIDTH - 12.0).min(520.0);
+    let mut track_combo =
+        |ui: &mut Ui, label: &str, options: &[String], index: &mut i32, audio: bool| {
+            let rect = row(ui, 34.0);
+            ui.painter().text(
+                pos2(rect.left(), rect.center().y),
+                Align2::LEFT_CENTER,
+                label,
+                theme::regular(13.0),
+                theme::TEXT_MUTED,
+            );
+            let combo = Rect::from_min_size(
+                pos2(rect.left() + LABEL_WIDTH + 12.0, rect.top()),
+                vec2(combo_width, 34.0),
+            );
+            let mut selected = usize::try_from(*index).unwrap_or(0);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(combo));
+            child.spacing_mut().interact_size.y = 34.0;
+            egui::ComboBox::from_id_salt(("detail-track", audio))
+                .width(combo_width)
+                .selected_text(options.get(selected).map_or("", String::as_str))
+                .show_ui(&mut child, |ui| {
+                    for (option_index, option) in options.iter().enumerate() {
+                        ui.selectable_value(&mut selected, option_index, option);
+                    }
+                });
+            let selected = i32::try_from(selected).unwrap_or(0);
+            if selected != *index {
+                *index = selected;
+                actions.push(UiAction::DetailTrack {
+                    index: selected,
+                    audio,
+                });
+            }
+        };
+    if detail.audio_options.len() > 1 {
+        let options = std::mem::take(&mut detail.audio_options);
+        track_combo(ui, "Audio", &options, &mut detail.audio_index, true);
+        detail.audio_options = options;
+    }
+    if detail.subtitle_options.len() > 1 {
+        let options = std::mem::take(&mut detail.subtitle_options);
+        track_combo(ui, "Subtitles", &options, &mut detail.subtitle_index, false);
+        detail.subtitle_options = options;
+    }
+
+    let mut paragraph = |ui: &mut Ui, text: &str, font: egui::FontId, color: Color32| {
+        let galley = widgets::wrapped(ui, text, font, color, width, None);
+        let rect = row(ui, galley.size().y);
+        ui.painter().galley(rect.min, galley, Color32::WHITE);
+    };
+    if !detail.tagline.is_empty() {
+        paragraph(
+            ui,
+            &detail.tagline,
+            theme::regular(16.0),
+            theme::TEXT_PRIMARY,
+        );
+    }
+    if !detail.overview.is_empty() {
+        paragraph(
+            ui,
+            &detail.overview,
+            theme::regular(14.0),
+            theme::TEXT_SECONDARY,
+        );
+    }
+    if !detail.tags.is_empty() {
+        paragraph(
+            ui,
+            &format!("Tags: {}", detail.tags),
+            theme::regular(12.0),
+            theme::TEXT_MUTED,
+        );
+    }
+    if !detail.links.is_empty() {
+        let rect = row(ui, 18.0);
+        let mut x = rect.left();
+        for (index, (name, url)) in detail.links.iter().enumerate() {
+            let galley = widgets::elided(
+                ui,
+                name,
+                theme::bold(13.0),
+                theme::TEXT_SECONDARY,
+                rect.right() - x,
+            );
+            let link = Rect::from_min_size(
+                pos2(x, rect.center().y - galley.size().y / 2.0),
+                galley.size(),
+            );
+            let response = ui.interact(link, Id::new(("detail-link", index)), Sense::click());
+            widgets::describe_button(&response, true, name);
+            let color = if response.hovered() {
+                theme::ACCENT_BRIGHT
+            } else {
+                theme::TEXT_SECONDARY
+            };
+            ui.painter().galley(link.min, galley, color);
+            widgets::pointer_on_hover(&response);
+            if response.on_hover_text(url).clicked() {
+                actions.push(UiAction::OpenExternalUrl(url.clone()));
+            }
+            x = link.right() + 14.0;
+            if x >= rect.right() {
+                break;
+            }
+        }
+    }
+    for (label, value) in [
+        ("Genres", &detail.genres),
+        ("Director", &detail.director),
+        ("Writers", &detail.writers),
+        ("Studios", &detail.studios),
+    ] {
+        if value.is_empty() {
+            continue;
+        }
+        let galley = widgets::wrapped(
+            ui,
+            value,
+            theme::bold(13.0),
+            theme::TEXT_PRIMARY,
+            width - LABEL_WIDTH - 12.0,
+            None,
+        );
+        let rect = row(ui, galley.size().y);
+        ui.painter().text(
+            rect.min,
+            Align2::LEFT_TOP,
+            label,
+            theme::regular(13.0),
+            theme::TEXT_MUTED,
+        );
+        ui.painter().galley(
+            rect.min + vec2(LABEL_WIDTH + 12.0, 0.0),
+            galley,
+            Color32::WHITE,
+        );
+    }
+    ui.allocate_exact_size(vec2(layout.width, 24.0), Sense::hover());
+}
+
+fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
+    let detail = &state.detail;
+    let images = &mut state.images;
+    let width = layout.width;
+    match detail.kind {
+        Some(DetailKind::Series) => {
+            if !detail.next_up.is_empty() {
+                episode_shelf(
+                    ui,
+                    images,
+                    EpisodeShelfSpec {
+                        id: "next-up",
+                        heading: "Next Up",
+                        episodes: &detail.next_up,
+                        current_id: "",
+                        current_index: None,
+                        plays: true,
+                    },
+                    width,
+                    actions,
+                );
+            }
+            season_shelf(
+                ui,
+                images,
+                SeasonShelfSpec {
+                    id: "seasons",
+                    heading: "Seasons",
+                    seasons: &detail.seasons,
+                    current_id: "",
+                    summary: &detail.series_summary,
+                    failed: !state.message.is_empty(),
+                },
+                width,
+                actions,
+            );
+        }
+        Some(DetailKind::Season) => {
+            draw_episode_list(
+                ui,
+                images,
+                detail,
+                !state.message.is_empty(),
+                state.busy,
+                width,
+                actions,
+            );
+            if detail.seasons.len() > 1 {
+                season_shelf(
+                    ui,
+                    images,
+                    SeasonShelfSpec {
+                        id: "more-seasons",
+                        heading: "More Seasons",
+                        seasons: &detail.seasons,
+                        current_id: &detail.id,
+                        summary: "",
+                        failed: false,
+                    },
+                    width,
+                    actions,
+                );
+            }
+        }
+        Some(DetailKind::Episode) if !detail.episodes.is_empty() => {
+            let heading = if detail.season_name.is_empty() {
+                "More from this season".to_owned()
+            } else {
+                format!("More from {}", detail.season_name)
+            };
+            episode_shelf(
+                ui,
+                images,
+                EpisodeShelfSpec {
+                    id: "season-episodes",
+                    heading: &heading,
+                    episodes: &detail.episodes,
+                    current_id: &detail.id,
+                    current_index: detail.current_episode_index,
+                    plays: false,
+                },
+                width,
+                actions,
+            );
+        }
+        _ => {}
+    }
+    if !detail.people.is_empty() {
+        people_shelf(ui, images, "Cast & Crew", &detail.people, width);
+    }
+    if !detail.guest_stars.is_empty() {
+        people_shelf(ui, images, "Guest Stars", &detail.guest_stars, width);
+    }
+    if !detail.similar.is_empty() {
+        season_shelf(
+            ui,
+            images,
+            SeasonShelfSpec {
+                id: "similar",
+                heading: "More Like This",
+                seasons: &detail.similar,
+                current_id: "",
+                summary: "",
+                failed: false,
+            },
+            width,
+            actions,
+        );
+    }
+}
+
+/// A shelf's own scroll identity: per page, so another item's shelf opens
+/// at its start.
+fn shelf_id(name: &str, page: &str) -> Id {
+    Id::new(("detail-shelf", name, page.to_owned()))
+}
+
+struct EpisodeShelfSpec<'a> {
+    id: &'a str,
+    heading: &'a str,
+    episodes: &'a [DetailCard],
+    current_id: &'a str,
+    current_index: Option<usize>,
+    /// Next Up plays the episode on click, as Jellyfin's does; other uses
+    /// open the episode's page.
+    plays: bool,
+}
+
+/// Wide thumbnail cards: Next Up, and "More from Season N" with the open
+/// episode highlighted and centered.
+fn episode_shelf(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    spec: EpisodeShelfSpec<'_>,
+    width: f32,
+    actions: &mut Vec<UiAction>,
+) {
+    const CARD: f32 = 264.0;
+    const GAP: f32 = 16.0;
+    let card_height = CARD * 9.0 / 16.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, card_height + 116.0), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.painter().rect_filled(rect, 0.0, theme::BG);
+    let viewport_width = (width - 96.0).min(1400.0);
+    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
+    ui.painter().text(
+        pos2(viewport_x, rect.top() + 14.0),
+        Align2::LEFT_TOP,
+        spec.heading,
+        theme::bold(21.0),
+        theme::TEXT_PRIMARY,
+    );
+    let viewport = Rect::from_min_size(
+        pos2(viewport_x, rect.top() + 52.0),
+        vec2(viewport_width, rect.height() - 60.0),
+    );
+    let content = (spec.episodes.len() as f32 * (CARD + GAP) - GAP).max(0.0);
+    let id = shelf_id(spec.id, spec.current_id);
+    let mut shelf = Shelf::begin(ui, id, viewport, content);
+    if let Some(index) = spec.current_index {
+        shelf.center_on(index, CARD, GAP);
+    }
+    let offset = shelf.scroll(ui);
+    let strip = widgets::clipped_child(ui, viewport);
+    for (index, episode) in spec.episodes.iter().enumerate() {
+        let left = index as f32 * (CARD + GAP);
+        let card = Rect::from_min_size(
+            pos2(viewport.left() + offset + left, viewport.top()),
+            vec2(CARD, card_height),
+        );
+        if card.right() < viewport.left() - viewport.width()
+            || card.left() > viewport.right() + viewport.width()
+        {
+            continue;
+        }
+        let current = episode.id == spec.current_id;
+        let response = strip.interact(card, id.with(index), Sense::click());
+        widgets::describe_button(&response, true, &episode.title);
+        let hovered = response.hovered();
+        let painter = strip.painter().clone();
+        widgets::drop_shadow(
+            &painter,
+            card,
+            theme::RADIUS_MEDIUM,
+            8.0,
+            3.0,
+            theme::with_alpha(theme::SCRIM, 0.44),
+        );
+        painter.rect_filled(card, theme::RADIUS_MEDIUM, theme::SURFACE);
+        match resident(images, episode.art.as_ref()) {
+            Some((texture, size)) => {
+                widgets::image_cover(&painter, texture, size, card, theme::RADIUS_MEDIUM)
+            }
+            None => {
+                let galley = widgets::wrapped(
+                    &strip,
+                    &episode.title,
+                    theme::regular(13.0),
+                    theme::BORDER_STRONG,
+                    CARD - 20.0,
+                    Some(3),
+                );
+                widgets::galley_centered(&painter, card, galley);
+            }
+        }
+        if episode.watched {
+            widgets::watched_badge(
+                &painter,
+                Rect::from_min_size(
+                    pos2(card.right() - 33.0, card.top() + 8.0),
+                    vec2(25.0, 25.0),
+                ),
+                16.0,
+            );
+        }
+        widgets::card_progress(&painter, card.shrink(1.0), 5.0, episode.progress);
+        if spec.plays && hovered {
+            painter.circle_filled(card.center(), 26.0, theme::with_alpha(theme::SCRIM, 0.63));
+            icons::paint_centered(
+                &painter,
+                Icon::Play,
+                card.center(),
+                28.0,
+                theme::TEXT_BRIGHT,
+            );
+        }
+        let (border_width, border_color) = if response.has_focus() {
+            (3.0, theme::ACCENT_BRIGHT)
+        } else if current {
+            (3.0, theme::ACCENT)
+        } else if hovered {
+            (2.0, theme::BORDER_STRONG)
+        } else {
+            (1.0, theme::SURFACE_HOVER)
+        };
+        widgets::border(
+            &painter,
+            card,
+            theme::RADIUS_MEDIUM,
+            border_width,
+            border_color,
+        );
+        let label = if episode.index_label.is_empty() {
+            episode.title.clone()
+        } else {
+            format!("{} {}", episode.index_label, episode.title)
+        };
+        let (font, color) = if current {
+            (theme::bold(13.0), theme::TEXT_PRIMARY)
+        } else {
+            (theme::regular(13.0), theme::TEXT_SECONDARY)
+        };
+        let title = widgets::elided(&strip, &label, font, color, CARD);
+        let title_rect =
+            widgets::galley_at(&painter, pos2(card.left(), card.bottom() + 4.0), title);
+        if !episode.subtitle.is_empty() {
+            let subtitle = widgets::elided(
+                &strip,
+                &episode.subtitle,
+                theme::regular(12.0),
+                theme::TEXT_MUTED,
+                CARD,
+            );
+            widgets::galley_at(
+                &painter,
+                pos2(card.left(), title_rect.bottom() + 4.0),
+                subtitle,
+            );
+        }
+        widgets::pointer_on_hover(&response);
+        if response.gained_focus() {
+            shelf.reveal(left, CARD);
+        }
+        if response.clicked() {
+            actions.push(if spec.plays {
+                UiAction::PlayDetail(episode.id.clone())
+            } else {
+                UiAction::OpenDetail {
+                    id: episode.id.clone(),
+                    kind: episode.kind.to_owned(),
+                }
+            });
+        }
+    }
+    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 80.0, id);
+    shelf.end(ui);
+}
+
+/// The outlined ‹ › buttons the detail shelves use, straddling the viewport
+/// edges.
+fn shelf_arrows(ui: &mut Ui, shelf: &mut Shelf, offset: f32, viewport: Rect, y: f32, id: Id) {
+    if shelf.can_page_back(offset) {
+        let rect = Rect::from_min_size(pos2(viewport.left() - 18.0, y), vec2(38.0, 56.0));
+        if widgets::shelf_arrow(
+            ui,
+            rect,
+            id.with("left"),
+            true,
+            theme::OVERLAY,
+            theme::OVERLAY_RAISED,
+            true,
+        ) {
+            shelf.page(false);
+        }
+    }
+    if shelf.can_page_forward(offset) {
+        let rect = Rect::from_min_size(pos2(viewport.right() - 20.0, y), vec2(38.0, 56.0));
+        if widgets::shelf_arrow(
+            ui,
+            rect,
+            id.with("right"),
+            false,
+            theme::OVERLAY,
+            theme::OVERLAY_RAISED,
+            true,
+        ) {
+            shelf.page(true);
+        }
+    }
+}
+
+struct SeasonShelfSpec<'a> {
+    id: &'a str,
+    heading: &'a str,
+    seasons: &'a [DetailCard],
+    /// The season whose page this is, highlighted like the current episode.
+    current_id: &'a str,
+    summary: &'a str,
+    failed: bool,
+}
+
+/// Portrait cards: Seasons, More Seasons, More Like This.
+fn season_shelf(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    spec: SeasonShelfSpec<'_>,
+    width: f32,
+    actions: &mut Vec<UiAction>,
+) {
+    const CARD: f32 = 158.0;
+    const GAP: f32 = 16.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 360.0), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 0.0, theme::BG);
+    let viewport_width = (width - 56.0).min(1180.0);
+    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
+    let heading = painter.text(
+        pos2(viewport_x, rect.top() + 16.0),
+        Align2::LEFT_TOP,
+        spec.heading,
+        theme::bold(22.0),
+        theme::TEXT_PRIMARY,
+    );
+    if !spec.seasons.is_empty() && !spec.summary.is_empty() {
+        let summary = widgets::elided(
+            ui,
+            spec.summary,
+            theme::regular(12.0),
+            theme::TEXT_FAINT,
+            viewport_width - heading.width() - 24.0,
+        );
+        let x = viewport_x + viewport_width - summary.size().x;
+        widgets::galley_at(&painter, pos2(x, rect.top() + 20.0), summary);
+    }
+    if spec.seasons.is_empty() {
+        let empty = Rect::from_min_size(
+            pos2(viewport_x, rect.top() + 55.0),
+            vec2(viewport_width, 116.0),
+        );
+        painter.rect_filled(empty, theme::RADIUS_MEDIUM, theme::SURFACE);
+        widgets::border(
+            &painter,
+            empty,
+            theme::RADIUS_MEDIUM,
+            1.0,
+            theme::SURFACE_HOVER,
+        );
+        let text = if spec.failed {
+            "Seasons could not be loaded."
+        } else {
+            "No seasons are available for this series."
+        };
+        painter.text(
+            empty.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::regular(13.0),
+            theme::TEXT_MUTED,
+        );
+        return;
+    }
+    let viewport = Rect::from_min_size(
+        pos2(viewport_x, rect.top() + 55.0),
+        vec2(viewport_width, rect.height() - 64.0),
+    );
+    let content = spec.seasons.len() as f32 * (CARD + GAP) - GAP;
+    let id = shelf_id(spec.id, spec.current_id);
+    let mut shelf = Shelf::begin(ui, id, viewport, content);
+    let offset = shelf.scroll(ui);
+    let strip = widgets::clipped_child(ui, viewport);
+    for (index, season) in spec.seasons.iter().enumerate() {
+        let left = index as f32 * (CARD + GAP);
+        let poster = Rect::from_min_size(
+            pos2(viewport.left() + offset + left, viewport.top()),
+            vec2(CARD, CARD * 1.5),
+        );
+        if poster.right() < viewport.left() - viewport.width()
+            || poster.left() > viewport.right() + viewport.width()
+        {
+            continue;
+        }
+        let current = !spec.current_id.is_empty() && season.id == spec.current_id;
+        let response = strip.interact(poster, id.with(index), Sense::click());
+        widgets::describe_button(&response, true, &season.title);
+        let hovered = response.hovered();
+        let painter = strip.painter().clone();
+        if hovered {
+            widgets::drop_shadow(
+                &painter,
+                poster,
+                theme::RADIUS_MEDIUM,
+                14.0,
+                5.0,
+                theme::with_alpha(theme::SCRIM, 0.63),
+            );
+        } else {
+            widgets::drop_shadow(
+                &painter,
+                poster,
+                theme::RADIUS_MEDIUM,
+                7.0,
+                3.0,
+                theme::with_alpha(theme::SCRIM, 0.4),
+            );
+        }
+        match resident(images, season.art.as_ref()) {
+            Some((texture, size)) => {
+                widgets::image_cover(&painter, texture, size, poster, theme::RADIUS_MEDIUM)
+            }
+            None => {
+                widgets::diagonal_gradient(
+                    &painter,
+                    poster,
+                    theme::RADIUS_MEDIUM,
+                    theme::SURFACE_HOVER,
+                    theme::BG,
+                );
+                let galley = widgets::wrapped(
+                    &strip,
+                    &season.title,
+                    theme::regular(14.0),
+                    theme::BORDER_STRONG,
+                    CARD - 16.0,
+                    Some(4),
+                );
+                widgets::galley_centered(&painter, poster, galley);
+            }
+        }
+        if season.unplayed_count > 0 {
+            let badge = Rect::from_min_size(
+                pos2(poster.right() - 42.0, poster.top() + 9.0),
+                vec2(32.0, 25.0),
+            );
+            painter.rect_filled(badge, theme::RADIUS_LARGE, theme::ACCENT);
+            painter.text(
+                badge.center(),
+                Align2::CENTER_CENTER,
+                season.unplayed_count.to_string(),
+                theme::bold(11.0),
+                Color32::WHITE,
+            );
+        } else if season.watched {
+            widgets::watched_badge(
+                &painter,
+                Rect::from_min_size(
+                    pos2(poster.right() - 35.0, poster.top() + 9.0),
+                    vec2(25.0, 25.0),
+                ),
+                16.0,
+            );
+        }
+        let (border_width, border_color) = if response.has_focus() {
+            (3.0, theme::ACCENT_BRIGHT)
+        } else if current {
+            (3.0, theme::ACCENT)
+        } else if hovered {
+            (2.0, theme::BORDER_STRONG)
+        } else {
+            (1.0, theme::SURFACE_HOVER)
+        };
+        widgets::border(
+            &painter,
+            poster,
+            theme::RADIUS_MEDIUM,
+            border_width,
+            border_color,
+        );
+        let title_color = if current {
+            theme::ACCENT_BRIGHT
+        } else {
+            theme::TEXT_PRIMARY
+        };
+        let title = widgets::elided(&strip, &season.title, theme::bold(14.0), title_color, CARD);
+        let title_rect =
+            widgets::galley_at(&painter, pos2(poster.left(), poster.bottom() + 7.0), title);
+        let subtitle = widgets::elided(
+            &strip,
+            &season.subtitle,
+            theme::regular(11.0),
+            theme::TEXT_FAINT,
+            CARD,
+        );
+        widgets::galley_at(
+            &painter,
+            pos2(poster.left(), title_rect.bottom() + 7.0),
+            subtitle,
+        );
+        widgets::pointer_on_hover(&response);
+        if response.gained_focus() {
+            shelf.reveal(left, CARD);
+        }
+        if response.clicked() {
+            actions.push(UiAction::OpenDetail {
+                id: season.id.clone(),
+                kind: season.kind.to_owned(),
+            });
+        }
+    }
+    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 142.0, id);
+    shelf.end(ui);
+}
+
+/// Round cast photos with name and role.
+fn people_shelf(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    heading: &str,
+    people: &[DetailPerson],
+    width: f32,
+) {
+    const CARD: f32 = 112.0;
+    const GAP: f32 = 14.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 220.0), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    ui.painter().rect_filled(rect, 0.0, theme::BG);
+    let viewport_width = (width - 56.0).min(1180.0);
+    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
+    ui.painter().text(
+        pos2(viewport_x, rect.top() + 12.0),
+        Align2::LEFT_TOP,
+        heading,
+        theme::bold(21.0),
+        theme::TEXT_PRIMARY,
+    );
+    let viewport = Rect::from_min_size(
+        pos2(viewport_x, rect.top() + 49.0),
+        vec2(viewport_width, rect.height() - 57.0),
+    );
+    let content = people.len() as f32 * (CARD + GAP) - GAP;
+    let id = Id::new((
+        "detail-people",
+        heading,
+        people.first().map(|person| person.name.clone()),
+    ));
+    let mut shelf = Shelf::begin(ui, id, viewport, content);
+    let offset = shelf.scroll(ui);
+    let strip = widgets::clipped_child(ui, viewport);
+    let painter = strip.painter().clone();
+    for (index, person) in people.iter().enumerate() {
+        let left = index as f32 * (CARD + GAP);
+        let photo = Rect::from_min_size(
+            pos2(viewport.left() + offset + left, viewport.top()),
+            vec2(CARD, CARD),
+        );
+        if photo.right() < viewport.left() - viewport.width()
+            || photo.left() > viewport.right() + viewport.width()
+        {
+            continue;
+        }
+        let radius = CARD / 2.0;
+        match resident(images, person.art.as_ref()) {
+            Some((texture, size)) => widgets::image_cover(&painter, texture, size, photo, radius),
+            None => {
+                widgets::diagonal_gradient(
+                    &painter,
+                    photo,
+                    radius,
+                    theme::SURFACE_HOVER,
+                    theme::SURFACE,
+                );
+                painter.text(
+                    photo.center(),
+                    Align2::CENTER_CENTER,
+                    "?",
+                    theme::bold(28.0),
+                    theme::BORDER_STRONG,
+                );
+            }
+        }
+        widgets::border(&painter, photo, radius, 1.0, theme::BORDER);
+        let name = widgets::elided(
+            &strip,
+            &person.name,
+            theme::bold(12.0),
+            theme::TEXT_PRIMARY,
+            CARD,
+        );
+        let name_rect = Rect::from_min_size(
+            pos2(photo.center().x - name.size().x / 2.0, photo.bottom() + 6.0),
+            name.size(),
+        );
+        painter.galley(name_rect.min, name, Color32::WHITE);
+        let role = widgets::elided(
+            &strip,
+            &person.role,
+            theme::regular(10.0),
+            theme::TEXT_FAINT,
+            CARD,
+        );
+        painter.galley(
+            pos2(
+                photo.center().x - role.size().x / 2.0,
+                name_rect.bottom() + 6.0,
+            ),
+            role,
+            Color32::WHITE,
+        );
+    }
+    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 80.0, id);
+    shelf.end(ui);
+}
+
+/// A season page's episode list: Jellyfin-style rows with a wide thumbnail
+/// that plays, a title that opens, metadata, overview, and toggles.
+fn draw_episode_list(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    detail: &DetailVm,
+    failed: bool,
+    busy: bool,
+    width: f32,
+    actions: &mut Vec<UiAction>,
+) {
+    let side = ((width - 1180.0) / 2.0).max(28.0);
+    let inner = width - side * 2.0;
+    ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
+    let (header, _) = ui.allocate_exact_size(vec2(width, 38.0), Sense::hover());
+    let painter = ui.painter().clone();
+    painter.text(
+        pos2(header.left() + side, header.center().y),
+        Align2::LEFT_CENTER,
+        "Episodes",
+        theme::bold(22.0),
+        theme::TEXT_PRIMARY,
+    );
+    if !detail.episodes.is_empty() {
+        painter.text(
+            pos2(header.right() - side, header.center().y),
+            Align2::RIGHT_CENTER,
+            &detail.season_summary,
+            theme::regular(12.0),
+            theme::TEXT_FAINT,
+        );
+    }
+    if detail.episodes.is_empty() {
+        ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(vec2(width, 116.0), Sense::hover());
+        let empty = Rect::from_min_size(pos2(rect.left() + side, rect.top()), vec2(inner, 116.0));
+        painter.rect_filled(empty, theme::RADIUS_MEDIUM, theme::SURFACE);
+        widgets::border(
+            &painter,
+            empty,
+            theme::RADIUS_MEDIUM,
+            1.0,
+            theme::SURFACE_HOVER,
+        );
+        let text = if failed {
+            "Episodes could not be loaded."
+        } else {
+            "No episodes are available for this season."
+        };
+        painter.text(
+            empty.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::regular(13.0),
+            theme::TEXT_MUTED,
+        );
+    }
+    for (index, episode) in detail.episodes.iter().enumerate() {
+        ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(width, 158.0), Sense::hover());
+        if !ui.is_rect_visible(row) {
+            continue;
+        }
+        episode_row(
+            ui,
+            images,
+            episode,
+            Rect::from_min_size(pos2(row.left() + side, row.top()), vec2(inner, 158.0)),
+            busy,
+            index,
+            actions,
+        );
+    }
+    ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
+}
+
+fn episode_row(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    episode: &DetailCard,
+    row: Rect,
+    busy: bool,
+    index: usize,
+    actions: &mut Vec<UiAction>,
+) {
+    let painter = ui.painter().clone();
+    let thumb = Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(240.0, 135.0));
+    let sense = if busy { Sense::hover() } else { Sense::click() };
+    let response = ui.interact(
+        thumb,
+        Id::new(("episode-thumb", index, episode.id.as_str())),
+        sense,
+    );
+    widgets::describe_button(&response, !busy, &format!("Play {}", episode.title));
+    let hovered = response.hovered();
+    widgets::drop_shadow(
+        &painter,
+        thumb,
+        theme::RADIUS_MEDIUM,
+        8.0,
+        3.0,
+        theme::with_alpha(theme::SCRIM, 0.44),
+    );
+    painter.rect_filled(thumb, theme::RADIUS_MEDIUM, theme::SURFACE);
+    match resident(images, episode.art.as_ref()) {
+        Some((texture, size)) => {
+            widgets::image_cover(&painter, texture, size, thumb, theme::RADIUS_MEDIUM)
+        }
+        None => {
+            let galley = widgets::wrapped(
+                ui,
+                &episode.title,
+                theme::regular(13.0),
+                theme::BORDER_STRONG,
+                220.0,
+                Some(3),
+            );
+            widgets::galley_centered(&painter, thumb, galley);
+        }
+    }
+    if episode.watched {
+        widgets::watched_badge(
+            &painter,
+            Rect::from_min_size(
+                pos2(thumb.right() - 33.0, thumb.top() + 8.0),
+                vec2(25.0, 25.0),
+            ),
+            16.0,
+        );
+    }
+    widgets::card_progress(&painter, thumb.shrink(1.0), 5.0, episode.progress);
+    if hovered {
+        painter.circle_filled(thumb.center(), 23.0, theme::with_alpha(theme::SCRIM, 0.63));
+        icons::paint_centered(
+            &painter,
+            Icon::Play,
+            thumb.center(),
+            26.0,
+            theme::TEXT_BRIGHT,
+        );
+    }
+    let border_color = if response.has_focus() {
+        theme::ACCENT_BRIGHT
+    } else if hovered {
+        theme::BORDER_STRONG
+    } else {
+        theme::SURFACE_HOVER
+    };
+    widgets::border(
+        &painter,
+        thumb,
+        theme::RADIUS_MEDIUM,
+        if response.has_focus() { 3.0 } else { 1.0 },
+        border_color,
+    );
+    if !busy {
+        widgets::pointer_on_hover(&response);
+    }
+    if response.clicked() {
+        actions.push(UiAction::PlayDetail(episode.id.clone()));
+    }
+
+    // Toggles on the right.
+    let toggles_left = row.right() - 34.0 * 2.0 - 8.0;
+    let watched = RoundIconButton {
+        icon: Icon::Check,
+        label: "Played",
+        size: 34.0,
+        active: episode.watched,
+        active_color: theme::TEXT_BRIGHT,
+        enabled: !busy,
+    }
+    .show(
+        ui,
+        Rect::from_min_size(pos2(toggles_left, row.top() + 4.0), vec2(34.0, 34.0)),
+        Id::new(("episode-played", index)),
+    );
+    if watched.clicked() {
+        actions.push(UiAction::SetWatched {
+            id: episode.id.clone(),
+            watched: !episode.watched,
+        });
+    }
+    let favorite = RoundIconButton {
+        icon: Icon::Favorite,
+        label: "Favorite",
+        size: 34.0,
+        active: episode.favorite,
+        active_color: theme::DANGER_TEXT,
+        enabled: !busy,
+    }
+    .show(
+        ui,
+        Rect::from_min_size(pos2(toggles_left + 42.0, row.top() + 4.0), vec2(34.0, 34.0)),
+        Id::new(("episode-favorite", index)),
+    );
+    if favorite.clicked() {
+        actions.push(UiAction::SetFavorite {
+            id: episode.id.clone(),
+            favorite: !episode.favorite,
+        });
+    }
+
+    // Text column between the thumbnail and the toggles.
+    let left = thumb.right() + 18.0;
+    let text_width = (toggles_left - 18.0 - left).max(40.0);
+    let label = if episode.index_label.is_empty() {
+        episode.title.clone()
+    } else {
+        format!("{} {}", episode.index_label, episode.title)
+    };
+    let title = widgets::elided(
+        ui,
+        &label,
+        theme::bold(16.0),
+        theme::TEXT_PRIMARY,
+        text_width,
+    );
+    let title_rect = Rect::from_min_size(pos2(left, row.top()), title.size());
+    let title_response = ui.interact(
+        title_rect,
+        Id::new(("episode-title", index)),
+        Sense::click(),
+    );
+    widgets::describe_button(&title_response, true, &episode.title);
+    let color = if title_response.hovered() {
+        theme::ACCENT_BRIGHT
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    painter.galley(title_rect.min, title, color);
+    widgets::pointer_on_hover(&title_response);
+    if title_response.clicked() {
+        actions.push(UiAction::OpenDetail {
+            id: episode.id.clone(),
+            kind: episode.kind.to_owned(),
+        });
+    }
+    let meta_y = title_rect.bottom() + 5.0 + 8.0;
+    let mut x = left;
+    let mut meta = |text: &str, font: egui::FontId, color: Color32| {
+        if text.is_empty() || x >= left + text_width {
+            return;
+        }
+        let galley = widgets::elided(ui, text, font, color, left + text_width - x);
+        x = widgets::galley_v_centered(&painter, x, meta_y, galley).right() + 12.0;
+    };
+    meta(
+        &episode.subtitle,
+        theme::regular(12.0),
+        theme::TEXT_SECONDARY,
+    );
+    if episode.rating > 0.0 {
+        meta(
+            &format!("★ {}", (episode.rating * 10.0).round() / 10.0),
+            theme::bold(12.0),
+            theme::RATING_GOLD,
+        );
+    }
+    meta(&episode.ends_at, theme::regular(12.0), theme::TEXT_MUTED);
+    if !episode.overview.is_empty() {
+        let overview = widgets::wrapped(
+            ui,
+            &episode.overview,
+            theme::regular(12.0),
+            theme::TEXT_MUTED,
+            text_width,
+            Some(3),
+        );
+        painter.galley(pos2(left, meta_y + 8.0 + 5.0), overview, Color32::WHITE);
+    }
+}
+
+/// The poster (or episode still), floating over the hero/content boundary.
+fn draw_poster_card(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32) {
+    let detail = &state.detail;
+    let rect = Rect::from_min_size(
+        pos2(
+            ui.max_rect().left() + CONTENT_MARGIN,
+            page_top + HERO_HEIGHT - POSTER_OVERLAP,
+        ),
+        layout.poster,
+    );
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter().clone();
+    widgets::drop_shadow(
+        &painter,
+        rect,
+        theme::RADIUS_MEDIUM,
+        22.0,
+        6.0,
+        theme::with_alpha(theme::SCRIM, 0.63),
+    );
+    painter.rect_filled(rect, theme::RADIUS_MEDIUM, theme::SURFACE);
+    match resident(&mut state.images, detail.artwork.as_ref()) {
+        Some((texture, size)) => {
+            widgets::image_cover(&painter, texture, size, rect, theme::RADIUS_MEDIUM)
+        }
+        None => {
+            let galley = widgets::wrapped(
+                ui,
+                &detail.title,
+                theme::regular(15.0),
+                theme::BORDER_STRONG,
+                rect.width() - 24.0,
+                Some(4),
+            );
+            widgets::galley_centered(&painter, rect, galley);
+        }
+    }
+    widgets::border(&painter, rect, theme::RADIUS_MEDIUM, 1.0, theme::BORDER);
+    // Jellyfin's corner indicator: what is left to watch, or a check once a
+    // series or season is done.
+    if detail.unplayed_count > 0 {
+        let text = detail.unplayed_count.to_string();
+        let width = (widgets::text_width(ui, &text, theme::bold(13.0)) + 16.0).max(30.0);
+        let badge = Rect::from_min_size(
+            pos2(rect.right() - width - 10.0, rect.top() + 10.0),
+            vec2(width, 30.0),
+        );
+        painter.rect_filled(badge, 15.0, theme::ACCENT);
+        painter.text(
+            badge.center(),
+            Align2::CENTER_CENTER,
+            text,
+            theme::bold(13.0),
+            theme::TEXT_BRIGHT,
+        );
+    } else if detail.watched && matches!(detail.kind, Some(DetailKind::Season | DetailKind::Series))
+    {
+        let badge = Rect::from_min_size(
+            pos2(rect.right() - 40.0, rect.top() + 10.0),
+            vec2(30.0, 30.0),
+        );
+        painter.rect_filled(badge, 15.0, theme::ACCENT);
+        icons::paint_centered(
+            &painter,
+            Icon::Check,
+            badge.center(),
+            18.0,
+            theme::TEXT_BRIGHT,
+        );
+    }
 }
 
 fn next_up_label(item: &DetailItemData) -> String {
@@ -464,19 +1980,6 @@ fn detail_episode_number(item: &DetailItemData) -> Option<String> {
             Some(format!("Episode {episode}"))
         }
         _ => None,
-    }
-}
-
-fn to_detail_person(person: &crate::features::detail::PersonData) -> DetailPerson {
-    DetailPerson {
-        id: person.id.as_deref().unwrap_or_default().into(),
-        name: person.name.as_str().into(),
-        role: person.role.as_str().into(),
-        artwork: person
-            .image
-            .as_ref()
-            .and_then(|image| cached_image(&image_key(image)))
-            .unwrap_or_default(),
     }
 }
 
@@ -567,16 +2070,6 @@ fn detail_headings(item: &DetailItemData) -> (String, String) {
             (heading, subheading)
         }
         _ => (item.title.clone(), String::new()),
-    }
-}
-
-fn to_ui_kind(kind: DetailKind) -> super::DetailKind {
-    match kind {
-        DetailKind::Movie => super::DetailKind::Movie,
-        DetailKind::Series => super::DetailKind::Series,
-        DetailKind::Season => super::DetailKind::Season,
-        DetailKind::Episode => super::DetailKind::Episode,
-        DetailKind::Other => super::DetailKind::Other,
     }
 }
 
@@ -780,268 +2273,6 @@ fn detail_season_summary(page: &DetailPageData) -> String {
     }
 }
 
-#[derive(Clone)]
-enum DetailArtworkTarget {
-    HeroPoster(String),
-    HeroBackdrop(String),
-    HeroLogo(String),
-    Season { index: usize, id: String },
-    Episode { index: usize, id: String },
-    NextUp { id: String },
-    Similar { index: usize, id: String },
-    /// A cast photo; `guest` picks the Guest Stars shelf over Cast & Crew.
-    Person {
-        index: usize,
-        id: String,
-        name: String,
-        guest: bool,
-    },
-}
-
-fn load_detail_artwork(context: &AppContext, generation: u64, page: &DetailPageData) {
-    let item_id = page.item.id.clone();
-    let mut requests = Vec::new();
-    if let Some(image) = primary_card_image(&page.item).cloned() {
-        requests.push((DetailArtworkTarget::HeroPoster(item_id.clone()), image));
-    }
-    if let Some(image) = page.item.backdrop.clone() {
-        requests.push((DetailArtworkTarget::HeroBackdrop(item_id.clone()), image));
-    }
-    if let Some(image) = page.item.logo.clone() {
-        requests.push((DetailArtworkTarget::HeroLogo(item_id), image));
-    }
-    requests.extend(page.seasons.iter().enumerate().filter_map(|(index, item)| {
-        primary_card_image(item).cloned().map(|image| {
-            (
-                DetailArtworkTarget::Season {
-                    index,
-                    id: item.id.clone(),
-                },
-                image,
-            )
-        })
-    }));
-    if page.item.kind == DetailKind::Series {
-        // `detail-screen.slint` only renders `detail-episodes` for season and
-        // episode pages. A series page shows the Next Up card instead, whose
-        // artwork comes from this same cache -- so fetching every episode's
-        // still was up to 47 wasted round trips and decodes on a long show.
-        if let Some(target) = page.play_target()
-            && let Some(image) = primary_card_image(target).cloned()
-        {
-            requests.push((
-                DetailArtworkTarget::NextUp {
-                    id: target.id.clone(),
-                },
-                image,
-            ));
-        }
-    } else {
-        requests.extend(
-            page.episodes
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    primary_card_image(item).cloned().map(|image| {
-                        (
-                            DetailArtworkTarget::Episode {
-                                index,
-                                id: item.id.clone(),
-                            },
-                            image,
-                        )
-                    })
-                }),
-        );
-    }
-    requests.extend(page.similar.iter().enumerate().filter_map(|(index, item)| {
-        primary_card_image(item).cloned().map(|image| {
-            (
-                DetailArtworkTarget::Similar {
-                    index,
-                    id: item.id.clone(),
-                },
-                image,
-            )
-        })
-    }));
-    for (guest, people) in [(false, &page.item.people), (true, &page.item.guest_stars)] {
-        requests.extend(people.iter().enumerate().filter_map(|(index, person)| {
-            person.image.clone().map(|image| {
-                (
-                    DetailArtworkTarget::Person {
-                        index,
-                        id: person.id.clone().unwrap_or_default(),
-                        name: person.name.clone(),
-                        guest,
-                    },
-                    image,
-                )
-            })
-        }));
-    }
-    for (target, image) in requests {
-        load_detail_image(context, generation, target, image);
-    }
-}
-
-fn load_detail_image(
-    context: &AppContext,
-    generation: u64,
-    target: DetailArtworkTarget,
-    image: ImageRef,
-) {
-    let Some(api) = context.api() else { return };
-    // Already decoded and resident: the presenter reads the same key, so the
-    // row on screen is already showing it.
-    if cached_image(&image_key(&image)).is_some() {
-        return;
-    }
-    let ctx = context.clone();
-    context.runtime.spawn(async move {
-        let cache_id = format!(
-            "{}-{}-{}",
-            image.item_id,
-            image.image_type.jellyfin_name(),
-            image.index.unwrap_or(0)
-        );
-        // Above the cache path, which is keyed on it: an entry fetched at one
-        // size must not be served for a request at another.
-        let max_width = match &target {
-            DetailArtworkTarget::HeroBackdrop(_) => 1600,
-            DetailArtworkTarget::Episode { .. } | DetailArtworkTarget::HeroPoster(_)
-                if image.image_type == ImageType::Thumb =>
-            {
-                900
-            }
-            DetailArtworkTarget::Person { .. } => 320,
-            _ => 600,
-        };
-        let path = image_cache_path(
-            &ctx.image_cache,
-            api.session().server_url.as_str(),
-            &cache_id,
-            &image.tag,
-            max_width,
-        );
-        // Same reason as the catalog loader: blocking std::fs, including an
-        // fsync on the write, must not run on a runtime worker.
-        let probe = path.clone();
-        let cached = tokio::task::spawn_blocking(move || existing_cached_image(&probe))
-            .await
-            .ok()
-            .flatten();
-        let result = if let Some(path) = cached {
-            Ok(path)
-        } else {
-            // Taken here, not at the top of the task: the permit bounds
-            // concurrent downloads, and a hero image already on disk should not
-            // wait behind six in-flight fetches for a permit it will not use.
-            let Ok(_permit) = ctx.image_limit.clone().acquire_owned().await else {
-                return;
-            };
-            match api.fetch_detail_image(&image, max_width).await {
-                Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
-                    tokio::task::spawn_blocking(move || write_cached_image(&path, &bytes))
-                        .await
-                        .unwrap_or_else(|error| Err(error.to_string()))
-                }
-                Ok(_) => Err("detail artwork exceeded 20 MiB".to_owned()),
-                Err(error) => Err(error.to_string()),
-            }
-        };
-        if let Ok(path) = result {
-            let key = image_key(&image);
-            let apply_ctx = ctx.clone();
-            ctx.ui.update(move |window| {
-                // On the event loop for the same measured reason as the catalog
-                // loader: moving the decode off it costs more memory than the
-                // UI-thread time it saves.
-                let Ok(image) = Image::load_from_path(&path) else {
-                    return;
-                };
-                // A fetched image stays valid regardless of navigation, so it
-                // is cached even when this request's generation went stale.
-                store_cached_image(key, image.clone());
-                if !apply_ctx.is_current(generation) {
-                    return;
-                }
-                match target {
-                    DetailArtworkTarget::HeroPoster(id)
-                        if window.get_detail_id().as_str() == id =>
-                    {
-                        window.set_detail_artwork(image);
-                    }
-                    DetailArtworkTarget::HeroBackdrop(id)
-                        if window.get_detail_id().as_str() == id =>
-                    {
-                        window.set_detail_backdrop(image);
-                    }
-                    DetailArtworkTarget::HeroLogo(id) if window.get_detail_id().as_str() == id => {
-                        window.set_detail_logo(image);
-                    }
-                    DetailArtworkTarget::Season { index, id } => {
-                        let model = window.get_detail_seasons();
-                        if let Some(mut row) = model.row_data(index)
-                            && row.id.as_str() == id
-                        {
-                            row.artwork = image;
-                            model.set_row_data(index, row);
-                        }
-                    }
-                    DetailArtworkTarget::Episode { index, id } => {
-                        let model = window.get_detail_episodes();
-                        if let Some(mut row) = model.row_data(index)
-                            && row.id.as_str() == id
-                        {
-                            row.artwork = image;
-                            model.set_row_data(index, row);
-                        }
-                    }
-                    DetailArtworkTarget::Similar { index, id } => {
-                        let model = window.get_detail_similar();
-                        if let Some(mut row) = model.row_data(index)
-                            && row.id.as_str() == id
-                        {
-                            row.artwork = image;
-                            model.set_row_data(index, row);
-                        }
-                    }
-                    DetailArtworkTarget::NextUp { id } => {
-                        let model = window.get_detail_next_up();
-                        if let Some(mut row) = model.row_data(0)
-                            && row.id.as_str() == id
-                        {
-                            row.artwork = image;
-                            model.set_row_data(0, row);
-                        }
-                    }
-                    DetailArtworkTarget::Person {
-                        index,
-                        id,
-                        name,
-                        guest,
-                    } => {
-                        let model = if guest {
-                            window.get_detail_guest_stars()
-                        } else {
-                            window.get_detail_people()
-                        };
-                        if let Some(mut row) = model.row_data(index)
-                            && row.id.as_str() == id
-                            && row.name.as_str() == name
-                        {
-                            row.artwork = image;
-                            model.set_row_data(index, row);
-                        }
-                    }
-                    _ => {}
-                }
-            });
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1104,7 +2335,10 @@ mod tests {
         series.official_rating = Some("TV-MA".into());
         series.runtime_seconds = Some(3_000.0);
         series.series_continuing = true;
-        assert_eq!(detail_metadata_line(&series), "2019 – Present • TV-MA • 50m");
+        assert_eq!(
+            detail_metadata_line(&series),
+            "2019 – Present • TV-MA • 50m"
+        );
 
         series.series_continuing = false;
         series.end_year = Some(2022);

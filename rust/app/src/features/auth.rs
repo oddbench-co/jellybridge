@@ -23,7 +23,7 @@ pub enum PrefetchedHome {
 /// Starts the saved session's dashboard request before the window exists.
 ///
 /// The first HTTP byte used to leave from `restore_session`, at the very end of
-/// `main`: backend selection, the tokio runtime, the whole Slint tree, mpv core
+/// `main`: the tokio runtime, the window and its GL context, mpv core
 /// init and the renderer install had all completed on the main thread first, so
 /// the server round trip was *appended to* local startup rather than overlapping
 /// it. Everything here -- the blocking `session.json` read and the reqwest
@@ -136,7 +136,7 @@ pub fn logout(context: &AppContext) {
     if let Ok(mut tracks) = context.player_tracks.lock() {
         *tracks = crate::app::PlayerTrackState::default();
     }
-    ui::clear_image_cache_async();
+    ui::clear_image_cache_async(context);
     ui::show_login(context, message.as_deref().unwrap_or(""));
 }
 

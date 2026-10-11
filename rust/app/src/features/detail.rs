@@ -41,7 +41,7 @@ impl DetailTarget {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ImageRef {
     pub item_id: String,
     pub image_type: ImageType,
@@ -70,7 +70,6 @@ impl ImageType {
 
 #[derive(Clone, Debug)]
 pub struct PersonData {
-    pub id: Option<String>,
     pub name: String,
     pub role: String,
     pub image: Option<ImageRef>,

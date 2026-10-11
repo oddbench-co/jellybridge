@@ -1,10 +1,81 @@
-use slint::platform::Key;
+//! The player's keyboard map: pure logic over key text, testable without a
+//! window. The window turns egui key events into this text (see
+//! [`key_text`]).
+
+/// Keys without a printable character. Each maps to a private-use code
+/// point, so a key arrives as a one-character string like any letter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+    Space,
+    Pause,
+    LeftArrow,
+    RightArrow,
+    UpArrow,
+    DownArrow,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Escape,
+}
+
+impl From<Key> for char {
+    fn from(key: Key) -> char {
+        match key {
+            Key::Space => ' ',
+            Key::Escape => '\u{1b}',
+            Key::Pause => '\u{F713}',
+            Key::UpArrow => '\u{F700}',
+            Key::DownArrow => '\u{F701}',
+            Key::LeftArrow => '\u{F702}',
+            Key::RightArrow => '\u{F703}',
+            Key::Home => '\u{F729}',
+            Key::End => '\u{F72B}',
+            Key::PageUp => '\u{F72C}',
+            Key::PageDown => '\u{F72D}',
+        }
+    }
+}
+
+/// The text [`resolve_player_hotkey`] expects for an egui key press, or
+/// `None` for keys the player does not use. Letters arrive lowercase, or
+/// uppercase with Shift; `<` and `>` come through as typed text instead,
+/// because which key produces them depends on the keyboard layout.
+pub fn key_text(key: egui::Key, shift: bool) -> Option<String> {
+    let special = match key {
+        egui::Key::Space => Some(Key::Space),
+        egui::Key::ArrowLeft => Some(Key::LeftArrow),
+        egui::Key::ArrowRight => Some(Key::RightArrow),
+        egui::Key::ArrowUp => Some(Key::UpArrow),
+        egui::Key::ArrowDown => Some(Key::DownArrow),
+        egui::Key::Home => Some(Key::Home),
+        egui::Key::End => Some(Key::End),
+        egui::Key::PageUp => Some(Key::PageUp),
+        egui::Key::PageDown => Some(Key::PageDown),
+        egui::Key::Escape => Some(Key::Escape),
+        _ => None,
+    };
+    if let Some(special) = special {
+        return Some(char::from(special).to_string());
+    }
+    let name = key.name();
+    let mut characters = name.chars();
+    let character = characters.next()?;
+    if characters.next().is_some() || !character.is_ascii_alphanumeric() {
+        return None;
+    }
+    Some(if shift {
+        character.to_ascii_uppercase().to_string()
+    } else {
+        character.to_ascii_lowercase().to_string()
+    })
+}
 
 /// Rewind and fast-forward steps, as in Jellyfin's player.
 pub const REWIND_SECONDS: f64 = 10.0;
 pub const FAST_FORWARD_SECONDS: f64 = 30.0;
 
-/// The speed menu's choices; `speed-index` in the window indexes this.
+/// The speed menu's choices; `PlayerVm::speed_index` indexes this.
 pub const PLAYBACK_SPEEDS: [f64; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,68 +132,66 @@ pub fn resolve_player_hotkey(
         .next()
         .filter(|_| text.chars().count() == 1)
         .and_then(|character| character.to_digit(10));
-    let action = if is_key(text, Key::Space)
-        || text.eq_ignore_ascii_case("k")
-        || is_key(text, Key::Pause)
-    {
-        Some(PlayerHotkeyAction::TogglePlayback)
-    } else if is_key(text, Key::LeftArrow) {
-        Some(PlayerHotkeyAction::SeekRelative(if shift {
-            -5.0
+    let action =
+        if is_key(text, Key::Space) || text.eq_ignore_ascii_case("k") || is_key(text, Key::Pause) {
+            Some(PlayerHotkeyAction::TogglePlayback)
+        } else if is_key(text, Key::LeftArrow) {
+            Some(PlayerHotkeyAction::SeekRelative(if shift {
+                -5.0
+            } else {
+                -REWIND_SECONDS
+            }))
+        } else if is_key(text, Key::RightArrow) {
+            Some(PlayerHotkeyAction::SeekRelative(if shift {
+                5.0
+            } else {
+                FAST_FORWARD_SECONDS
+            }))
+        } else if text.eq_ignore_ascii_case("j") {
+            Some(PlayerHotkeyAction::SeekRelative(-REWIND_SECONDS))
+        } else if text.eq_ignore_ascii_case("l") {
+            Some(PlayerHotkeyAction::SeekRelative(FAST_FORWARD_SECONDS))
+        } else if let Some(digit) = digit {
+            Some(PlayerHotkeyAction::SeekToFraction(f64::from(digit) / 10.0))
+        } else if is_key(text, Key::UpArrow) {
+            Some(PlayerHotkeyAction::AdjustVolume(5.0))
+        } else if is_key(text, Key::DownArrow) {
+            Some(PlayerHotkeyAction::AdjustVolume(-5.0))
+        } else if is_key(text, Key::Home) {
+            Some(PlayerHotkeyAction::SeekToStart)
+        } else if is_key(text, Key::End) {
+            Some(PlayerHotkeyAction::SeekToEnd)
+        } else if text == ">" {
+            Some(PlayerHotkeyAction::StepSpeed(1))
+        } else if text == "<" {
+            Some(PlayerHotkeyAction::StepSpeed(-1))
+        } else if is_key(text, Key::PageUp) {
+            Some(PlayerHotkeyAction::NextChapter)
+        } else if is_key(text, Key::PageDown) {
+            Some(PlayerHotkeyAction::PreviousChapter)
+        } else if text == "N" || (shift && text == "n") {
+            Some(PlayerHotkeyAction::NextItem)
+        } else if text == "P" || (shift && text == "p") {
+            Some(PlayerHotkeyAction::PreviousItem)
+        } else if text.eq_ignore_ascii_case("m") {
+            Some(PlayerHotkeyAction::ToggleMute)
+        } else if text.eq_ignore_ascii_case("f") {
+            Some(PlayerHotkeyAction::ToggleFullscreen)
+        } else if is_key(text, Key::Escape) {
+            Some(if fullscreen {
+                PlayerHotkeyAction::ExitFullscreen
+            } else {
+                PlayerHotkeyAction::LeavePlayer
+            })
+        } else if text.eq_ignore_ascii_case("a") {
+            Some(PlayerHotkeyAction::CycleAudio)
+        } else if text.eq_ignore_ascii_case("c") {
+            Some(PlayerHotkeyAction::CycleSubtitle)
+        } else if text.eq_ignore_ascii_case("q") {
+            Some(PlayerHotkeyAction::LeavePlayer)
         } else {
-            -REWIND_SECONDS
-        }))
-    } else if is_key(text, Key::RightArrow) {
-        Some(PlayerHotkeyAction::SeekRelative(if shift {
-            5.0
-        } else {
-            FAST_FORWARD_SECONDS
-        }))
-    } else if text.eq_ignore_ascii_case("j") {
-        Some(PlayerHotkeyAction::SeekRelative(-REWIND_SECONDS))
-    } else if text.eq_ignore_ascii_case("l") {
-        Some(PlayerHotkeyAction::SeekRelative(FAST_FORWARD_SECONDS))
-    } else if let Some(digit) = digit {
-        Some(PlayerHotkeyAction::SeekToFraction(f64::from(digit) / 10.0))
-    } else if is_key(text, Key::UpArrow) {
-        Some(PlayerHotkeyAction::AdjustVolume(5.0))
-    } else if is_key(text, Key::DownArrow) {
-        Some(PlayerHotkeyAction::AdjustVolume(-5.0))
-    } else if is_key(text, Key::Home) {
-        Some(PlayerHotkeyAction::SeekToStart)
-    } else if is_key(text, Key::End) {
-        Some(PlayerHotkeyAction::SeekToEnd)
-    } else if text == ">" {
-        Some(PlayerHotkeyAction::StepSpeed(1))
-    } else if text == "<" {
-        Some(PlayerHotkeyAction::StepSpeed(-1))
-    } else if is_key(text, Key::PageUp) {
-        Some(PlayerHotkeyAction::NextChapter)
-    } else if is_key(text, Key::PageDown) {
-        Some(PlayerHotkeyAction::PreviousChapter)
-    } else if text == "N" || (shift && text == "n") {
-        Some(PlayerHotkeyAction::NextItem)
-    } else if text == "P" || (shift && text == "p") {
-        Some(PlayerHotkeyAction::PreviousItem)
-    } else if text.eq_ignore_ascii_case("m") {
-        Some(PlayerHotkeyAction::ToggleMute)
-    } else if text.eq_ignore_ascii_case("f") {
-        Some(PlayerHotkeyAction::ToggleFullscreen)
-    } else if is_key(text, Key::Escape) {
-        Some(if fullscreen {
-            PlayerHotkeyAction::ExitFullscreen
-        } else {
-            PlayerHotkeyAction::LeavePlayer
-        })
-    } else if text.eq_ignore_ascii_case("a") {
-        Some(PlayerHotkeyAction::CycleAudio)
-    } else if text.eq_ignore_ascii_case("c") {
-        Some(PlayerHotkeyAction::CycleSubtitle)
-    } else if text.eq_ignore_ascii_case("q") {
-        Some(PlayerHotkeyAction::LeavePlayer)
-    } else {
-        None
-    };
+            None
+        };
 
     let Some(action) = action else {
         return HotkeyDecision::default();
@@ -313,10 +382,7 @@ mod tests {
         assert_eq!(repeat.action, None);
 
         let repeat = resolve_player_hotkey("l", true, false, false, false);
-        assert_eq!(
-            repeat.action,
-            Some(PlayerHotkeyAction::SeekRelative(30.0))
-        );
+        assert_eq!(repeat.action, Some(PlayerHotkeyAction::SeekRelative(30.0)));
     }
 
     #[test]

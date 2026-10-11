@@ -1,7 +1,7 @@
 # JellyBridge — Product Requirements Document
 
 > Historical note: this PRD predates the August 2026 rewrite. The product is
-> now implemented in Rust with Slint and embedded libmpv; the requirements
+> now implemented in Rust with egui and embedded libmpv; the requirements
 > below otherwise still describe the intended product.
 
 ## Overview

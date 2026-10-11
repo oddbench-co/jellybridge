@@ -1,6 +1,6 @@
 # JellyBridge Rust Port
 
-Status: **the Rust/Slint application is the production client.** The original
+Status: **the Rust/egui application is the production client.** The original
 Kotlin/Compose implementation was removed from the working tree in August 2026
 (it remains in git history) after the Rust rewrite reached feature parity for
 browsing and playback. The former "vertical slice" feasibility crate was
@@ -20,7 +20,8 @@ chapter navigation, and auto-play-next.
 ## Fixed targets
 
 - Rust 1.98.0, edition 2024.
-- Slint 1.17.1 with an explicitly selected native OpenGL renderer.
+- egui/eframe 0.36 on its glow (OpenGL) renderer, which mpv shares through a
+  paint callback. (Slint 1.17.1 until October 2026.)
 - mpv 0.41.0 and libmpv2 6.0.0.
 - macOS arm64 (macOS 13+) and Linux x86_64 (glibc 2.35+).
 - Jellyfin 10.9 minimum, 10.11.11 stable fixture, and a Jellyfin 12 canary.
@@ -45,7 +46,6 @@ consistent:
 ```bash
 scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings
 scripts/cargo-env.sh test --locked
-scripts/cargo-env.sh check --no-default-features --features renderer-skia-opengl --locked
 ```
 
 macOS uses the Homebrew development mpv graph by default. Linux uses the

@@ -5,5 +5,4 @@ fn main() {
     println!("cargo:rustc-link-arg=-Wl,-rpath,@executable_path/../Resources/lib");
     #[cfg(target_os = "linux")]
     println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/../lib/jellybridge/lib");
-    slint_build::compile("ui/app-window.slint").expect("compile JellyBridge Slint application");
 }

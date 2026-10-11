@@ -1,5 +1,9 @@
 # Performance Protocol
 
+> **Historical (Slint era).** Recorded while the UI was Slint 1.17.1. Since
+> October 2026 the UI is egui/eframe; Slint-specific findings below no longer
+> apply, the measured budgets and the mpv render contract still do.
+
 Compare release packages on the same physical machine, power mode, account,
 server snapshot, window size, and network. Debug builds are invalid.
 

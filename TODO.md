@@ -1,7 +1,7 @@
 # JellyBridge TODO
 
 Last compared with the current app state: 2026-06-30 (Kotlin implementation;
-the app has since been rewritten in Rust/Slint — progress reporting and
+the app has since been rewritten in Rust (now with an egui UI) — progress reporting and
 filters from the list below are not yet ported, see
 docs/rust-port/parity-matrix.md).
 

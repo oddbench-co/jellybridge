@@ -1,6 +1,6 @@
 //! Serialized access to libmpv's ordinary client API.
 //!
-//! The render context deliberately lives elsewhere on Slint's render thread.
+//! The render context deliberately lives elsewhere on the window's thread, inside egui paint callbacks.
 //! No normal client call is made by the render notifier or mpv callbacks.
 
 use std::ffi::CString;
@@ -226,9 +226,15 @@ pub fn create_player(
         initializer.set_option("input-default-bindings", false)?;
         initializer.set_option("osc", false)?;
         initializer.set_option("keep-open", true)?;
+        // Debug builds only: automated test runs play real media, and must
+        // not make sound on the machine they run on.
+        #[cfg(debug_assertions)]
+        if std::env::var_os("JELLYBRIDGE_MUTE").is_some() {
+            initializer.set_option("ao", "null")?;
+        }
         // mpv starts a Lua VM on its own thread for each of its built-in
         // scripts. They exist for mpv's own OSD and command line, none of which
-        // this app has: the UI is Slint, playback is driven through the command
+        // this app has: the UI is egui, playback is driven through the command
         // API, and the URL always comes from the loopback proxy, so ytdl can
         // only ever be dead weight. Measured: seven threads and their VMs.
         // `config = false` above does not cover these -- they are built in, not

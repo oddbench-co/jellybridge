@@ -74,10 +74,6 @@ if ((cold_artwork)) && [[ -d "$artwork_cache" ]]; then
     echo "artwork cache moved aside for a cold run" >&2
 fi
 
-# refresh_lazy measures only frames that were actually requested, which is what
-# an interactive app does; refresh_full_speed would measure a benchmark loop
-# the app never runs.
-export SLINT_DEBUG_PERFORMANCE="refresh_lazy,console"
 export RUST_LOG="${RUST_LOG:-jellybridge=debug}"
 
 if [[ "$mode" == cpu ]]; then
@@ -157,4 +153,3 @@ if [[ -s "$out/maps.txt" ]]; then
     echo "  top mappings:"
     sed -n '2,6p' "$out/maps.txt" | sed 's/^/    /'
 fi
-grep -hE "^Slint: |frames? per second|FPS" "$out/app.log" | tail -5 || true

@@ -1235,7 +1235,6 @@ impl From<LibraryItem> for DetailItemData {
                     tag: tag.clone(),
                 });
             PersonData {
-                id: person.id,
                 name: person.name,
                 role: person.role,
                 image,

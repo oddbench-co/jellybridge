@@ -4,9 +4,6 @@ mod features;
 mod services;
 mod ui;
 
-use std::cell::{Cell, RefCell};
-use slint::ComponentHandle;
-use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -16,25 +13,39 @@ use features::catalog::{CatalogDensity, CatalogSort};
 use features::progress::PlaybackReporter;
 use services::player::{PlayerEvent, create_player};
 use services::playback::PreparedPlayback;
+use services::render::{NativeDisplay, RenderHost, native_display};
 use services::session::{SessionStore, SettingsStore, StoredSettings, cache_directory};
-use ui::{JellyBridgeWindow, UiHandle};
-
-#[cfg(all(feature = "renderer-femtovg", feature = "renderer-skia-opengl"))]
-compile_error!("select exactly one renderer feature");
-
-#[cfg(not(any(feature = "renderer-femtovg", feature = "renderer-skia-opengl")))]
-compile_error!("select renderer-femtovg or renderer-skia-opengl");
+use ui::UiHandle;
+use ui::app::{JellyBridgeApp, UiAction};
 
 /// Identifies our windows to the window manager. Matches the packager
 /// identifier in `Cargo.toml` so the desktop entry, the window class and the
-/// installed package all agree.
+/// installed package all agree. Without it the Wayland surface carries no app
+/// id at all, and anything that identifies windows by class -- window rules,
+/// taskbars, launch-or-focus keybinds -- can only fall back to the title.
 const APP_ID: &str = "dev.nk.jellybridge";
 
-#[cfg(feature = "renderer-femtovg")]
-const RENDERER_NAME: &str = "femtovg";
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
-#[cfg(feature = "renderer-skia-opengl")]
-const RENDERER_NAME: &str = "skia";
+/// The window icon and the brand mark drawn in the UI, decoded once.
+struct DecodedIcon {
+    window: egui::IconData,
+    /// Downscaled for the 38–62 px brand marks: drawing the 512 px original
+    /// that small would alias.
+    brand: egui::ColorImage,
+}
+
+fn decode_icon() -> Option<DecodedIcon> {
+    let image = image::load_from_memory(ICON_PNG).ok()?.to_rgba8();
+    let window = egui::IconData {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.as_raw().clone(),
+    };
+    let small = image::imageops::resize(&image, 128, 128, image::imageops::FilterType::Triangle);
+    let brand = egui::ColorImage::from_rgba_unmultiplied([128, 128], small.as_raw());
+    Some(DecodedIcon { window, brand })
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // First statement: time_to_interactive is measured from here, so it
@@ -53,32 +64,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
     ui::startup::mark_process_start(process_start);
 
-    slint::BackendSelector::new()
-        .backend_name("winit".into())
-        .renderer_name(RENDERER_NAME.into())
-        .require_opengl()
-        .select()
-        .map_err(|error| {
-            format!(
-                "JellyBridge requires the explicitly configured {RENDERER_NAME} OpenGL renderer: {error}"
-            )
-        })?;
-
     // One worker per logical CPU is tokio's default: 32 OS threads here, for a
     // workload whose real concurrency is six dashboard requests, six artwork
     // permits and eight proxy streams, all of it I/O-bound. Four workers cover
-    // that; the blocking pool, which the artwork disk probes and getaddrinfo
-    // use, is capped well below its 512-thread default for the same reason.
-    // Without this the Wayland surface carries no app id at all: `hyprctl
-    // clients` reports an empty class, the desktop entry's StartupWMClass
-    // matches nothing, and anything that identifies windows by class -- window
-    // rules, taskbars, launch-or-focus keybinds -- can only fall back to
-    // matching our title, which collides with any other window that happens to
-    // mention the project. The identifier matches the one the packager uses.
-    if let Err(error) = slint::set_xdg_app_id(APP_ID) {
-        tracing::warn!(%error, "the window manager app id could not be set");
-    }
-
+    // that; the blocking pool, which the artwork disk probes, decodes and
+    // getaddrinfo use, is capped well below its 512-thread default for the
+    // same reason.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .max_blocking_threads(8)
@@ -89,6 +80,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // window, so it runs while the window, the player and the renderer are
     // being built rather than after them. See auth::prefetch_home.
     let prefetched_home = features::auth::prefetch_home(runtime.handle());
+    // The icon is needed when the window is created; decoding it meanwhile
+    // keeps it off the critical path.
+    let icon = runtime.spawn_blocking(decode_icon);
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "prefetch_spawned", "startup_stage");
     let store = SessionStore::for_current_user()?;
     let settings_store = SettingsStore::for_current_user()?;
@@ -111,10 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             services::artwork::prune_image_cache(&directory, services::artwork::IMAGE_CACHE_BUDGET)
         });
     }
-    let window = JellyBridgeWindow::new()?;
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "window_built", "startup_stage");
-    let ui_handle = UiHandle::new(&window);
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "ui_handle", "startup_stage");
+    let (ui_handle, ui_queue) = UiHandle::new();
     let playback = Arc::new(Mutex::new(None::<PreparedPlayback>));
     let player_tracks = Arc::new(Mutex::new(PlayerTrackState::default()));
     let state = Arc::new(Mutex::new(app_state));
@@ -164,19 +155,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .is_some_and(features::now_playing::NowPlaying::autoplays)
             });
         let tracks = event_tracks.clone();
-        event_ui.update(move |window| {
-            ui::player::apply_player_event(window, event, &tracks);
+        event_ui.update(move |ui_state| {
+            ui::player::apply_player_event(ui_state, event, &tracks);
             if let Some(overlay) = overlay {
-                ui::player::apply_player_overlay(window, &overlay);
+                ui::player::apply_player_overlay(ui_state, &overlay);
             }
             // At the natural end, roll into the next episode or, like
             // Jellyfin, return to where playback started.
-            if ended && window.get_screen() == ui::Screen::Player {
-                if autoplay {
-                    window.invoke_play_next();
+            if ended && ui_state.screen == ui::Screen::Player {
+                ui_state.deferred.push(if autoplay {
+                    UiAction::PlayNext
                 } else {
-                    window.invoke_leave_player();
-                }
+                    UiAction::LeavePlayer
+                });
             }
         });
         if ended {
@@ -197,8 +188,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "player_created", "startup_stage");
     let player_sender = player_worker.command_sender();
-    let player_worker = Rc::new(RefCell::new(Some(player_worker)));
-    let image_is_cleared = Rc::new(Cell::new(true));
     let (render_ready, render_ready_rx) = tokio::sync::watch::channel(false);
     let context = AppContext {
         ui: ui_handle,
@@ -217,44 +206,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         catalog_request: Arc::new(Mutex::new(None)),
         refresh,
     };
-    ui::connect(&window, &context);
     runtime.spawn(features::refresh::run_refresh_loop(context.clone()));
-    let player_ui = ui::player::connect(&window, &context, image_is_cleared.clone());
-    ui::player::install_renderer(
-        &window,
-        render_client,
-        image_is_cleared.clone(),
-        player_ui,
-        render_ready,
-    )?;
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "renderer_installed", "startup_stage");
-    let close_worker = player_worker.clone();
-    let close_weak = slint::ComponentHandle::as_weak(&window);
-    let close_image_is_cleared = image_is_cleared.clone();
-    window.window().on_close_requested(move || {
-        if let Some(window) = close_weak.upgrade() {
-            ui::player::shutdown_player_surface(&close_worker, &window, &close_image_is_cleared);
-        } else if let Some(worker) = close_worker.borrow_mut().take() {
-            worker.shutdown();
-        }
-        slint::CloseRequestResponse::HideWindow
-    });
+    // Its updates queue up and land on the window's first frame.
     features::auth::restore_session(&context, prefetched_home);
 
-    tracing::info!(
-        renderer = RENDERER_NAME,
-        "Rust JellyBridge application ready"
-    );
+    let icon = runtime.block_on(icon).ok().flatten();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("JellyBridge")
+        .with_app_id(APP_ID)
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([760.0, 520.0]);
+    let mut brand_icon = None;
+    if let Some(icon) = icon {
+        viewport = viewport.with_icon(icon.window);
+        brand_icon = Some(icon.brand);
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        // mpv renders through OpenGL on the window's own context, so the
+        // window must be drawn with OpenGL too.
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
+    let app_context = context.clone();
+    tracing::info!("Rust JellyBridge application ready");
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "event_loop_start", "startup_stage");
-    window.run()?;
+    eframe::run_native(
+        "JellyBridge",
+        options,
+        Box::new(move |creation| {
+            let display = native_display(creation).unwrap_or_else(|error| {
+                tracing::warn!(%error, "no native display for hardware-decode interop");
+                NativeDisplay::None
+            });
+            let wake = creation.egui_ctx.clone();
+            let render_host = RenderHost::new(
+                render_client,
+                display,
+                Arc::new(move || wake.request_repaint()),
+                render_ready,
+            );
+            tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "window_built", "startup_stage");
+            Ok(Box::new(JellyBridgeApp::new(
+                &creation.egui_ctx,
+                ui_queue,
+                app_context,
+                render_host,
+                player_worker,
+                brand_icon,
+            )))
+        }),
+    )?;
 
-    // Teardown order matters: invalidate in-flight work, stop the mpv worker,
-    // clear the video frame while `image_is_cleared` is set (the renderer
-    // teardown notifier reads it), drop the window, then shut down the proxy
-    // and the runtime.
+    // The window has torn down mpv and its render context (`on_exit`); shut
+    // down the proxy and the runtime.
     context.next_generation();
-    ui::player::shutdown_player_surface(&player_worker, &window, &image_is_cleared);
-    drop(window);
     let remote = context
         .playback
         .lock()

@@ -1,5 +1,5 @@
 //! Application state and shared orchestration context. This module must not
-//! know any Slint type; the UI is reached only through [`crate::ui::UiHandle`].
+//! know any UI type; the UI is reached only through [`crate::ui::UiHandle`].
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

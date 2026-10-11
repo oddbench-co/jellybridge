@@ -1,6 +1,6 @@
 # JellyBridge
 
-JellyBridge is a native Rust/Slint desktop client for Jellyfin with embedded
+JellyBridge is a native Rust/egui desktop client for Jellyfin with embedded
 libmpv video playback. It is a lightweight alternative to browser or
 Electron-based Jellyfin clients, with a strong preference for direct play
 instead of server-side transcoding.
@@ -101,28 +101,28 @@ GPL-enabled Homebrew components; do not use it as the public release artifact.
 
 ```text
 rust/app
-├── build.rs                 rpath link arguments + Slint compilation
-├── assets/                  application icon
+├── build.rs                 rpath link arguments for the bundled libmpv
+├── assets/                  application icon, UI fonts (Liberation Sans)
 ├── src/
 │   ├── main.rs              composition root: startup, wiring, teardown
-│   ├── app.rs               AppState/AppContext (no Slint types)
+│   ├── app.rs               AppState/AppContext (no UI types)
 │   ├── api.rs               Jellyfin HTTP client
 │   ├── features/            use-cases by feature: auth, catalog, detail, playback
 │   ├── services/            infrastructure: artwork cache, session storage,
 │   │                        playback preparation, mpv worker, loopback proxy,
 │   │                        GL render bridge
-│   └── ui/                  the only Rust↔Slint boundary: UiHandle event-loop
-│                            funnel, callback wiring, presenters, hotkeys
-└── ui/
-    ├── app-window.slint     composition root: boundary properties, screen switch
-    ├── theme.slint          design tokens (palette, spacing, radii, type)
-    ├── types.slint          boundary structs and enums shared with Rust
-    ├── components/          genuinely shared components (top bar)
-    └── features/            per-feature screens and their local components
+│   └── ui/                  the only module that knows egui:
+│       ├── mod.rs           UiHandle (update queue), UiState view model
+│       ├── app.rs           the window: drains updates, draws, dispatches UiActions
+│       ├── theme.rs         design tokens (palette, radii, type) and fonts
+│       ├── widgets.rs       shared drawing: text, artwork, shelves, buttons
+│       ├── images.rs        artwork fetch/decode pipeline + texture LRU cache
+│       └── login/top_bar/catalog/detail/player.rs   the screens
 ```
 
-Dependency direction: `.slint` ↔ `src/ui` ↔ `app.rs` + `features/` →
-`services/`. Only `src/ui` may import `slint`.
+Dependency direction: `src/ui` → `app.rs` + `features/` → `services/`, and
+features reach the window only through `UiHandle`. Only `src/ui` (plus the mpv
+render bridge in `services/render.rs`) may import `egui`/`eframe`.
 
 ## Configuration Files
 
