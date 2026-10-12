@@ -3,6 +3,7 @@
 
 pub mod artwork;
 pub mod dns;
+pub mod libmpv;
 pub mod playback;
 pub mod player;
 pub mod proxy;

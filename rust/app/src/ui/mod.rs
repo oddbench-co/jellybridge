@@ -12,9 +12,10 @@ pub mod catalog;
 pub mod detail;
 pub mod icons;
 pub mod images;
-#[cfg(debug_assertions)]
 pub mod input_script;
+pub mod jf;
 pub mod login;
+pub mod measure;
 pub mod player;
 pub mod player_hotkeys;
 pub mod startup;

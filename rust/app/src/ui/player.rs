@@ -235,6 +235,9 @@ pub fn apply_player_event(
             player.decode_label = format!("Decode path: {path}");
         }
         PlayerEvent::Ended => player.status = "Playback ended".to_owned(),
+        // Only here for the repaint every player event brings: that frame
+        // builds the render context, or releases it after the player is left.
+        PlayerEvent::RendererAvailable | PlayerEvent::Idle => {}
         PlayerEvent::Error(message) => {
             tracing::error!(%message, "application player failed");
             player.status = message;

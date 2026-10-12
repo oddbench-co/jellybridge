@@ -65,6 +65,20 @@ dylibbundler \
     -d "$frameworks_path" \
     -p @executable_path/../Frameworks/
 
+# The app loads libmpv at runtime (rust/app/src/services/libmpv.rs) rather
+# than linking it, so the pass above does not see it: copy it in and bundle
+# its dependency graph explicitly. After that pass, because `-od` above
+# empties the directory first.
+mkdir -p "$frameworks_path"
+cp "$mpv_prefix/lib/libmpv.2.dylib" "$frameworks_path/libmpv.2.dylib"
+chmod u+w "$frameworks_path/libmpv.2.dylib"
+install_name_tool -id @executable_path/../Frameworks/libmpv.2.dylib "$frameworks_path/libmpv.2.dylib"
+dylibbundler \
+    -b \
+    -x "$frameworks_path/libmpv.2.dylib" \
+    -d "$frameworks_path" \
+    -p @executable_path/../Frameworks/
+
 # dylibbundler rewrites both of Homebrew libmpv's Swift rpaths to the same
 # destination. macOS 26 rejects the dylib when duplicate LC_RPATH commands
 # remain, so retain exactly one copy.

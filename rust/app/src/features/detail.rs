@@ -203,20 +203,6 @@ impl DetailPageData {
             .or_else(|| self.episodes.first())
     }
 
-    pub(crate) fn primary_play_label(&self) -> Option<&'static str> {
-        let target = self.play_target()?;
-        if target.resume_seconds > 0.0 && !target.watched {
-            Some("Resume")
-        } else if matches!(self.item.kind, DetailKind::Series | DetailKind::Season)
-            && !target.watched
-        {
-            Some("Play next")
-        } else if target.watched {
-            Some("Play again")
-        } else {
-            Some("Play")
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -757,34 +743,6 @@ mod tests {
             model.update(DetailMessage::Play),
             vec![DetailEffect::Play("first".into())]
         );
-    }
-
-    #[test]
-    fn primary_play_labels_follow_the_selected_media() {
-        let mut season = page("season", DetailKind::Season);
-        assert_eq!(season.primary_play_label(), None);
-
-        let mut watched = DetailItemData::fixture("watched", DetailKind::Episode);
-        watched.watched = true;
-        let mut next = DetailItemData::fixture("next", DetailKind::Episode);
-        next.watched = false;
-        let mut resumable = DetailItemData::fixture("resumable", DetailKind::Episode);
-        resumable.resume_seconds = 312.0;
-        season.episodes = vec![watched.clone(), next.clone(), resumable];
-        assert_eq!(season.primary_play_label(), Some("Resume"));
-
-        season.episodes = vec![watched.clone(), next];
-        assert_eq!(season.primary_play_label(), Some("Play next"));
-
-        season.episodes = vec![watched];
-        assert_eq!(season.primary_play_label(), Some("Play again"));
-
-        let mut movie = page("movie", DetailKind::Movie);
-        assert_eq!(movie.primary_play_label(), Some("Play"));
-        movie.item.resume_seconds = 91.0;
-        assert_eq!(movie.primary_play_label(), Some("Resume"));
-        movie.item.watched = true;
-        assert_eq!(movie.primary_play_label(), Some("Play again"));
     }
 
     #[test]

@@ -51,9 +51,16 @@ impl Resolve for CachingResolver {
                 return Ok(Box::new(entry.addrs.clone().into_iter()) as Addrs);
             }
             // Port 0: reqwest substitutes the scheme's conventional port.
+            let started = Instant::now();
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await?
                 .collect();
+            tracing::debug!(
+                %host,
+                ms = started.elapsed().as_secs_f64() * 1000.0,
+                addresses = addrs.len(),
+                "dns lookup"
+            );
             entries.insert(
                 host,
                 Entry {

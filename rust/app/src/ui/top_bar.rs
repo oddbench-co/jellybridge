@@ -1,195 +1,191 @@
-//! Shared chrome above the catalog and detail screens: back, brand/home,
-//! current title, account, and sign-out.
+//! jellyfin-web's header: the logo on home; back, home and the page title
+//! elsewhere; search and the account menu on the right. Over a detail page's
+//! backdrop it turns translucent.
 
 use egui::{Align2, Color32, Id, Rect, Sense, Ui, pos2, vec2};
 
 use super::app::UiAction;
+use super::icons::Icon;
+use super::jf;
 use super::theme;
 use super::widgets;
 use super::{Screen, UiState};
 
-pub const HEIGHT: f32 = 64.0;
+/// Header height: the 41 px button row with 8 px above and below.
+pub const HEIGHT: f32 = 57.0;
 
 pub fn draw(ui: &mut Ui, state: &UiState, rect: Rect, actions: &mut Vec<UiAction>) {
-    let show_back = state.can_go_back || state.screen == Screen::Detail;
-    let home_active = state.catalog.home && state.screen == Screen::Catalog;
-    let title = if state.screen == Screen::Detail {
-        state.detail.title.as_str()
-    } else {
-        state.page_title.as_str()
-    };
-
+    let on_detail = state.screen == Screen::Detail;
+    let home = state.screen == Screen::Catalog && state.catalog.home && !state.can_go_back;
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, 0.0, theme::with_alpha(theme::BG, 0.96));
     painter.rect_filled(
-        Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), rect.max),
+        rect,
         0.0,
-        theme::SURFACE_HOVER,
+        if on_detail {
+            Color32::from_black_alpha(102)
+        } else {
+            theme::JF_HEADER
+        },
     );
 
-    let top = rect.top() + 10.0;
-    let height = HEIGHT - 10.0 - 11.0;
-    let item = |x: f32, width: f32| Rect::from_min_size(pos2(x, top), vec2(width, height));
-    let mut x = rect.left() + 18.0;
-
-    if show_back {
-        let back = item(x, 42.0);
-        let response = ui.interact(back, Id::new("top-bar-back"), Sense::click());
-        widgets::describe_button(&response, true, "Back");
-        painter.rect_filled(
-            back,
-            21.0,
-            if response.hovered() {
-                theme::SURFACE_HOVER
-            } else {
-                theme::SURFACE
-            },
+    let button =
+        |x: f32| Rect::from_min_size(pos2(rect.left() + x, rect.top() + 8.0), vec2(41.0, 41.0));
+    let white = Color32::WHITE;
+    if home {
+        // The brand mark where jellyfin-web has its logo.
+        let logo = Rect::from_min_size(
+            pos2(rect.left() + 16.0, rect.top() + 13.5),
+            vec2(30.0, 30.0),
         );
-        widgets::border(&painter, back, 21.0, 1.0, theme::BORDER);
+        if let Some(icon) = &state.brand_icon {
+            widgets::image_contain(&painter, icon.id(), icon.size(), logo);
+        }
         painter.text(
-            back.center() - vec2(0.0, 2.0),
-            Align2::CENTER_CENTER,
-            "‹",
-            theme::regular(27.0),
-            theme::TEXT_PRIMARY,
+            pos2(logo.right() + 6.0, logo.center().y),
+            Align2::LEFT_CENTER,
+            "JellyBridge",
+            theme::bold(19.5),
+            white,
         );
-        widgets::pointer_on_hover(&response);
-        if response.on_hover_text("Back").clicked() {
+    } else {
+        if jf::round_icon_button(
+            ui,
+            button(4.0),
+            Icon::ArrowBack,
+            white,
+            24.8,
+            "Back",
+            true,
+            Id::new("header-back"),
+        )
+        .clicked()
+        {
             actions.push(UiAction::GoBack);
         }
-        x = back.right() + 10.0;
-    }
-
-    let brand = item(x, 172.0);
-    let response = ui.interact(brand, Id::new("top-bar-brand"), Sense::click());
-    widgets::describe_button(&response, true, "Home");
-    let logo = Rect::from_min_size(pos2(brand.left(), brand.top() + 2.0), vec2(38.0, 38.0));
-    widgets::diagonal_gradient(
-        &painter,
-        logo,
-        theme::RADIUS_LARGE,
-        theme::ACCENT,
-        theme::ACCENT_DEEP,
-    );
-    if let Some(icon) = &state.brand_icon {
-        widgets::image_contain(&painter, icon.id(), icon.size(), logo);
-    }
-    painter.text(
-        pos2(brand.left() + 49.0, brand.center().y),
-        Align2::LEFT_CENTER,
-        "JellyBridge",
-        theme::bold(19.0),
-        theme::TEXT_PRIMARY,
-    );
-    widgets::pointer_on_hover(&response);
-    if response.clicked() {
-        actions.push(UiAction::GoHome);
-    }
-    x = brand.right() + 10.0;
-
-    painter.rect_filled(item(x, 1.0), 0.0, theme::BORDER);
-    x += 11.0;
-
-    let home = item(x, 70.0);
-    let response = ui.interact(home, Id::new("top-bar-home"), Sense::click());
-    widgets::describe_button(&response, true, "Home");
-    let fill = if home_active {
-        theme::ACCENT_SURFACE
-    } else if response.hovered() {
-        theme::SURFACE_RAISED
-    } else {
-        Color32::TRANSPARENT
-    };
-    painter.rect_filled(home, theme::RADIUS_MEDIUM, fill);
-    painter.text(
-        home.center(),
-        Align2::CENTER_CENTER,
-        "Home",
-        theme::bold(13.0),
-        if home_active {
-            theme::ACCENT_BRIGHT
-        } else {
-            theme::TEXT_SECONDARY
-        },
-    );
-    widgets::pointer_on_hover(&response);
-    if response.clicked() {
-        actions.push(UiAction::GoHome);
-    }
-    x = home.right() + 10.0;
-
-    // Right-aligned: sign-out, then the account pill.
-    let sign_out = item(rect.right() - 18.0 - 82.0, 82.0);
-    let account = item(sign_out.left() - 10.0 - 174.0, 174.0);
-
-    let title_rect = Rect::from_min_max(pos2(x, top), pos2(account.left() - 10.0, top + height));
-    if title_rect.width() > 0.0 {
-        let galley = widgets::elided(
+        if jf::round_icon_button(
             ui,
-            title,
-            theme::regular(12.0),
-            theme::TEXT_FAINT,
-            title_rect.width(),
-        );
-        widgets::galley_centered(&painter, title_rect, galley);
+            button(54.0),
+            Icon::Home,
+            white,
+            24.8,
+            "Home",
+            true,
+            Id::new("header-home"),
+        )
+        .clicked()
+        {
+            actions.push(UiAction::GoHome);
+        }
+        if !on_detail {
+            let title = if state.screen == Screen::Detail {
+                state.detail.title.as_str()
+            } else {
+                state.page_title.as_str()
+            };
+            let galley = widgets::elided(
+                ui,
+                title,
+                theme::regular(theme::JF_FONT_SUBTITLE),
+                theme::JF_TEXT,
+                rect.width() - 220.0,
+            );
+            widgets::galley_v_centered(&painter, rect.left() + 109.0, rect.top() + 28.5, galley);
+        }
     }
 
-    painter.rect_filled(account, 21.0, theme::SURFACE);
-    widgets::border(&painter, account, 21.0, 1.0, theme::SURFACE_HOVER);
-    let avatar = Rect::from_min_size(account.min + vec2(5.0, 4.0), vec2(34.0, 34.0));
-    painter.rect_filled(avatar, 17.0, theme::ACCENT_DEEP);
-    painter.text(
-        avatar.center(),
-        Align2::CENTER_CENTER,
-        &state.account_initial,
-        theme::bold(15.0),
-        Color32::WHITE,
-    );
-    let name = widgets::elided(
+    let search = button(rect.width() - 95.0);
+    if jf::round_icon_button(
         ui,
-        &state.account_name,
-        theme::bold(12.0),
-        theme::TEXT_SECONDARY,
-        account.width() - 58.0,
-    );
-    widgets::galley_v_centered(&painter, account.left() + 48.0, account.center().y, name);
-
-    let response = ui.interact(sign_out, Id::new("top-bar-sign-out"), Sense::click());
-    widgets::describe_button(&response, true, "Sign out");
-    let hovered = response.hovered();
-    painter.rect_filled(
-        sign_out,
-        theme::RADIUS_MEDIUM,
-        if hovered {
-            theme::DANGER_SURFACE
-        } else {
-            Color32::TRANSPARENT
-        },
-    );
-    widgets::border(
-        &painter,
-        sign_out,
-        theme::RADIUS_MEDIUM,
-        1.0,
-        if hovered {
-            theme::DANGER_BORDER
-        } else {
-            theme::BORDER
-        },
-    );
-    painter.text(
-        sign_out.center(),
-        Align2::CENTER_CENTER,
-        "Sign out",
-        theme::bold(12.0),
-        if hovered {
-            theme::DANGER_TEXT
-        } else {
-            theme::TEXT_MUTED
-        },
-    );
-    widgets::pointer_on_hover(&response);
-    if response.clicked() {
-        actions.push(UiAction::Logout);
+        search,
+        Icon::Search,
+        white,
+        24.8,
+        "Search",
+        true,
+        Id::new("header-search"),
+    )
+    .clicked()
+    {
+        actions.push(UiAction::OpenSearch);
     }
+    let account = button(rect.width() - 45.0);
+    let account_response = jf::round_icon_button(
+        ui,
+        account,
+        Icon::Person,
+        white,
+        24.8,
+        &state.account_name,
+        true,
+        Id::new("header-account"),
+    );
+    let menu_id = Id::new("header-account-menu");
+    let mut open = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(menu_id))
+        .unwrap_or(false);
+    if account_response.clicked() {
+        open = !open;
+    }
+    if open {
+        let menu = egui::Area::new(menu_id.with("area"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos2(account.right() - 220.0, account.bottom() + 4.0))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(theme::JF_HEADER)
+                    .corner_radius(theme::JF_RADIUS)
+                    .shadow(egui::Shadow {
+                        offset: [0, 4],
+                        blur: 16,
+                        spread: 0,
+                        color: Color32::from_black_alpha(160),
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(220.0);
+                        let (name_rect, _) =
+                            ui.allocate_exact_size(vec2(220.0, 44.0), Sense::hover());
+                        let name = widgets::elided(
+                            ui,
+                            &state.account_name,
+                            theme::bold(theme::JF_FONT),
+                            theme::JF_TEXT,
+                            190.0,
+                        );
+                        widgets::galley_v_centered(
+                            ui.painter(),
+                            name_rect.left() + 15.0,
+                            name_rect.center().y,
+                            name,
+                        );
+                        let (item, response) =
+                            ui.allocate_exact_size(vec2(220.0, 44.0), Sense::click());
+                        widgets::describe_button(&response, true, "Sign Out");
+                        if response.hovered() {
+                            ui.painter()
+                                .rect_filled(item, 0.0, Color32::from_white_alpha(20));
+                        }
+                        ui.painter().text(
+                            pos2(item.left() + 15.0, item.center().y),
+                            Align2::LEFT_CENTER,
+                            "Sign Out",
+                            theme::regular(theme::JF_FONT),
+                            theme::JF_TEXT,
+                        );
+                        widgets::pointer_on_hover(&response);
+                        response.clicked()
+                    })
+                    .inner
+            });
+        if menu.inner {
+            actions.push(UiAction::Logout);
+            open = false;
+        } else if !account_response.clicked()
+            && ui.input(|input| input.pointer.any_click())
+            && !menu.response.contains_pointer()
+        {
+            open = false;
+        }
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(menu_id, open));
 }

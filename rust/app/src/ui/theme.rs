@@ -18,9 +18,32 @@ const fn rgba(hex: u32) -> Color32 {
     )
 }
 
+// jellyfin-web dark theme (see docs/jellyfin-web-reference.md)
+pub const JF_BG: Color32 = rgb(0x101010); // page ground
+pub const JF_HEADER: Color32 = rgb(0x202020); // header bar
+pub const JF_TEXT: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 204); // 80%
+pub const JF_TEXT_SECONDARY: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 128); // 50%
+pub const JF_TEXT_LABEL: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 179); // 70%
+pub const JF_ACCENT: Color32 = rgb(0x00a4dc);
+pub const JF_PLAYED_RED: Color32 = rgb(0xcc3333);
+pub const JF_RAISED: Color32 = rgb(0x303030); // raised buttons
+pub const JF_INPUT: Color32 = rgb(0x292929); // inputs and selects
+pub const JF_CARD_EMPTY: Color32 = rgb(0x262626); // a card with no artwork
+pub const JF_RIBBON: Color32 = Color32::from_rgba_unmultiplied_const(32, 32, 32, 204);
+pub const JF_PROGRESS_TRACK: Color32 = Color32::from_rgba_unmultiplied_const(51, 51, 51, 204);
+pub const JF_BADGE: Color32 = Color32::from_rgba_unmultiplied_const(170, 170, 190, 51);
+pub const JF_BADGE_TEXT: Color32 = rgb(0xdddddd);
+/// Root font size: 93% of 16 px.
+pub const JF_FONT: f32 = 14.88;
+pub const JF_FONT_SECONDARY: f32 = 12.8;
+pub const JF_FONT_SECTION: f32 = 22.32;
+pub const JF_FONT_TITLE: f32 = 26.78;
+pub const JF_FONT_SUBTITLE: f32 = 17.41;
+pub const JF_FONT_SMALL: f32 = 13.69;
+pub const JF_RADIUS: f32 = 3.0;
+
 // Background ramp (darkest → lightest)
-pub const BG: Color32 = rgb(0x0f1214); // window and page ground
-pub const SURFACE_DIM: Color32 = rgb(0x151b1e); // gradient ends, wells
+pub const BG: Color32 = rgb(0x101010); // window and page ground
 pub const SURFACE: Color32 = rgb(0x1b2428); // panels, cards
 pub const SURFACE_RAISED: Color32 = rgb(0x232c30); // inputs, chips at rest
 pub const SURFACE_HOVER: Color32 = rgb(0x2b383d); // hovered controls
@@ -38,21 +61,16 @@ pub const TEXT_FAINT: Color32 = rgb(0x82929a); // hints, disabled
 pub const ACCENT: Color32 = rgb(0x00a4dc);
 pub const ACCENT_BRIGHT: Color32 = rgb(0x62ccee); // links, highlights on dark
 pub const ACCENT_DEEP: Color32 = rgb(0x006f98); // pressed / selected fill
-pub const ACCENT_SURFACE: Color32 = rgb(0x173d4b); // tinted chips and fills
 
 // Feedback
 pub const RATING_GOLD: Color32 = rgb(0xf2b01e); // community-rating star
-pub const CRITIC_FRESH: Color32 = rgb(0x7ac96f); // critic rating of 60% or more
 pub const DANGER_TEXT: Color32 = rgb(0xffb1b1);
-pub const DANGER_SURFACE: Color32 = rgb(0x3a1f22);
-pub const DANGER_BORDER: Color32 = rgb(0x77414d);
 
 // Player
 pub const VIDEO_BG: Color32 = rgb(0x050607); // letterbox behind video
 pub const SCRIM: Color32 = rgb(0x000000); // use with `with_alpha`
 pub const OVERLAY: Color32 = rgba(0x171e21e5); // floating player chrome
 pub const OVERLAY_RAISED: Color32 = rgba(0x2b393fef);
-pub const OVERLAY_DIM: Color32 = rgba(0x151b1ee0);
 
 // Radii
 pub const RADIUS_SMALL: f32 = 6.0;
@@ -78,23 +96,23 @@ pub fn with_alpha(color: Color32, alpha: f32) -> Color32 {
     )
 }
 
-const BOLD_FAMILY: &str = "jellybridge-bold";
-const REGULAR_FONT: &[u8] = include_bytes!("../../assets/fonts/LiberationSans-Regular.ttf");
-const BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/LiberationSans-Bold.ttf");
+const BOLD_FAMILY: &str = "jellybridge-semibold";
+const REGULAR_FONT: &[u8] = include_bytes!("../../assets/fonts/NotoSans-Regular.ttf");
+const BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/NotoSans-SemiBold.ttf");
 
 /// Regular weight text.
 pub fn regular(size: f32) -> FontId {
     FontId::new(size, FontFamily::Proportional)
 }
 
-/// Bold text. The UI was designed against a family with a regular and a bold
-/// face only, so every "semi-bold" weight above 600 resolves to this one.
+/// Semibold (600) text, the weight jellyfin-web uses for every emphasis;
+/// heavier weights resolve to it too.
 pub fn bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(BOLD_FAMILY.into()))
 }
 
-/// Liberation Sans (the face the UI was laid out with), with egui's bundled
-/// fonts kept behind it for symbols and emoji.
+/// Noto Sans, jellyfin-web's face, with egui's bundled fonts kept behind it
+/// for symbols and emoji.
 fn font_definitions() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(

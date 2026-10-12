@@ -39,7 +39,8 @@ instead of server-side transcoding.
 
 - A Jellyfin server reachable from the desktop machine and a user account.
 - Rust (pinned by `rust-toolchain.toml`) via rustup.
-- libmpv (`brew install mpv` on macOS; distribution packages on Linux).
+- libmpv (`brew install mpv` on macOS; distribution packages on Linux). It is
+  loaded when something first plays, so browsing works without it.
 
 ## How To Run
 
@@ -102,7 +103,7 @@ GPL-enabled Homebrew components; do not use it as the public release artifact.
 ```text
 rust/app
 ├── build.rs                 rpath link arguments for the bundled libmpv
-├── assets/                  application icon, UI fonts (Liberation Sans)
+├── assets/                  application icon, UI fonts (Noto Sans, as jellyfin-web)
 ├── src/
 │   ├── main.rs              composition root: startup, wiring, teardown
 │   ├── app.rs               AppState/AppContext (no UI types)

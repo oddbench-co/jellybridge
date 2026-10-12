@@ -11,7 +11,7 @@ use crate::features::detail::{DetailModel, DetailTarget};
 use crate::features::now_playing::NowPlaying;
 use crate::features::progress::PlaybackReporter;
 use crate::services::playback::PreparedPlayback;
-use crate::services::player::{PlayerCommand, PlayerTrack};
+use crate::services::player::{PlayerSender, PlayerTrack};
 use crate::services::session::{SessionStore, SettingsStore};
 use crate::ui::UiHandle;
 
@@ -23,6 +23,9 @@ pub struct PageSnapshot {
     pub parent: Option<CatalogItemData>,
     pub search_text: String,
     pub total_record_count: usize,
+    /// The global search page (the header's search button), which searches
+    /// every library and shows nothing until something is typed.
+    pub search_page: bool,
 }
 
 impl PageSnapshot {
@@ -34,6 +37,15 @@ impl PageSnapshot {
             parent: None,
             search_text: String::new(),
             total_record_count: 0,
+            search_page: false,
+        }
+    }
+
+    pub fn search() -> Self {
+        Self {
+            title: "Search".into(),
+            search_page: true,
+            ..Self::empty_home()
         }
     }
 
@@ -47,18 +59,19 @@ impl PageSnapshot {
             parent: None,
             search_text: String::new(),
             total_record_count,
+            search_page: false,
         }
     }
 
     pub fn is_home_dashboard(&self) -> bool {
-        self.parent.is_none() && self.search_text.is_empty()
+        self.parent.is_none() && self.search_text.is_empty() && !self.search_page
     }
 }
 
 #[derive(Clone)]
 pub enum RetryAction {
     Home,
-    Browse(CatalogItemData, bool),
+    Browse(Box<CatalogItemData>, bool),
     Search(String),
     Detail(DetailTarget),
 }
@@ -124,7 +137,7 @@ pub struct AppContext {
     pub playback: Arc<Mutex<Option<PreparedPlayback>>>,
     /// Tracks what is playing so progress can be reported to the server.
     pub reporter: Arc<Mutex<PlaybackReporter>>,
-    pub player_sender: std::sync::mpsc::Sender<PlayerCommand>,
+    pub player_sender: PlayerSender,
     /// Goes true once mpv's render context exists. Playback waits on it before
     /// `loadfile`, so mpv has a video output when it picks a decode path.
     pub render_ready: tokio::sync::watch::Receiver<bool>,

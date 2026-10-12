@@ -14,7 +14,8 @@ libmpv playback. The single production crate lives in `rust/app`:
   (message/effect state machine + orchestration), `playback`.
 - `src/services/` — infrastructure: `artwork` (disk cache), `session`
   (hardened session/settings stores), `playback` (PlaybackInfo + subtitle
-  materialization), `player` (mpv worker thread), `proxy` (token-hiding
+  materialization), `libmpv` (libmpv loaded with `dlopen` on first play, not
+  linked: see `docs/PERFORMANCE.md`), `player` (mpv worker thread), `proxy` (token-hiding
   loopback proxy), `render` (mpv renders into its own framebuffer inside an
   egui paint callback and is blitted into the window).
 - `src/ui/` — the only module that knows egui: `UiHandle` (queues closures
@@ -36,8 +37,11 @@ request artwork only for what is drawn.
 
 ## Build, Test, and Development Commands
 
-All cargo commands go through `scripts/cargo-env.sh`, which points pkg-config
-at the local libmpv (Homebrew on macOS):
+All cargo commands go through `scripts/cargo-env.sh`, which pins the toolchain
+and points pkg-config at the local libmpv (Homebrew on macOS). libmpv is not
+linked; it is loaded at runtime the first time something plays, so it must be
+installed to play, not to build. Performance work follows
+`docs/PERFORMANCE.md` (measure first; `JELLYBRIDGE_MEASURE` and friends):
 
 - `scripts/cargo-env.sh build --locked` — build.
 - `scripts/cargo-env.sh test --locked` — run the test suite.

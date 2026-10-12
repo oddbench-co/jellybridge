@@ -47,10 +47,36 @@ fn decode_icon() -> Option<DecodedIcon> {
     Some(DecodedIcon { window, brand })
 }
 
+/// Keeps freed artwork buffers from inflating resident memory.
+///
+/// Artwork is decoded on the blocking pool, so the multi-megabyte pixel
+/// buffers are allocated on up to eight threads. glibc gives each thread its
+/// own arena and keeps what is freed there, and after the first large free it
+/// raises its mmap threshold so later buffers come from those arenas too.
+/// Measured on the home screen: ~199 MB resident by default, ~170–183 MB
+/// with these two settings, for the same pixels.
+/// mimalloc, as mytele uses, was measured too: ~7% less CPU while scrolling
+/// but 192–292 MB resident against ~170 MB, so glibc stays.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator() {
+    // SAFETY: mallopt only adjusts allocator parameters; called before any
+    // other thread exists.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+        // A fixed threshold: buffers this size and up are always mmap'd and
+        // go straight back to the system when freed.
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 256 * 1024);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator() {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // First statement: time_to_interactive is measured from here, so it
     // includes runtime, backend, and window construction.
     let process_start = Instant::now();
+    tune_allocator();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -118,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let event_reporter = reporter.clone();
     let refresh = Arc::new(tokio::sync::Notify::new());
     let event_refresh = refresh.clone();
-    let (render_client, player_worker) = create_player(move |event| {
+    let (render_client_slot, player_worker) = create_player(move |event| {
         let ended = matches!(event, PlayerEvent::Ended);
         // Turn mpv's position and pause events into Jellyfin reports. The
         // reporter throttles them, so this only issues a request when the
@@ -188,6 +214,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "player_created", "startup_stage");
     let player_sender = player_worker.command_sender();
+    let render_player = player_sender.clone();
     let (render_ready, render_ready_rx) = tokio::sync::watch::channel(false);
     let context = AppContext {
         ui: ui_handle,
@@ -221,11 +248,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         viewport = viewport.with_icon(icon.window);
         brand_icon = Some(icon.brand);
     }
+    let mut glow_options = eframe::egui_glow::GlowConfiguration::default();
+    // On Wayland, Mesa implements vsync by blocking in swap_buffers until the
+    // compositor's frame callback for the previous frame arrives. A window on
+    // a hidden workspace never gets one, so the first repaint after switching
+    // away would park the UI thread for good and the compositor would report
+    // the app as not responding. winit already paces redraws by frame
+    // callback on Wayland, so turning vsync off there neither tears nor spins.
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        glow_options.vsync = false;
+    }
     let options = eframe::NativeOptions {
         viewport,
         // mpv renders through OpenGL on the window's own context, so the
         // window must be drawn with OpenGL too.
         renderer: eframe::Renderer::Glow,
+        glow_options,
         ..Default::default()
     };
     let app_context = context.clone();
@@ -239,9 +277,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tracing::warn!(%error, "no native display for hardware-decode interop");
                 NativeDisplay::None
             });
+            if let Some(gl) = creation.gl.as_ref() {
+                services::render::note_gl_vendor(gl);
+            }
             let wake = creation.egui_ctx.clone();
             let render_host = RenderHost::new(
-                render_client,
+                render_client_slot,
+                render_player,
                 display,
                 Arc::new(move || wake.request_repaint()),
                 render_ready,

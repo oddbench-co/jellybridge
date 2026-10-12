@@ -17,14 +17,55 @@ use std::thread::{self, JoinHandle};
 
 use eframe::glow::{self, HasContext};
 use libloading::Library;
-use libmpv2_sys as sys;
+use crate::services::libmpv::{self as sys, Api};
 #[cfg(target_os = "linux")]
 use raw_window_handle::RawDisplayHandle;
 use raw_window_handle::HasDisplayHandle;
 
-use crate::services::player::RenderClient;
+use crate::services::player::{
+    PlayerCommand, PlayerSender, RenderClient, RenderClientSlot, RenderClientState,
+};
 
 type RedrawRequest = Arc<dyn Fn() + Send + Sync + 'static>;
+
+/// Video frames drawn by mpv since start; `JELLYBRIDGE_MEASURE` reports the
+/// rate, which shows whether playback keeps up.
+pub static VIDEO_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The window's `GL_VENDOR`, read once when the window is created.
+static GL_VENDOR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn note_gl_vendor(gl: &glow::Context) {
+    let _ = GL_VENDOR.set(unsafe { gl.get_parameter_string(glow::VENDOR) });
+}
+
+/// The single hardware-decode interop mpv should load for this GPU, or
+/// `None` to leave it on `auto`.
+///
+/// In the render API `auto` means "load every interop when the render
+/// context is created", and that happens on the UI thread, inside a paint.
+/// On NVIDIA's driver that opened the VAAPI driver (242 ms) and VDPAU
+/// (~70 ms) only to then decode through CUDA, which `hwdec=auto-safe`
+/// picks there: a 330 ms freeze of the loading spinner. A named interop is
+/// the only one mpv will ever load, so this names one only where the choice
+/// is certain; copy-back and software decoding need none.
+pub fn preferred_hwdec_interop() -> Option<&'static str> {
+    GL_VENDOR
+        .get()
+        .is_some_and(|vendor| vendor.starts_with("NVIDIA"))
+        .then_some("cuda")
+}
+
+/// When playback was last asked for, until its first video frame is drawn.
+static PLAY_REQUESTED: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// Starts the clock for `time_to_first_frame`, the playback counterpart of
+/// startup's `time_to_interactive`: from pressing play to the picture.
+pub fn note_play_requested() {
+    if let Ok(mut requested) = PLAY_REQUESTED.lock() {
+        *requested = Some(std::time::Instant::now());
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -98,15 +139,23 @@ pub struct RenderHost {
     /// Set when mpv drew the last frame, so the swap is reported for frames
     /// mpv actually produced.
     swap_pending: bool,
+    /// mpv announced a frame that has not been drawn yet.
+    frame_pending: bool,
     debug_checked: bool,
     debug_enabled_by_us: bool,
+    /// The player was left: free the render context on the next paint.
+    release_requested: bool,
     redraw: RedrawRequest,
     /// Fires once the render context exists, so playback can hold `loadfile`
     /// until mpv has a video output to choose a decode path against.
     ready: tokio::sync::watch::Sender<bool>,
+    /// Where the worker leaves the render client once it has built mpv.
+    slot: RenderClientSlot,
+    /// To have mpv unloaded once the render context is released.
+    player: PlayerSender,
     // This must be declared after RawRenderContext so Rust's field drop order
     // cannot destroy the client handle before its render context.
-    core: RenderClient,
+    core: Option<RenderClient>,
 }
 
 /// Announces that `ensure_mpv` has finished, on success and on failure alike.
@@ -120,7 +169,8 @@ impl Drop for ReadySignal<'_> {
 
 impl RenderHost {
     pub fn new(
-        core: RenderClient,
+        slot: RenderClientSlot,
+        player: PlayerSender,
         display: NativeDisplay,
         redraw: RedrawRequest,
         ready: tokio::sync::watch::Sender<bool>,
@@ -130,11 +180,15 @@ impl RenderHost {
             display,
             target: None,
             swap_pending: false,
+            frame_pending: false,
             debug_checked: false,
             debug_enabled_by_us: false,
+            release_requested: false,
             redraw,
             ready,
-            core,
+            slot,
+            player,
+            core: None,
         }
     }
 
@@ -164,21 +218,35 @@ impl RenderHost {
     /// mpv's whole render pipeline, which measured 310 ms of a 539 ms
     /// time-to-interactive -- all of it spent on a video path the user has
     /// not opened.
-    fn ensure_mpv(&mut self) -> Result<(), RenderError> {
+    ///
+    /// `Ok(false)` while the player worker is still loading libmpv: the
+    /// worker's `RendererAvailable` event brings the frame that retries.
+    fn ensure_mpv(&mut self) -> Result<bool, RenderError> {
         if self.mpv.is_some() {
-            return Ok(());
+            return Ok(true);
+        }
+        if self.core.is_none() {
+            match self.slot.take() {
+                RenderClientState::Pending => return Ok(false),
+                RenderClientState::Ready(client) => self.core = Some(client),
+                RenderClientState::Failed(message) => {
+                    let _signal = ReadySignal(&self.ready);
+                    return Err(RenderError::Mpv(message));
+                }
+            }
         }
         let started = std::time::Instant::now();
         // Released on the way out whatever happens: a machine that cannot
         // build a context must still play rather than wait forever for one.
         let _signal = ReadySignal(&self.ready);
-        let raw = RawRenderContext::create(&self.core, self.display, self.redraw.clone())?;
+        let core = self.core.as_ref().expect("taken above");
+        let raw = RawRenderContext::create(core, self.display, self.redraw.clone())?;
         tracing::info!(
             ms = started.elapsed().as_secs_f64() * 1000.0,
             "mpv render context created"
         );
         self.mpv = Some(raw);
-        Ok(())
+        Ok(true)
     }
 
     /// Runs mpv's render-thread work on a frame that draws no video.
@@ -187,10 +255,76 @@ impl RenderHost {
     /// is hidden, and the render context outlives that screen. Deliberately
     /// does not `ensure_mpv`: a session that never opens the player never pays
     /// for the context.
-    pub fn pump(&mut self) {
+    ///
+    /// `may_release`: the user is not interacting, so the release's ~130 ms
+    /// on this thread (mpv tearing down its CUDA interop and GL renderer)
+    /// lands on a still screen instead of a scroll or a click.
+    pub fn pump(&mut self, gl: &glow::Context, may_release: bool) {
+        // Only once mpv has finished stopping. Freeing the context while its
+        // video output is still shutting down deadlocks the two until mpv's
+        // timeout: measured 313 ms of frozen UI on leaving the player.
+        if may_release && self.release_requested && self.slot.player_idle() {
+            self.release_requested = false;
+            self.release(gl);
+            return;
+        }
         if let Some(mpv) = self.mpv.as_ref() {
             mpv.poll();
         }
+    }
+
+    /// Frees the render context and its framebuffer once the player is
+    /// left. Measured after leaving a 4K film: the context held ~150 MB of
+    /// NVIDIA driver memory (the CUDA interop and mpv's GPU buffers) for a
+    /// screen no longer showing. The next playback builds it again (~100 ms,
+    /// the same as the first), and waits for it as the first does.
+    pub fn release_soon(&mut self) {
+        self.release_requested = self.mpv.is_some();
+    }
+
+    /// A release is waiting for the user to go quiet.
+    pub fn release_pending(&self) -> bool {
+        self.release_requested
+    }
+
+    /// Back in the player before the release happened: keep the context.
+    pub fn keep(&mut self) {
+        self.release_requested = false;
+    }
+
+    fn release(&mut self, gl: &glow::Context) {
+        let started = std::time::Instant::now();
+        // After a stop mpv's video output still holds a last frame and waits
+        // for it to be rendered before it can shut down; off the player
+        // screen nothing renders, so freeing the context sat out mpv's
+        // ~200 ms "render not being called" timeout on the UI thread.
+        // Rendering it into the old target lets the output close at once.
+        if let (Some(mpv), Some(target)) = (self.mpv.as_ref(), self.target.as_ref())
+            && (mpv.poll() || self.frame_pending)
+        {
+            let _state = GlStateGuard::capture(gl);
+            let (width, height) = target.size;
+            if let Err(error) = mpv.render(target.framebuffer.0.get() as i32, width, height) {
+                tracing::debug!(%error, "final frame before release failed");
+            }
+            mpv.report_swap();
+        }
+        self.mpv.take();
+        // The client handle goes too, so the worker's is the core's last and
+        // destroying it shuts mpv down entirely.
+        self.core.take();
+        let _ = self.player.send(PlayerCommand::Unload);
+        if let Some(target) = self.target.take() {
+            target.destroy(gl);
+        }
+        self.swap_pending = false;
+        self.frame_pending = false;
+        // The next `loadfile` must wait for the next context again.
+        self.ready.send_replace(false);
+        tracing::info!(
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            "mpv render context released"
+        );
     }
 
     /// Whether a render context exists whose work must be pumped.
@@ -202,7 +336,9 @@ impl RenderHost {
     /// `viewport`. Must run with the window's GL context current.
     pub fn draw(&mut self, gl: &glow::Context, viewport: VideoViewport) -> Result<(), RenderError> {
         self.enable_debug_output(gl);
-        self.ensure_mpv()?;
+        if !self.ensure_mpv()? {
+            return Ok(());
+        }
         let mpv = self.mpv.as_ref().expect("ensured above");
         // The previous frame mpv drew has been presented by now: the window
         // swaps between our paint callbacks.
@@ -212,7 +348,9 @@ impl RenderHost {
         // Unconditional, and before the branch below: `&&` would short-circuit
         // past it on a resize and on the first frame, and mpv's contract has no
         // exception for either. See `RawRenderContext::poll`.
-        let has_new_frame = mpv.poll();
+        if mpv.poll() {
+            self.frame_pending = true;
+        }
         let width = viewport.width.max(1);
         let height = viewport.height.max(1);
 
@@ -228,7 +366,36 @@ impl RenderHost {
             self.target = Some(FrameTarget::create(gl, width, height)?);
         }
         let target = self.target.as_ref().expect("created above");
-        if resized || has_new_frame {
+        // mpv's own render call would block the UI thread until the frame's
+        // display time (measured: 41 ms of every 41.7 ms frame of a 24 fps
+        // film). It is told not to; instead a frame that is not due yet is
+        // left pending, the previous one stays on screen, and a repaint is
+        // asked for at the moment it is due.
+        let due = self.frame_pending && {
+            match mpv.next_frame_target_ns() {
+                Some(target) => {
+                    let wait = target - mpv.time_ns();
+                    if wait > 1_500_000 {
+                        mpv.redraw_at(
+                            std::time::Instant::now() + std::time::Duration::from_nanos(wait as u64),
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                }
+                None => true,
+            }
+        };
+        if resized || due {
+            self.frame_pending = false;
+            VIDEO_FRAMES.fetch_add(1, Ordering::Relaxed);
+            if let Some(requested) = PLAY_REQUESTED.lock().ok().and_then(|mut slot| slot.take()) {
+                tracing::info!(
+                    ms = requested.elapsed().as_secs_f64() * 1000.0,
+                    "time_to_first_frame"
+                );
+            }
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.framebuffer));
                 gl.viewport(0, 0, width, height);
@@ -381,6 +548,8 @@ impl FrameTarget {
 
 enum RenderWake {
     Redraw,
+    /// Redraw at this moment: a frame mpv announced becomes due then.
+    RedrawAt(std::time::Instant),
     Shutdown,
 }
 
@@ -401,6 +570,10 @@ unsafe extern "C" fn render_update_callback(context: *mut c_void) {
 
 struct RawRenderContext {
     context: NonNull<sys::mpv_render_context>,
+    /// The client handle the context was made from, for mpv's clock. Outlived
+    /// by `RenderHost::core`, which owns it.
+    core: *mut sys::mpv_handle,
+    api: &'static Api,
     resolver: Box<GlProcResolver>,
     update_state: Box<UpdateCallbackState>,
     wake_thread: Option<JoinHandle<()>>,
@@ -413,6 +586,7 @@ impl RawRenderContext {
         display: NativeDisplay,
         redraw: RedrawRequest,
     ) -> Result<Self, RenderError> {
+        let api = sys::api().map_err(|error| RenderError::Mpv(error.to_string()))?;
         let mut resolver = Box::new(GlProcResolver::load()?);
         let resolver_pointer = (&mut *resolver as *mut GlProcResolver).cast::<c_void>();
         let mut init = sys::mpv_opengl_init_params {
@@ -422,39 +596,39 @@ impl RawRenderContext {
         let mut advanced_control = 1_i32;
         let mut parameters = vec![
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
-                data: sys::MPV_RENDER_API_TYPE_OPENGL.as_ptr().cast_mut().cast(),
+                kind: sys::RENDER_PARAM_API_TYPE,
+                data: sys::RENDER_API_TYPE_OPENGL.as_ptr().cast_mut().cast(),
             },
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
+                kind: sys::RENDER_PARAM_OPENGL_INIT_PARAMS,
                 data: (&mut init as *mut sys::mpv_opengl_init_params).cast(),
             },
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_ADVANCED_CONTROL,
+                kind: sys::RENDER_PARAM_ADVANCED_CONTROL,
                 data: (&mut advanced_control as *mut i32).cast(),
             },
         ];
         match display {
             NativeDisplay::None => {}
             NativeDisplay::X11(pointer) => parameters.push(sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_X11_DISPLAY,
+                kind: sys::RENDER_PARAM_X11_DISPLAY,
                 data: pointer.cast_mut(),
             }),
             NativeDisplay::Wayland(pointer) => parameters.push(sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_WL_DISPLAY,
+                kind: sys::RENDER_PARAM_WL_DISPLAY,
                 data: pointer.cast_mut(),
             }),
         }
         parameters.push(sys::mpv_render_param {
-            type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+            kind: sys::RENDER_PARAM_INVALID,
             data: ptr::null_mut(),
         });
 
         let mut raw = ptr::null_mut();
         let status = unsafe {
-            sys::mpv_render_context_create(&mut raw, core.as_ptr(), parameters.as_mut_ptr())
+            (api.render_context_create)(&mut raw, core.as_ptr(), parameters.as_mut_ptr())
         };
-        check_mpv(status)?;
+        check_mpv(api, status)?;
         let context = NonNull::new(raw).ok_or_else(|| RenderError::Mpv("null context".into()))?;
 
         let queued = Arc::new(AtomicBool::new(false));
@@ -463,8 +637,30 @@ impl RawRenderContext {
         let wake_thread = match thread::Builder::new()
             .name("jellybridge-render-wake".to_owned())
             .spawn(move || {
-                while let Ok(message) = receiver.recv() {
+                // The earliest pending "redraw at" deadline.
+                let mut deadline: Option<std::time::Instant> = None;
+                loop {
+                    let message = match deadline {
+                        Some(at) => {
+                            match receiver.recv_timeout(at.saturating_duration_since(std::time::Instant::now())) {
+                                Ok(message) => message,
+                                Err(mpsc::RecvTimeoutError::Timeout) => {
+                                    deadline = None;
+                                    redraw();
+                                    continue;
+                                }
+                                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                        None => match receiver.recv() {
+                            Ok(message) => message,
+                            Err(_) => break,
+                        },
+                    };
                     match message {
+                        RenderWake::RedrawAt(at) => {
+                            deadline = Some(deadline.map_or(at, |current| current.min(at)));
+                        }
                         RenderWake::Redraw => {
                             // Cleared before the request, not after. A callback
                             // that lands while the redraw is still queued is
@@ -483,13 +679,13 @@ impl RawRenderContext {
             }) {
             Ok(thread) => thread,
             Err(error) => {
-                unsafe { sys::mpv_render_context_free(context.as_ptr()) };
+                unsafe { (api.render_context_free)(context.as_ptr()) };
                 return Err(RenderError::WakeThread(error));
             }
         };
         let mut update_state = Box::new(UpdateCallbackState { queued, sender });
         unsafe {
-            sys::mpv_render_context_set_update_callback(
+            (api.render_context_set_update_callback)(
                 context.as_ptr(),
                 Some(render_update_callback),
                 (&mut *update_state as *mut UpdateCallbackState).cast(),
@@ -498,6 +694,8 @@ impl RawRenderContext {
 
         Ok(Self {
             context,
+            core: core.as_ptr(),
+            api,
             resolver,
             update_state,
             wake_thread: Some(wake_thread),
@@ -521,15 +719,48 @@ impl RawRenderContext {
     /// the full scale, colour-convert and dither pass at display refresh rate
     /// for content that produces frames far more slowly.
     fn poll(&self) -> bool {
-        let flags = unsafe { sys::mpv_render_context_update(self.context.as_ptr()) };
-        flags & u64::from(sys::mpv_render_update_flag_MPV_RENDER_UPDATE_FRAME) != 0
+        let flags = unsafe { (self.api.render_context_update)(self.context.as_ptr()) };
+        flags & sys::RENDER_UPDATE_FRAME != 0
     }
 
     /// Tells mpv the rendered frame reached the display. Required by the
     /// `MPV_RENDER_PARAM_ADVANCED_CONTROL` contract this context opts into;
     /// without it mpv's frame timing has nothing to synchronise against.
     fn report_swap(&self) {
-        unsafe { sys::mpv_render_context_report_swap(self.context.as_ptr()) };
+        unsafe { (self.api.render_context_report_swap)(self.context.as_ptr()) };
+    }
+
+    /// When the next frame should be shown, in `mpv_get_time_ns` time (libmpv
+    /// 2.x reports target times in nanoseconds); `None` for a frame with no
+    /// target (a redraw, or vsync-locked timing).
+    fn next_frame_target_ns(&self) -> Option<i64> {
+        let mut info = sys::mpv_render_frame_info {
+            flags: 0,
+            target_time: 0,
+        };
+        let status = unsafe {
+            (self.api.render_context_get_info)(
+                self.context.as_ptr(),
+                sys::mpv_render_param {
+                    kind: sys::RENDER_PARAM_NEXT_FRAME_INFO,
+                    data: (&mut info as *mut sys::mpv_render_frame_info).cast(),
+                },
+            )
+        };
+        let redraw = info.flags & sys::RENDER_FRAME_INFO_REDRAW != 0;
+        (status >= 0 && !redraw && info.target_time > 0).then_some(info.target_time)
+    }
+
+    /// Asks the wake thread for a redraw at `at`. A repaint requested from
+    /// inside a paint callback is dropped by egui, so it has to come from
+    /// another thread.
+    fn redraw_at(&self, at: std::time::Instant) {
+        let _ = self.update_state.sender.send(RenderWake::RedrawAt(at));
+    }
+
+    /// mpv's clock, the base of frame target times.
+    fn time_ns(&self) -> i64 {
+        unsafe { self.api.time_ns(self.core) }
     }
 
     fn render(&self, framebuffer: i32, width: i32, height: i32) -> Result<(), RenderError> {
@@ -540,22 +771,28 @@ impl RawRenderContext {
             internal_format: glow::RGBA8 as i32,
         };
         let mut flip = 1_i32;
+        // Never wait for the display time here: `draw` times frames itself.
+        let mut block = 0_i32;
         let mut parameters = [
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_FBO,
+                kind: sys::RENDER_PARAM_OPENGL_FBO,
                 data: (&mut fbo as *mut sys::mpv_opengl_fbo).cast(),
             },
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_FLIP_Y,
+                kind: sys::RENDER_PARAM_FLIP_Y,
                 data: (&mut flip as *mut i32).cast(),
             },
             sys::mpv_render_param {
-                type_: sys::mpv_render_param_type_MPV_RENDER_PARAM_INVALID,
+                kind: sys::RENDER_PARAM_BLOCK_FOR_TARGET_TIME,
+                data: (&mut block as *mut i32).cast(),
+            },
+            sys::mpv_render_param {
+                kind: sys::RENDER_PARAM_INVALID,
                 data: ptr::null_mut(),
             },
         ];
-        check_mpv(unsafe {
-            sys::mpv_render_context_render(self.context.as_ptr(), parameters.as_mut_ptr())
+        check_mpv(self.api, unsafe {
+            (self.api.render_context_render)(self.context.as_ptr(), parameters.as_mut_ptr())
         })
     }
 }
@@ -563,7 +800,7 @@ impl RawRenderContext {
 impl Drop for RawRenderContext {
     fn drop(&mut self) {
         unsafe {
-            sys::mpv_render_context_set_update_callback(
+            (self.api.render_context_set_update_callback)(
                 self.context.as_ptr(),
                 None,
                 ptr::null_mut(),
@@ -573,7 +810,8 @@ impl Drop for RawRenderContext {
         if let Some(thread) = self.wake_thread.take() {
             let _ = thread.join();
         }
-        unsafe { sys::mpv_render_context_free(self.context.as_ptr()) };
+        unsafe { (self.api.render_context_free)(self.context.as_ptr()) };
+
         // Keep the resolver visibly live until after mpv frees its context.
         let _ = &self.resolver;
     }
@@ -644,19 +882,9 @@ impl GlProcResolver {
     }
 }
 
-fn check_mpv(status: i32) -> Result<(), RenderError> {
-    if status >= 0 {
-        return Ok(());
-    }
-    let message = unsafe {
-        let pointer = sys::mpv_error_string(status);
-        if pointer.is_null() {
-            format!("error {status}")
-        } else {
-            CStr::from_ptr(pointer).to_string_lossy().into_owned()
-        }
-    };
-    Err(RenderError::Mpv(message))
+fn check_mpv(api: &Api, status: i32) -> Result<(), RenderError> {
+    api.check(status)
+        .map_err(|error| RenderError::Mpv(error.to_string()))
 }
 
 /// Complete state contract around every mpv render operation. Texture bindings

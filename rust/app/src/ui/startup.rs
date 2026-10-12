@@ -44,6 +44,11 @@ pub fn mark_content_ready(screen: &'static str) {
     let _ = READY_SCREEN.set(screen);
 }
 
+/// Whether a screen with content has been presented.
+pub fn content_ready() -> bool {
+    READY_SCREEN.get().is_some()
+}
+
 /// Reports `time_to_interactive` once the frame carrying that content has been
 /// drawn. Called from the render notifier, so it must stay allocation-free on
 /// the path where there is nothing to report.

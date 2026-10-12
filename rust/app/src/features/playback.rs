@@ -30,7 +30,53 @@ pub fn start_playback(context: &AppContext, from_start: bool) {
 }
 
 pub fn start_playback_item(context: &AppContext, detail: DetailItemData, from_start: bool) {
-    begin_playback(context, detail, from_start, false);
+    begin_playback(context, detail, from_start, Origin::Detail);
+}
+
+/// Starts loading libmpv now, so it is ready by the time the stream is: the
+/// player is built on first use, and this overlaps that with the server
+/// round trips that come before `loadfile`.
+fn prepare_player(context: &AppContext) {
+    crate::services::render::note_play_requested();
+    let _ = context.player_sender.send(PlayerCommand::Prepare);
+}
+
+/// Plays an item straight from a home or library card, as jellyfin-web's
+/// card play button does: a movie or episode itself, a series or season its
+/// next episode. The player opens at once and spins while the item and its
+/// stream are prepared.
+pub fn play_item_by_id(context: &AppContext, id: String) {
+    let Some(api) = context.api() else { return };
+    prepare_player(context);
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        match api.detail_page(&id).await {
+            Ok(page) => {
+                let target = if page.item.playable {
+                    Some(page.item.clone())
+                } else {
+                    page.play_target().cloned()
+                };
+                match target {
+                    Some(item) => begin_playback(&ctx, item, false, Origin::Card),
+                    None => ui::set_message(&ctx, "Nothing to play"),
+                }
+            }
+            Err(error) => ui::set_message(&ctx, &error.to_string()),
+        }
+    });
+}
+
+/// Where playback was started from, which decides what is shown while the
+/// stream is prepared.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// The detail page, which shows its busy overlay.
+    Detail,
+    /// The player itself (next/previous), which keeps spinning.
+    Player,
+    /// A card, which opens the player straight away.
+    Card,
 }
 
 /// Moves to the next (or previous) episode from inside the player.
@@ -44,7 +90,7 @@ pub fn play_adjacent(context: &AppContext, forward: bool) {
         }
     });
     if let Some(item) = item {
-        begin_playback(context, item, false, true);
+        begin_playback(context, item, false, Origin::Player);
     }
 }
 
@@ -57,7 +103,7 @@ pub fn play_previous(context: &AppContext, position: f64) {
         .ok()
         .and_then(|state| state.now_playing.as_ref().map(|now| previous_action(now, position)));
     match action {
-        Some(PreviousAction::Play(item)) => begin_playback(context, *item, false, true),
+        Some(PreviousAction::Play(item)) => begin_playback(context, *item, false, Origin::Player),
         Some(PreviousAction::Restart) | None => {
             let _ = context.player_sender.send(PlayerCommand::SeekAbsolute(0.0));
         }
@@ -74,9 +120,7 @@ pub fn dismiss_up_next(context: &AppContext) {
     ui::player::present_overlay(context, PlayerOverlay::default());
 }
 
-/// `in_player` keeps the player screen up while the stream is prepared,
-/// instead of returning to the detail page's busy overlay.
-fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool, in_player: bool) {
+fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool, origin: Origin) {
     let Some(session) = context
         .state
         .lock()
@@ -109,11 +153,25 @@ fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool
             return;
         }
     };
+    // A card's play button prepared the player before looking the item up.
+    if origin != Origin::Card {
+        prepare_player(context);
+    }
     let generation = context.next_generation();
-    if in_player {
-        ui::player::present_player_loading(context);
-    } else {
-        ui::set_screen_busy(context, ui::Screen::Detail, true, "Preparing authenticated playback…");
+    match origin {
+        Origin::Player => ui::player::present_player_loading(context),
+        Origin::Card => ui::player::present_playback_started(
+            context,
+            player_title(&detail),
+            initial_position,
+            initial_duration,
+        ),
+        Origin::Detail => ui::set_screen_busy(
+            context,
+            ui::Screen::Detail,
+            true,
+            "Preparing authenticated playback…",
+        ),
     }
     let ctx = context.clone();
     context.runtime.spawn(async move {

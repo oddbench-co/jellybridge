@@ -7,6 +7,7 @@
 //! (which locks application state) out of the middle of a frame.
 
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use eframe::egui_glow;
 use egui::{Rect, pos2, vec2};
@@ -18,6 +19,10 @@ use crate::features;
 use crate::features::detail::{DetailKind, DetailMessage, DetailTarget};
 use crate::services::player::{AspectMode, PlayerCommand, PlayerTrack, PlayerWorker};
 use crate::services::render::{RenderHost, VideoViewport};
+
+/// How long input must be quiet before the video render context is released
+/// after leaving the player (see `RenderHost::release_soon`).
+const RELEASE_AFTER_QUIET: Duration = Duration::from_secs(5);
 
 /// Something the user did, recorded while drawing and dispatched after it.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,7 +39,15 @@ pub enum UiAction {
     OpenItem(String),
     Search(String),
     SortChanged(usize),
-    DensityChanged(usize),
+    /// The header's search button.
+    OpenSearch,
+    /// A card's play button: plays the item, or a series' next episode.
+    PlayItem(String),
+    /// A card's played/favorite button.
+    ToggleCard {
+        id: String,
+        toggle: crate::features::catalog::CardToggle,
+    },
     OpenDetail {
         id: String,
         kind: String,
@@ -94,8 +107,10 @@ pub struct JellyBridgeApp {
     context: AppContext,
     video: Arc<Mutex<VideoSurface>>,
     player_worker: Option<PlayerWorker>,
-    #[cfg(debug_assertions)]
     input_script: Option<super::input_script::InputScript>,
+    measure: Option<super::measure::Measure>,
+    /// When the last input event arrived; heavy deferred work waits for quiet.
+    last_input: Instant,
 }
 
 impl JellyBridgeApp {
@@ -122,8 +137,9 @@ impl JellyBridgeApp {
                 error_reported: false,
             })),
             player_worker: Some(player_worker),
-            #[cfg(debug_assertions)]
-            input_script: super::input_script::InputScript::from_env(),
+                    input_script: super::input_script::InputScript::from_env(),
+            measure: super::measure::Measure::from_env(),
+            last_input: Instant::now(),
         }
     }
 
@@ -161,17 +177,27 @@ impl JellyBridgeApp {
 
     /// A paint callback that only runs mpv's render-thread work, for frames
     /// that show no video. Needs a real (1×1) rect: egui skips empty ones.
-    fn pump_callback(&self, origin: egui::Pos2) -> Option<egui::PaintCallback> {
-        let active = self.video.lock().is_ok_and(|video| video.host.is_active());
+    fn pump_callback(&self, ctx: &egui::Context, origin: egui::Pos2) -> Option<egui::PaintCallback> {
+        let (active, release_pending) = self
+            .video
+            .lock()
+            .map(|video| (video.host.is_active(), video.host.release_pending()))
+            .unwrap_or_default();
         if !active {
             return None;
+        }
+        let quiet_for = self.last_input.elapsed();
+        // egui wakes a scheduled repaint one predicted frame early.
+        let may_release = quiet_for + Duration::from_millis(50) >= RELEASE_AFTER_QUIET;
+        if release_pending && !may_release {
+            ctx.request_repaint_after(RELEASE_AFTER_QUIET - quiet_for);
         }
         let video = self.video.clone();
         Some(egui::PaintCallback {
             rect: Rect::from_min_size(origin, vec2(1.0, 1.0)),
-            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, _painter| {
+            callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
                 if let Ok(mut video) = video.lock() {
-                    video.host.pump();
+                    video.host.pump(painter.gl(), may_release);
                 }
             })),
         })
@@ -212,11 +238,10 @@ impl JellyBridgeApp {
             UiAction::SortChanged(index) => {
                 features::catalog::change_catalog_sort(context, i32::try_from(index).unwrap_or(0));
             }
-            UiAction::DensityChanged(index) => {
-                features::catalog::change_catalog_density(
-                    context,
-                    i32::try_from(index).unwrap_or(1),
-                );
+            UiAction::OpenSearch => features::catalog::open_search(context),
+            UiAction::PlayItem(id) => features::playback::play_item_by_id(context, id),
+            UiAction::ToggleCard { id, toggle } => {
+                features::catalog::toggle_card(context, &id, toggle);
             }
             UiAction::OpenDetail { id, kind } => features::detail::start_detail(
                 context,
@@ -304,6 +329,9 @@ impl JellyBridgeApp {
     fn leave_player(&mut self) {
         let context = &self.context;
         let _ = context.player_sender.send(PlayerCommand::Stop);
+        if let Ok(mut video) = self.video.lock() {
+            video.host.release_soon();
+        }
         features::playback::stop_remote_playback(context);
         let now = self.state.ctx.input(|input| input.time);
         if self.state.player.ui.fullscreen {
@@ -328,9 +356,13 @@ impl JellyBridgeApp {
 }
 
 impl eframe::App for JellyBridgeApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let layout_started = std::time::Instant::now();
         self.queue.drain(&mut self.state);
         let mut actions = std::mem::take(&mut self.state.deferred);
+        if let Some(script) = self.input_script.as_mut() {
+            actions.extend(script.take_plays().into_iter().map(UiAction::PlayItem));
+        }
         self.report_render_error();
 
         let screen = ui.max_rect();
@@ -339,13 +371,16 @@ impl eframe::App for JellyBridgeApp {
             Screen::Catalog => catalog::draw(ui, &mut self.state, &mut actions),
             Screen::Detail => detail::draw(ui, &mut self.state, &mut actions),
             Screen::Player => {
+                if let Ok(mut video) = self.video.lock() {
+                    video.host.keep();
+                }
                 player::handle_hotkeys(ui, &mut self.state, &mut actions);
                 let video = self.video_callback(screen);
                 player::draw(ui, &mut self.state, Some(video), &mut actions);
             }
         }
         if self.state.screen != Screen::Player
-            && let Some(pump) = self.pump_callback(pos2(screen.left(), screen.top()))
+            && let Some(pump) = self.pump_callback(ui.ctx(), pos2(screen.left(), screen.top()))
         {
             ui.painter().add(pump);
         }
@@ -359,17 +394,26 @@ impl eframe::App for JellyBridgeApp {
             }
             ui.ctx().request_repaint();
         }
-        #[cfg(debug_assertions)]
-        if let Some(script) = &self.input_script {
+            if let Some(script) = &self.input_script {
             script.schedule(ui.ctx());
         }
         startup::note_frame_rendered();
+        if let Some(measure) = self.measure.as_mut() {
+            measure.frame(
+                ui.ctx(),
+                startup::content_ready(),
+                layout_started.elapsed(),
+                frame.info().cpu_usage,
+            );
+        }
     }
 
-    #[cfg(debug_assertions)]
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if let Some(script) = self.input_script.as_mut() {
             script.inject(raw_input);
+        }
+        if !raw_input.events.is_empty() {
+            self.last_input = Instant::now();
         }
     }
 

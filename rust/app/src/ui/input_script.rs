@@ -1,4 +1,4 @@
-//! Debug builds only: replays a scripted sequence of input events into the
+//! Replays a scripted sequence of input events into the
 //! window, so the real app can be driven (and screenshotted) on a hidden or
 //! virtual display without touching anyone's mouse or keyboard.
 //!
@@ -14,7 +14,11 @@
 //! 3.5  key    Enter          press and release a key (egui key name)
 //! 3.6  key    shift+N        with modifiers (shift, ctrl, alt)
 //! 4.0  text   hello          type text
+//! 5.0  play   <item id>      play that item, as a card's play button does
 //! ```
+//!
+//! `play` names the item instead of pointing at a card, so a scenario cannot
+//! start whatever happens to sit at a spot after the home screen reorders.
 
 use std::collections::VecDeque;
 
@@ -24,6 +28,7 @@ pub struct InputScript {
     steps: VecDeque<(f64, Step)>,
     start: Option<f64>,
     last_now: f64,
+    plays: Vec<String>,
 }
 
 enum Step {
@@ -32,6 +37,7 @@ enum Step {
     Scroll(egui::Vec2),
     Key(Key, Modifiers),
     Text(String),
+    Play(String),
 }
 
 impl InputScript {
@@ -47,6 +53,7 @@ impl InputScript {
             steps,
             start: None,
             last_now: 0.0,
+            plays: Vec::new(),
         })
     }
 
@@ -60,9 +67,17 @@ impl InputScript {
             }
             let (at, step) = self.steps.pop_front().expect("peeked");
             tracing::info!(at, "input script step");
-            push(input, step);
+            match step {
+                Step::Play(id) => self.plays.push(id),
+                step => push(input, step),
+            }
         }
         self.last_now = now;
+    }
+
+    /// Items due to be played, taken once by the frame that dispatches them.
+    pub fn take_plays(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.plays)
     }
 
     /// Asks for a frame when the next step is due. Called during the frame:
@@ -109,6 +124,7 @@ fn push(input: &mut RawInput, step: Step) {
             }
         }
         Step::Text(text) => input.events.push(Event::Text(text)),
+        Step::Play(_) => {}
     }
 }
 
@@ -128,6 +144,7 @@ fn parse_line(line: &str) -> Option<(f64, Step)> {
         "dclick" => numbers().map(|(x, y)| Step::Click(pos2(x, y), 2))?,
         "scroll" => numbers().map(|(x, y)| Step::Scroll(vec2(x, y)))?,
         "text" => Step::Text(rest.to_owned()),
+        "play" => Step::Play(rest.trim().to_owned()),
         "key" => {
             let mut modifiers = Modifiers::NONE;
             let mut name = rest;

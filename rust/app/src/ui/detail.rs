@@ -5,9 +5,10 @@ use egui::{Align2, Color32, Id, Rect, ScrollArea, Sense, Ui, pos2, vec2};
 use super::app::UiAction;
 use super::icons::{self, Icon};
 use super::images::{Art, ImageCache};
+use super::jf::{self, CardModel, Shape};
 use super::top_bar;
-use super::widgets::{self, RoundIconButton, Shelf};
-use super::{Screen, UiState, detail_art, format_playback_time, primary_card_image, theme};
+use super::widgets::{self, Shelf};
+use super::{Screen, UiState, detail_art, primary_card_image, theme};
 use crate::app::AppContext;
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageType, PersonData, StreamData,
@@ -24,14 +25,10 @@ pub struct DetailVm {
     pub title: String,
     pub heading: String,
     pub subheading: String,
-    pub ends_at: String,
     pub tags: String,
     pub links: Vec<(String, String)>,
     pub director: String,
     pub writers: String,
-    pub star_rating: f32,
-    pub critic_rating: Option<i32>,
-    pub subtitle: String,
     pub overview: String,
     pub artwork: Option<Art>,
     pub backdrop: Option<Art>,
@@ -42,14 +39,9 @@ pub struct DetailVm {
     pub studios: String,
     pub media_info: String,
     pub series_id: String,
-    pub series_summary: String,
-    pub play_context: String,
     pub season_id: String,
     pub season_name: String,
-    pub season_summary: String,
-    pub play_label: String,
     pub progress: f32,
-    pub progress_label: String,
     pub playable: bool,
     pub watched: bool,
     pub favorite: bool,
@@ -59,14 +51,26 @@ pub struct DetailVm {
     pub episodes: Vec<DetailCard>,
     pub people: Vec<DetailPerson>,
     pub guest_stars: Vec<DetailPerson>,
-    /// Position of this episode among `episodes`; its shelf opens there.
-    pub current_episode_index: Option<usize>,
     /// Unwatched episodes left in a series or season, for the poster badge.
     pub unplayed_count: i32,
     pub audio_options: Vec<String>,
     pub subtitle_options: Vec<String>,
     pub audio_index: i32,
     pub subtitle_index: i32,
+    /// The ribbon's info row, item by item as jellyfin-web lays it out.
+    pub misc: Vec<MiscItem>,
+}
+
+/// One entry of the info row under a detail page's title.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MiscItem {
+    Text(String),
+    /// The official rating, drawn in a tinted box ("FSK-12").
+    Badge(String),
+    /// Community rating, after a gold star.
+    Stars(f32),
+    /// Critic rating in percent, after a tomato.
+    Critic(i32),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -198,14 +202,10 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         title: item.title.clone(),
         heading,
         subheading,
-        ends_at: ends_at_label(item),
         tags: item.tags.join(", "),
         links: item.external_urls.clone(),
         director: item.directors.join(", "),
         writers: item.writers.join(", "),
-        star_rating: item.community_rating.unwrap_or(0.0),
-        critic_rating: item.critic_rating.map(|value| value.round() as i32),
-        subtitle: detail_info_line(page),
         overview: item.overview.clone(),
         // The hero poster asks for a still-sized thumbnail on episode pages.
         artwork: primary_card_image(item).map(|image| {
@@ -226,8 +226,6 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         studios: item.studios.join(" • "),
         media_info: item.media_summary.clone(),
         series_id: item.series_id.clone().unwrap_or_default(),
-        series_summary: detail_series_summary(page),
-        play_context: detail_series_play_context(page),
         season_id: episode_page
             .then(|| item.season_id.clone())
             .flatten()
@@ -236,10 +234,7 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
             .then(|| item.season_name.clone())
             .flatten()
             .unwrap_or_default(),
-        season_summary: detail_season_summary(page),
-        play_label: page.primary_play_label().unwrap_or_default().to_owned(),
         progress: progress_item.progress,
-        progress_label: detail_progress_label(progress_item),
         playable: item.playable || !page.episodes.is_empty(),
         watched: item.watched,
         favorite: item.favorite,
@@ -249,10 +244,17 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
             .map(|season| to_detail_card(season, 600))
             .collect(),
         next_up,
+        // jellyfin-web's poster cards read title and year.
         similar: page
             .similar
             .iter()
-            .map(|similar| to_detail_card(similar, 600))
+            .map(|similar| DetailCard {
+                subtitle: similar
+                    .production_year
+                    .map(|year| year.to_string())
+                    .unwrap_or_default(),
+                ..to_detail_card(similar, 600)
+            })
             .collect(),
         // Episode stills are wide thumbnails and ask for more pixels.
         episodes: page
@@ -262,7 +264,6 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
             .collect(),
         people: item.people.iter().map(to_detail_person).collect(),
         guest_stars: item.guest_stars.iter().map(to_detail_person).collect(),
-        current_episode_index: usize::try_from(current_episode_index(page)).ok(),
         unplayed_count: matches!(item.kind, DetailKind::Series | DetailKind::Season)
             .then_some(item.unplayed_count)
             .flatten()
@@ -271,7 +272,65 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         subtitle_options,
         audio_index: tracks.audio_index,
         subtitle_index: tracks.subtitle_index,
+        misc: misc_items(page),
     }
+}
+
+/// The info row jellyfin-web shows under a detail page's title.
+fn misc_items(page: &DetailPageData) -> Vec<MiscItem> {
+    let item = &page.item;
+    let mut misc = Vec::new();
+    match item.kind {
+        DetailKind::Season => return misc,
+        DetailKind::Episode => {
+            if let Some(date) = item.premiere_date.map(format_air_date) {
+                misc.push(MiscItem::Text(date));
+            } else if let Some(year) = item.production_year {
+                misc.push(MiscItem::Text(year.to_string()));
+            }
+        }
+        DetailKind::Series => {
+            if let Some(start) = item.production_year {
+                let span = if item.series_continuing {
+                    format!("{start} - Present")
+                } else {
+                    match item.end_year {
+                        Some(end) if end != start => format!("{start} - {end}"),
+                        _ => start.to_string(),
+                    }
+                };
+                misc.push(MiscItem::Text(span));
+            }
+        }
+        _ => {
+            if let Some(year) = item.production_year {
+                misc.push(MiscItem::Text(year.to_string()));
+            }
+        }
+    }
+    if item.kind != DetailKind::Series
+        && let Some(runtime) = item.runtime_seconds.filter(|seconds| *seconds > 0.0)
+    {
+        misc.push(MiscItem::Text(format_runtime(runtime)));
+    }
+    if let Some(rating) = item
+        .official_rating
+        .clone()
+        .filter(|rating| !rating.is_empty())
+    {
+        misc.push(MiscItem::Badge(rating));
+    }
+    if let Some(stars) = item.community_rating.filter(|stars| *stars > 0.0) {
+        misc.push(MiscItem::Stars(stars));
+    }
+    if let Some(critic) = item.critic_rating {
+        misc.push(MiscItem::Critic(critic.round() as i32));
+    }
+    let ends_at = ends_at_label(item);
+    if !ends_at.is_empty() {
+        misc.push(MiscItem::Text(ends_at));
+    }
+    misc
 }
 
 /// `thumb_width` is the size asked for when the card art is a 16:9 still.
@@ -329,103 +388,113 @@ pub fn open_external_url(url: String) {
     std::thread::spawn(move || open_in_browser(&url));
 }
 
-const HERO_HEIGHT: f32 = 320.0;
-const CONTENT_MARGIN: f32 = 48.0;
-const POSTER_OVERLAP: f32 = 96.0;
-const LABEL_WIDTH: f32 = 86.0;
+/// The ribbon under the backdrop that carries the title and the actions.
+const RIBBON_HEIGHT: f32 = 107.0;
+const LABEL_WIDTH: f32 = 93.0;
+const MEDIA_ROW: f32 = 30.8;
 
-/// Page geometry shared by the sections.
+/// Page geometry, in jellyfin-web's viewport units.
 struct Layout {
     width: f32,
+    /// The backdrop: 40vh.
+    backdrop_height: f32,
+    padding: f32,
     poster: egui::Vec2,
+    /// Where the text column starts: 32.45vw.
     content_left: f32,
 }
 
 impl Layout {
-    fn new(width: f32, kind: Option<DetailKind>) -> Self {
-        let poster = if kind == Some(DetailKind::Episode) {
-            let width = (width * 0.30).clamp(260.0, 380.0);
-            vec2(width, width * 9.0 / 16.0)
+    fn new(width: f32, height: f32, kind: Option<DetailKind>) -> Self {
+        let poster_width = width * 0.25;
+        let ratio = if kind == Some(DetailKind::Episode) {
+            9.0 / 16.0
         } else {
-            let width = (width * 0.22).clamp(220.0, 300.0);
-            vec2(width, width * 1.5)
+            1.5
         };
         Self {
             width,
-            poster,
-            content_left: CONTENT_MARGIN + poster.x + 40.0,
+            backdrop_height: (height * 0.4).max(RIBBON_HEIGHT + 120.0),
+            padding: jf::page_padding(width),
+            poster: vec2(poster_width, poster_width * ratio),
+            content_left: width * 0.3245,
         }
     }
 
     fn content_width(&self) -> f32 {
-        (self.width - self.content_left - CONTENT_MARGIN).max(80.0)
+        (self.width - self.content_left - self.padding).max(120.0)
+    }
+
+    fn ribbon_top(&self) -> f32 {
+        self.backdrop_height - RIBBON_HEIGHT
     }
 }
 
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
+    ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
     let bar = Rect::from_min_size(screen.min, vec2(screen.width(), top_bar::HEIGHT));
-    top_bar::draw(ui, state, bar, actions);
-    let body = Rect::from_min_max(pos2(screen.left(), bar.bottom()), screen.max);
-    ui.painter().rect_filled(body, 0.0, theme::BG);
-    let mut body_ui = widgets::clipped_child(ui, body);
     if state.busy {
-        body_ui.painter().text(
-            body.center(),
-            Align2::CENTER_CENTER,
-            "Loading…",
-            theme::regular(16.0),
-            theme::TEXT_MUTED,
+        ui.put(
+            Rect::from_center_size(screen.center(), vec2(56.0, 56.0)),
+            egui::Spinner::new().size(56.0).color(theme::JF_ACCENT),
         );
+        top_bar::draw(ui, state, bar, actions);
         return;
     }
-    let layout = Layout::new(body.width(), state.detail.kind);
+    let layout = Layout::new(screen.width(), screen.height(), state.detail.kind);
+    let mut page_ui = widgets::clipped_child(ui, screen);
     ScrollArea::vertical()
         .id_salt(("detail-page", state.detail.id.as_str()))
         .auto_shrink(false)
-        .show(&mut body_ui, |ui| {
+        .show(&mut page_ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let page_top = ui.cursor().top();
-            draw_hero(ui, state, &layout);
-            let block_top = ui.cursor().top();
-            draw_title_strip(ui, state, &layout, actions);
+            draw_backdrop(ui, state, &layout);
+            draw_ribbon(ui, state, &layout, page_top, actions);
             if !state.message.is_empty() {
                 draw_error_banner(ui, state, &layout, actions);
             }
             draw_info(ui, state, &layout, actions);
-            // Keep the block at least as tall as the poster's overhang, so the
-            // shelves below never slide underneath the poster card.
-            let minimum = layout.poster.y - POSTER_OVERLAP + 24.0;
-            let used = ui.cursor().top() - block_top;
-            if used < minimum {
-                ui.allocate_exact_size(vec2(layout.width, minimum - used), Sense::hover());
-            }
             draw_shelves(ui, state, &layout, actions);
-            draw_poster_card(ui, state, &layout, page_top);
+            ui.allocate_exact_size(vec2(layout.width, 40.0), Sense::hover());
+            draw_poster(ui, state, &layout, page_top);
         });
+    // The header floats over the backdrop, translucent.
+    top_bar::draw(ui, state, bar, actions);
 }
 
-fn draw_hero(ui: &mut Ui, state: &mut UiState, layout: &Layout) {
-    let (hero, _) = ui.allocate_exact_size(vec2(layout.width, HERO_HEIGHT), Sense::hover());
+fn draw_backdrop(ui: &mut Ui, state: &mut UiState, layout: &Layout) {
+    let (hero, _) =
+        ui.allocate_exact_size(vec2(layout.width, layout.backdrop_height), Sense::hover());
     if !ui.is_rect_visible(hero) {
         return;
     }
     let painter = ui.painter().with_clip_rect(hero.intersect(ui.clip_rect()));
-    painter.rect_filled(hero, 0.0, theme::BG);
     if let Some((texture, size)) = resident(&mut state.images, state.detail.backdrop.as_ref()) {
         widgets::image_cover(&painter, texture, size, hero, 0.0);
+        // jellyfin-web dims the backdrop under its translucent header and
+        // ribbon; the page ground shows through at 50%.
+        painter.rect_filled(hero, 0.0, theme::with_alpha(theme::JF_BG, 0.5));
     }
-    painter.rect_filled(hero, 0.0, theme::with_alpha(theme::SCRIM, 0.44));
-    widgets::vertical_gradient(
-        &painter,
-        hero,
-        theme::with_alpha(theme::BG, 0.13),
-        theme::with_alpha(theme::BG, 0.86),
-    );
     if let Some((texture, size)) = resident(&mut state.images, state.detail.logo.as_ref()) {
+        // Centred in the space above the ribbon, right of the poster column.
+        let area = Rect::from_min_max(
+            pos2(
+                hero.left() + layout.content_left,
+                hero.top() + top_bar::HEIGHT,
+            ),
+            pos2(
+                hero.right() - layout.padding,
+                hero.top() + layout.ribbon_top(),
+            ),
+        );
         let logo = Rect::from_center_size(
-            hero.center() - vec2(0.0, 10.0),
-            vec2((hero.width() * 0.45).min(460.0), 130.0),
+            area.center(),
+            vec2(
+                (area.width() * 0.4).min(500.0),
+                (area.height() * 0.75).min(200.0),
+            ),
         );
         widgets::image_contain(&painter, texture, size, logo);
     }
@@ -437,99 +506,164 @@ fn resident(images: &mut ImageCache, art: Option<&Art>) -> Option<(egui::Texture
     images.texture(art).zip(images.size(&art.key))
 }
 
-fn draw_title_strip(
+/// The translucent band across the bottom of the backdrop: title lines and
+/// the info row on the left, round action buttons on the right.
+fn draw_ribbon(
     ui: &mut Ui,
     state: &mut UiState,
     layout: &Layout,
+    page_top: f32,
     actions: &mut Vec<UiAction>,
 ) {
     let detail = &state.detail;
     let busy = state.busy;
-    let kind = detail.kind;
+    let ribbon = Rect::from_min_size(
+        pos2(ui.max_rect().left(), page_top + layout.ribbon_top()),
+        vec2(layout.width, RIBBON_HEIGHT),
+    );
+    let painter = ui.painter().clone();
+    painter.rect_filled(ribbon, 0.0, theme::JF_RIBBON);
+
+    // Buttons, right-aligned and vertically centred.
+    // Resume/restart are for a single video; a series or season plays its
+    // next episode instead.
+    let resumable = detail.playable
+        && detail.progress > 0.0
+        && detail.progress < 1.0
+        && !matches!(detail.kind, Some(DetailKind::Series | DetailKind::Season));
+    let mut buttons: Vec<(Icon, &str, Color32, &str)> = Vec::new();
+    if detail.playable {
+        buttons.push((
+            Icon::Play,
+            if resumable { "Resume" } else { "Play" },
+            Color32::WHITE,
+            "play",
+        ));
+        if resumable {
+            buttons.push((
+                Icon::Replay,
+                "Play from beginning",
+                Color32::WHITE,
+                "restart",
+            ));
+        }
+    }
+    buttons.push((
+        Icon::Check,
+        if detail.watched {
+            "Mark unplayed"
+        } else {
+            "Mark played"
+        },
+        if detail.watched {
+            theme::JF_PLAYED_RED
+        } else {
+            Color32::WHITE
+        },
+        "played",
+    ));
+    buttons.push((
+        Icon::Favorite,
+        if detail.favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        },
+        if detail.favorite {
+            theme::JF_PLAYED_RED
+        } else {
+            Color32::WHITE
+        },
+        "favorite",
+    ));
+    let buttons_width = buttons.len() as f32 * 49.0;
+    let mut x = ribbon.right() - layout.padding - buttons_width;
+    let text_right = x - 16.0;
+    for (icon, label, color, name) in buttons {
+        let rect = Rect::from_min_size(pos2(x, ribbon.center().y - 22.5), vec2(49.0, 45.0));
+        x += 49.0;
+        let clicked = jf::round_icon_button(
+            ui,
+            rect,
+            icon,
+            if color == Color32::WHITE {
+                theme::JF_TEXT
+            } else {
+                color
+            },
+            24.8,
+            label,
+            !busy,
+            Id::new(("detail-action", name)),
+        )
+        .clicked();
+        if clicked {
+            actions.push(match name {
+                "play" => UiAction::PlayCurrent { from_start: false },
+                "restart" => UiAction::PlayCurrent { from_start: true },
+                "played" => UiAction::SetWatched {
+                    id: detail.id.clone(),
+                    watched: !detail.watched,
+                },
+                _ => UiAction::SetFavorite {
+                    id: detail.id.clone(),
+                    favorite: !detail.favorite,
+                },
+            });
+        }
+    }
+
+    // Title block, vertically centred in the ribbon.
+    let left = ribbon.left() + layout.content_left;
+    let width = (text_right - left).max(80.0);
     let heading_links = !detail.series_id.is_empty()
-        && matches!(kind, Some(DetailKind::Episode | DetailKind::Season));
-
-    // Actions on the right: play pill, play-from-start, played, favorite.
-    let play_label = if detail.play_label.is_empty() {
-        "Play"
-    } else {
-        detail.play_label.as_str()
-    };
-    let play_width = 16.0
-        + 24.0
-        + 6.0
-        + widgets::text_width(ui, play_label, theme::bold(theme::FONT_SUBTITLE))
-        + 22.0;
-    let restart = detail.playable && detail.progress > 0.0 && detail.progress < 1.0;
-    let buttons: f32 = (if detail.playable {
-        play_width + 9.0
-    } else {
-        0.0
-    }) + (if restart { 44.0 + 9.0 } else { 0.0 })
-        + 44.0 * 2.0
-        + 9.0;
-    let text_width = (layout.content_width() - buttons - 12.0).max(80.0);
-
-    let heading = if detail.heading.is_empty() {
+        && matches!(detail.kind, Some(DetailKind::Episode | DetailKind::Season));
+    let heading_text = if detail.heading.is_empty() {
         &detail.title
     } else {
         &detail.heading
     };
     let heading = widgets::elided(
         ui,
-        heading,
-        theme::bold(27.0),
-        theme::TEXT_BRIGHT,
-        text_width,
+        heading_text,
+        theme::bold(theme::JF_FONT_TITLE),
+        theme::JF_TEXT,
+        width,
     );
     let subheading = (!detail.subheading.is_empty()).then(|| {
         widgets::elided(
             ui,
             &detail.subheading,
-            theme::bold(16.0),
-            theme::TEXT_PRIMARY,
-            text_width,
+            theme::bold(theme::JF_FONT_SUBTITLE),
+            theme::JF_TEXT,
+            width,
         )
     });
-    let info_height = 16.0;
-    let column_height = heading.size().y
-        + subheading
-            .as_ref()
-            .map_or(0.0, |galley| 5.0 + galley.size().y)
-        + 5.0
-        + info_height;
-    let height = column_height.max(44.0) + 32.0;
-    let (strip, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
-    let painter = ui.painter().clone();
-    painter.rect_filled(strip, 0.0, theme::with_alpha(theme::SURFACE_DIM, 0.85));
-
-    let left = strip.left() + layout.content_left;
-    let mut y = strip.top() + 16.0;
+    let misc_height = if detail.misc.is_empty() { 0.0 } else { 24.0 };
+    let block = heading.size().y
+        + subheading.as_ref().map_or(0.0, |line| line.size().y + 2.0)
+        + misc_height;
+    let mut y = ribbon.top() + (RIBBON_HEIGHT - block) / 2.0;
     let heading_rect = Rect::from_min_size(pos2(left, y), heading.size());
-    let heading_sense = if heading_links {
+    let sense = if heading_links {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let heading_response = ui.interact(heading_rect, Id::new("detail-heading"), heading_sense);
-    let heading_color = if heading_links && heading_response.hovered() {
-        theme::ACCENT_BRIGHT
-    } else {
-        theme::TEXT_BRIGHT
-    };
-    painter.galley(heading_rect.min, heading, heading_color);
+    let response = ui.interact(heading_rect, Id::new("detail-heading"), sense);
+    painter.galley(heading_rect.min, heading, Color32::WHITE);
     if heading_links {
-        widgets::pointer_on_hover(&heading_response);
-        if heading_response.clicked() {
+        widgets::pointer_on_hover(&response);
+        if response.clicked() {
             actions.push(UiAction::OpenDetail {
                 id: detail.series_id.clone(),
                 kind: "Series".to_owned(),
             });
         }
     }
-    y = heading_rect.bottom() + 5.0;
+    y = heading_rect.bottom();
     if let Some(subheading) = subheading {
-        let rect = Rect::from_min_size(pos2(left, y), subheading.size());
+        let rect = Rect::from_min_size(pos2(left, y + 2.0), subheading.size());
         let links = !detail.season_id.is_empty();
         let sense = if links {
             Sense::click()
@@ -537,12 +671,7 @@ fn draw_title_strip(
             Sense::hover()
         };
         let response = ui.interact(rect, Id::new("detail-subheading"), sense);
-        let color = if links && response.hovered() {
-            theme::ACCENT_BRIGHT
-        } else {
-            theme::TEXT_PRIMARY
-        };
-        painter.galley(rect.min, subheading, color);
+        painter.galley(rect.min, subheading, Color32::WHITE);
         if links {
             widgets::pointer_on_hover(&response);
             if response.clicked() {
@@ -552,346 +681,280 @@ fn draw_title_strip(
                 });
             }
         }
-        y = rect.bottom() + 5.0;
+        y = rect.bottom();
     }
-
-    // Info row: metadata, community rating, critic rating, ends-at.
-    let center_y = y + info_height / 2.0;
-    let mut x = left;
-    let mut info = |text: &str, font: egui::FontId, color: Color32| {
-        if text.is_empty() || x > left + text_width {
-            return;
-        }
-        let galley = widgets::elided(ui, text, font, color, left + text_width - x);
-        let rect = widgets::galley_v_centered(&painter, x, center_y, galley);
-        x = rect.right() + 14.0;
-    };
-    info(
-        &detail.subtitle,
-        theme::regular(13.0),
-        theme::TEXT_SECONDARY,
-    );
-    if detail.star_rating > 0.0 {
-        info(
-            &format!("★ {}", (detail.star_rating * 10.0).round() / 10.0),
-            theme::bold(13.0),
-            theme::RATING_GOLD,
+    if !detail.misc.is_empty() {
+        draw_misc(
+            ui,
+            &painter,
+            &detail.misc,
+            pos2(left, y + 12.0),
+            left + width,
         );
-    }
-    if let Some(critic) = detail.critic_rating {
-        let color = if critic >= 60 {
-            theme::CRITIC_FRESH
-        } else {
-            theme::DANGER_TEXT
-        };
-        info(&format!("Critics {critic}%"), theme::bold(13.0), color);
-    }
-    info(&detail.ends_at, theme::regular(13.0), theme::TEXT_MUTED);
-
-    // Buttons, right-aligned and vertically centered on the text column.
-    let button_y = strip.top() + 16.0 + (column_height.max(44.0) - 44.0) / 2.0;
-    let mut x = strip.right() - CONTENT_MARGIN - buttons + 9.0;
-    if detail.playable {
-        let rect = Rect::from_min_size(pos2(x, button_y), vec2(play_width, 44.0));
-        if play_pill(ui, rect, play_label, !busy) {
-            actions.push(UiAction::PlayCurrent { from_start: false });
-        }
-        x = rect.right() + 9.0;
-    }
-    let mut round = |icon: Icon, label: &str, active: bool, active_color: Color32, id: &str| {
-        let rect = Rect::from_min_size(pos2(x, button_y), vec2(44.0, 44.0));
-        x = rect.right() + 9.0;
-        RoundIconButton {
-            icon,
-            label,
-            size: 44.0,
-            active,
-            active_color,
-            enabled: !busy,
-        }
-        .show(ui, rect, Id::new(("detail-action", id)))
-        .clicked()
-    };
-    if restart
-        && round(
-            Icon::Replay,
-            "Play from beginning",
-            false,
-            theme::TEXT_BRIGHT,
-            "restart",
-        )
-    {
-        actions.push(UiAction::PlayCurrent { from_start: true });
-    }
-    let watched_label = if detail.watched {
-        "Mark unplayed"
-    } else {
-        "Mark played"
-    };
-    if round(
-        Icon::Check,
-        watched_label,
-        detail.watched,
-        theme::TEXT_BRIGHT,
-        "watched",
-    ) {
-        actions.push(UiAction::SetWatched {
-            id: detail.id.clone(),
-            watched: !detail.watched,
-        });
-    }
-    let favorite_label = if detail.favorite {
-        "Remove from favorites"
-    } else {
-        "Add to favorites"
-    };
-    if round(
-        Icon::Favorite,
-        favorite_label,
-        detail.favorite,
-        theme::DANGER_TEXT,
-        "favorite",
-    ) {
-        actions.push(UiAction::SetFavorite {
-            id: detail.id.clone(),
-            favorite: !detail.favorite,
-        });
     }
 }
 
-/// Jellyfin's primary detail action: a pill with the play icon and what it
-/// will do ("Resume", "Play", "Play again").
-fn play_pill(ui: &mut Ui, rect: Rect, label: &str, enabled: bool) -> bool {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, Id::new("detail-play"), sense);
-    widgets::describe_button(&response, enabled, label);
-    let opacity = if enabled { 1.0 } else { 0.45 };
-    let painter = ui.painter();
-    let fill = if response.hovered() && enabled {
-        theme::ACCENT_BRIGHT
-    } else {
-        theme::ACCENT
-    };
-    painter.rect_filled(rect, rect.height() / 2.0, fill.gamma_multiply(opacity));
-    if response.has_focus() {
-        widgets::border(
-            painter,
-            rect.expand(2.0),
-            rect.height() / 2.0 + 2.0,
-            2.0,
-            theme::TEXT_BRIGHT,
+/// The info row: plain items 15 px apart, the rating in a box, stars and
+/// the critic score with their icons.
+fn draw_misc(ui: &Ui, painter: &egui::Painter, misc: &[MiscItem], start: egui::Pos2, right: f32) {
+    let center_y = start.y;
+    let mut x = start.x;
+    let font = theme::regular(theme::JF_FONT);
+    for item in misc {
+        if x >= right {
+            break;
+        }
+        match item {
+            MiscItem::Text(text) => {
+                let galley = widgets::elided(ui, text, font.clone(), theme::JF_TEXT, right - x);
+                x = widgets::galley_v_centered(painter, x, center_y, galley).right() + 15.0;
+            }
+            MiscItem::Badge(text) => {
+                let galley = widgets::elided(
+                    ui,
+                    text,
+                    theme::regular(theme::JF_FONT_SMALL),
+                    theme::JF_BADGE_TEXT,
+                    right - x,
+                );
+                let rect = Rect::from_min_size(
+                    pos2(x, center_y - 12.0),
+                    vec2(galley.size().x + 13.7, 24.0),
+                );
+                painter.rect_filled(rect, theme::JF_RADIUS, theme::JF_BADGE);
+                widgets::galley_centered(painter, rect, galley);
+                x = rect.right() + 15.0;
+            }
+            MiscItem::Stars(stars) => {
+                icons::paint_centered(
+                    painter,
+                    Icon::Star,
+                    pos2(x + 9.0, center_y),
+                    18.0,
+                    theme::RATING_GOLD,
+                );
+                let galley = painter.layout_no_wrap(
+                    format!("{}", (stars * 10.0).round() / 10.0),
+                    font.clone(),
+                    theme::JF_TEXT,
+                );
+                x = widgets::galley_v_centered(painter, x + 21.0, center_y, galley).right() + 15.0;
+            }
+            MiscItem::Critic(score) => {
+                tomato(painter, pos2(x + 9.0, center_y), *score >= 60);
+                let galley =
+                    painter.layout_no_wrap(score.to_string(), font.clone(), theme::JF_TEXT);
+                x = widgets::galley_v_centered(painter, x + 22.0, center_y, galley).right() + 15.0;
+            }
+        }
+    }
+}
+
+/// Rotten Tomatoes' mark: a red tomato when fresh, a green splat when not.
+fn tomato(painter: &egui::Painter, center: egui::Pos2, fresh: bool) {
+    if fresh {
+        painter.circle_filled(
+            center + vec2(0.0, 1.0),
+            7.5,
+            Color32::from_rgb(0xfa, 0x32, 0x0a),
         );
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                center + vec2(-4.0, -6.5),
+                center + vec2(0.0, -4.0),
+                center + vec2(4.0, -6.5),
+                center + vec2(1.5, -3.0),
+                center + vec2(-1.5, -3.0),
+            ],
+            Color32::from_rgb(0x00, 0x91, 0x2d),
+            egui::Stroke::NONE,
+        ));
+    } else {
+        painter.circle_filled(center, 7.5, Color32::from_rgb(0x0a, 0xc8, 0x55));
+        for angle in [0.0_f32, 1.3, 2.6, 3.9, 5.2] {
+            painter.circle_filled(
+                center + egui::Vec2::angled(angle) * 7.0,
+                2.5,
+                Color32::from_rgb(0x0a, 0xc8, 0x55),
+            );
+        }
     }
-    icons::paint(
-        painter,
-        Icon::Play,
-        Rect::from_min_size(
-            pos2(rect.left() + 16.0, rect.center().y - 12.0),
-            vec2(24.0, 24.0),
-        ),
-        theme::BG.gamma_multiply(opacity),
-    );
-    painter.text(
-        pos2(rect.left() + 46.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        theme::bold(theme::FONT_SUBTITLE),
-        theme::BG.gamma_multiply(opacity),
-    );
-    if enabled {
-        widgets::pointer_on_hover(&response);
-    }
-    response.clicked()
 }
 
 fn draw_error_banner(ui: &mut Ui, state: &UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
-    let (rect, _) = ui.allocate_exact_size(vec2(layout.width, 38.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(layout.width, 44.0), Sense::hover());
+    let row = Rect::from_min_max(
+        pos2(rect.left() + layout.content_left, rect.top() + 6.0),
+        pos2(rect.right() - layout.padding, rect.bottom()),
+    );
     let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, theme::DANGER_SURFACE);
     let galley = widgets::elided(
         ui,
         &state.message,
-        theme::regular(12.0),
+        theme::regular(theme::JF_FONT),
         theme::DANGER_TEXT,
-        rect.width() - 220.0,
+        row.width() - 140.0,
     );
-    widgets::galley_centered(painter, rect, galley);
+    widgets::galley_v_centered(painter, row.left(), row.center().y, galley);
     let button = Rect::from_min_size(
-        pos2(rect.right() - 92.0, rect.top() + 4.0),
-        vec2(80.0, 30.0),
+        pos2(row.right() - 120.0, row.top()),
+        vec2(120.0, row.height()),
     );
-    let response = ui.put(button, egui::Button::new("Retry"));
-    widgets::pointer_on_hover(&response);
-    if response.clicked() {
+    if super::catalog::raised_button(ui, button, "Retry", Id::new("detail-retry")) {
         actions.push(UiAction::Retry);
     }
 }
 
+/// Media rows, tagline, overview, tags, links and credits in the text
+/// column under the ribbon.
 fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
     let detail = &mut state.detail;
     let left = layout.content_left;
     let width = layout.content_width();
-    ui.allocate_exact_size(vec2(layout.width, 18.0), Sense::hover());
-    let mut first = true;
-    let mut row = |ui: &mut Ui, height: f32| -> Rect {
-        if !first {
-            ui.allocate_exact_size(vec2(layout.width, 12.0), Sense::hover());
+    ui.allocate_exact_size(vec2(layout.width, 22.0), Sense::hover());
+    let row = |ui: &mut Ui, height: f32, gap_before: f32| -> Rect {
+        if gap_before > 0.0 {
+            ui.allocate_exact_size(vec2(layout.width, gap_before), Sense::hover());
         }
-        first = false;
         let (rect, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
         Rect::from_min_size(pos2(rect.left() + left, rect.top()), vec2(width, height))
     };
-
-    if detail.progress > 0.0 && detail.progress < 1.0 {
-        let rect = row(ui, 18.0);
-        let label = if detail.kind == Some(DetailKind::Series) {
-            &detail.play_context
-        } else {
-            &detail.progress_label
-        };
-        let painter = ui.painter();
-        let mut x = rect.left();
-        if !label.is_empty() {
-            let galley = widgets::elided(
-                ui,
-                label,
-                theme::regular(11.0),
-                theme::TEXT_MUTED,
-                width * 0.55,
-            );
-            x = widgets::galley_v_centered(painter, x, rect.center().y, galley).right() + 10.0;
-        }
-        let bar = Rect::from_min_size(
-            pos2(x, rect.center().y - 2.5),
-            vec2((width * 0.4).min(300.0), 5.0),
-        );
-        painter.rect_filled(bar, 2.0, theme::SURFACE_HOVER);
-        painter.rect_filled(
-            Rect::from_min_size(bar.min, vec2(bar.width() * detail.progress, bar.height())),
-            2.0,
-            theme::ACCENT,
-        );
-    }
-
-    let labeled_line = |ui: &mut Ui, rect: Rect, label: &str, value: &str| {
-        let painter = ui.painter();
-        painter.text(
+    let label = |ui: &Ui, rect: Rect, text: &str| {
+        ui.painter().text(
             pos2(rect.left(), rect.center().y),
             Align2::LEFT_CENTER,
-            label,
-            theme::regular(13.0),
-            theme::TEXT_MUTED,
+            text,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT,
         );
+    };
+    let value_width = (width - LABEL_WIDTH).min(559.0);
+    let mut media_rows = 0;
+    if !detail.media_info.is_empty() {
+        let rect = row(ui, MEDIA_ROW, 0.0);
+        label(ui, rect, "Video");
         let galley = widgets::elided(
             ui,
-            value,
-            theme::regular(13.0),
-            theme::TEXT_PRIMARY,
-            rect.width() - LABEL_WIDTH - 12.0,
+            &detail.media_info,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
+            value_width,
         );
         widgets::galley_v_centered(
-            painter,
-            rect.left() + LABEL_WIDTH + 12.0,
+            ui.painter(),
+            rect.left() + LABEL_WIDTH,
             rect.center().y,
             galley,
         );
-    };
-    if !detail.media_info.is_empty() {
-        let rect = row(ui, 16.0);
-        labeled_line(ui, rect, "Video", &detail.media_info);
+        media_rows += 1;
     }
     if detail.audio_options.len() == 1 {
-        let rect = row(ui, 16.0);
-        labeled_line(ui, rect, "Audio", &detail.audio_options[0]);
+        let rect = row(ui, MEDIA_ROW, 0.0);
+        label(ui, rect, "Audio");
+        let galley = widgets::elided(
+            ui,
+            &detail.audio_options[0],
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
+            value_width,
+        );
+        widgets::galley_v_centered(
+            ui.painter(),
+            rect.left() + LABEL_WIDTH,
+            rect.center().y,
+            galley,
+        );
+        media_rows += 1;
     }
-    let combo_width = (width - LABEL_WIDTH - 12.0).min(520.0);
-    let mut track_combo =
-        |ui: &mut Ui, label: &str, options: &[String], index: &mut i32, audio: bool| {
-            let rect = row(ui, 34.0);
-            ui.painter().text(
-                pos2(rect.left(), rect.center().y),
-                Align2::LEFT_CENTER,
-                label,
-                theme::regular(13.0),
-                theme::TEXT_MUTED,
+    let mut select =
+        |ui: &mut Ui, title: &str, options: &[String], index: &mut i32, audio: bool| {
+            let rect = row(ui, MEDIA_ROW, 0.0);
+            label(ui, rect, title);
+            let field = Rect::from_min_size(
+                pos2(rect.left() + LABEL_WIDTH, rect.center().y - 13.0),
+                vec2(value_width, 26.0),
             );
-            let combo = Rect::from_min_size(
-                pos2(rect.left() + LABEL_WIDTH + 12.0, rect.top()),
-                vec2(combo_width, 34.0),
-            );
-            let mut selected = usize::try_from(*index).unwrap_or(0);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(combo));
-            child.spacing_mut().interact_size.y = 34.0;
-            egui::ComboBox::from_id_salt(("detail-track", audio))
-                .width(combo_width)
-                .selected_text(options.get(selected).map_or("", String::as_str))
-                .show_ui(&mut child, |ui| {
-                    for (option_index, option) in options.iter().enumerate() {
-                        ui.selectable_value(&mut selected, option_index, option);
-                    }
-                });
-            let selected = i32::try_from(selected).unwrap_or(0);
-            if selected != *index {
-                *index = selected;
+            if let Some(picked) = track_select(ui, field, options, *index, ("detail-track", audio))
+                && picked != *index
+            {
+                *index = picked;
                 actions.push(UiAction::DetailTrack {
-                    index: selected,
+                    index: picked,
                     audio,
                 });
             }
         };
     if detail.audio_options.len() > 1 {
         let options = std::mem::take(&mut detail.audio_options);
-        track_combo(ui, "Audio", &options, &mut detail.audio_index, true);
+        select(ui, "Audio", &options, &mut detail.audio_index, true);
         detail.audio_options = options;
+        media_rows += 1;
     }
     if detail.subtitle_options.len() > 1 {
         let options = std::mem::take(&mut detail.subtitle_options);
-        track_combo(ui, "Subtitles", &options, &mut detail.subtitle_index, false);
+        select(ui, "Subtitles", &options, &mut detail.subtitle_index, false);
         detail.subtitle_options = options;
+        media_rows += 1;
     }
-
-    let mut paragraph = |ui: &mut Ui, text: &str, font: egui::FontId, color: Color32| {
+    let mut gap = if media_rows > 0 { 14.0 } else { 0.0 };
+    let paragraph = |ui: &mut Ui, text: &str, font: egui::FontId, color: Color32, gap: &mut f32| {
         let galley = widgets::wrapped(ui, text, font, color, width, None);
-        let rect = row(ui, galley.size().y);
+        let rect = row(ui, galley.size().y, *gap);
         ui.painter().galley(rect.min, galley, Color32::WHITE);
+        *gap = 18.0;
     };
     if !detail.tagline.is_empty() {
         paragraph(
             ui,
             &detail.tagline,
-            theme::regular(16.0),
-            theme::TEXT_PRIMARY,
+            theme::regular(theme::JF_FONT_SUBTITLE),
+            theme::JF_TEXT,
+            &mut gap,
         );
     }
     if !detail.overview.is_empty() {
         paragraph(
             ui,
             &detail.overview,
-            theme::regular(14.0),
-            theme::TEXT_SECONDARY,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT,
+            &mut gap,
         );
     }
     if !detail.tags.is_empty() {
-        paragraph(
-            ui,
-            &format!("Tags: {}", detail.tags),
-            theme::regular(12.0),
-            theme::TEXT_MUTED,
+        // "Tags:" then the tags in bold, as jellyfin-web lists them.
+        let mut job = egui::text::LayoutJob::default();
+        job.wrap.max_width = width;
+        job.append(
+            "Tags: ",
+            0.0,
+            egui::TextFormat::simple(theme::regular(theme::JF_FONT_SMALL), theme::JF_TEXT),
         );
+        job.append(
+            &detail.tags,
+            0.0,
+            egui::TextFormat::simple(theme::bold(theme::JF_FONT_SMALL), theme::JF_TEXT),
+        );
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let rect = row(ui, galley.size().y, gap.max(12.0));
+        ui.painter().galley(rect.min, galley, Color32::WHITE);
+        gap = 8.0;
     }
     if !detail.links.is_empty() {
-        let rect = row(ui, 18.0);
+        let rect = row(ui, 20.0, gap);
         let mut x = rect.left();
+        let count = detail.links.len();
         for (index, (name, url)) in detail.links.iter().enumerate() {
+            let text = if index + 1 < count {
+                format!("{name},")
+            } else {
+                name.clone()
+            };
             let galley = widgets::elided(
                 ui,
-                name,
-                theme::bold(13.0),
-                theme::TEXT_SECONDARY,
+                &text,
+                theme::bold(theme::JF_FONT_SMALL),
+                theme::JF_TEXT,
                 rect.right() - x,
             );
             let link = Rect::from_min_size(
@@ -901,91 +964,130 @@ fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Ve
             let response = ui.interact(link, Id::new(("detail-link", index)), Sense::click());
             widgets::describe_button(&response, true, name);
             let color = if response.hovered() {
-                theme::ACCENT_BRIGHT
+                theme::JF_ACCENT
             } else {
-                theme::TEXT_SECONDARY
+                Color32::WHITE
             };
             ui.painter().galley(link.min, galley, color);
             widgets::pointer_on_hover(&response);
             if response.on_hover_text(url).clicked() {
                 actions.push(UiAction::OpenExternalUrl(url.clone()));
             }
-            x = link.right() + 14.0;
+            x = link.right() + 5.0;
             if x >= rect.right() {
                 break;
             }
         }
+        gap = 18.0;
     }
-    for (label, value) in [
+    let credits = [
         ("Genres", &detail.genres),
         ("Director", &detail.director),
         ("Writers", &detail.writers),
         ("Studios", &detail.studios),
-    ] {
+    ];
+    for (title, value) in credits {
         if value.is_empty() {
             continue;
         }
+        let value = value.replace(" • ", ", ");
         let galley = widgets::wrapped(
             ui,
-            value,
-            theme::bold(13.0),
-            theme::TEXT_PRIMARY,
-            width - LABEL_WIDTH - 12.0,
+            &value,
+            theme::bold(theme::JF_FONT),
+            theme::JF_TEXT,
+            (width - LABEL_WIDTH).min(450.0),
             None,
         );
-        let rect = row(ui, galley.size().y);
+        let rect = row(ui, galley.size().y + 7.3, gap);
+        gap = 0.0;
         ui.painter().text(
             rect.min,
             Align2::LEFT_TOP,
-            label,
-            theme::regular(13.0),
-            theme::TEXT_MUTED,
+            title,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT,
         );
-        ui.painter().galley(
-            rect.min + vec2(LABEL_WIDTH + 12.0, 0.0),
-            galley,
-            Color32::WHITE,
-        );
+        ui.painter()
+            .galley(rect.min + vec2(LABEL_WIDTH, 0.0), galley, Color32::WHITE);
     }
-    ui.allocate_exact_size(vec2(layout.width, 24.0), Sense::hover());
+    ui.allocate_exact_size(vec2(layout.width, 20.0), Sense::hover());
+}
+
+/// jellyfin-web's select: a `#292929` field with a chevron, opening a list.
+fn track_select(
+    ui: &mut Ui,
+    field: Rect,
+    options: &[String],
+    index: i32,
+    id: (&str, bool),
+) -> Option<i32> {
+    let selected = usize::try_from(index).unwrap_or(0);
+    let mut picked = selected;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    child.spacing_mut().interact_size.y = field.height();
+    child.visuals_mut().widgets.inactive.weak_bg_fill = theme::JF_INPUT;
+    child.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+    child.visuals_mut().widgets.hovered.weak_bg_fill = theme::JF_RAISED;
+    egui::ComboBox::from_id_salt(id)
+        .width(field.width())
+        .selected_text(
+            egui::RichText::new(options.get(selected).map_or("", String::as_str))
+                .font(theme::regular(theme::JF_FONT))
+                .color(theme::JF_TEXT),
+        )
+        .show_ui(&mut child, |ui| {
+            for (option_index, option) in options.iter().enumerate() {
+                ui.selectable_value(&mut picked, option_index, option);
+            }
+        });
+    (picked != selected).then(|| i32::try_from(picked).unwrap_or(0))
 }
 
 fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
     let detail = &state.detail;
     let images = &mut state.images;
-    let width = layout.width;
+    let shelf = ShelfSpec { layout };
     match detail.kind {
         Some(DetailKind::Series) => {
-            if !detail.next_up.is_empty() {
-                episode_shelf(
+            shelf.cards(
+                ui,
+                images,
+                "next-up",
+                "Next Up",
+                &detail.next_up,
+                Shape::Backdrop,
+                1,
+                &detail.id,
+                actions,
+            );
+            if detail.seasons.is_empty() {
+                let (rect, _) = ui.allocate_exact_size(vec2(layout.width, 46.0), Sense::hover());
+                let text = if state.message.is_empty() {
+                    "No seasons are available for this series."
+                } else {
+                    "Seasons could not be loaded."
+                };
+                ui.painter().text(
+                    pos2(rect.left() + layout.content_left, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    text,
+                    theme::regular(theme::JF_FONT),
+                    theme::JF_TEXT_SECONDARY,
+                );
+            } else {
+                shelf.cards(
                     ui,
                     images,
-                    EpisodeShelfSpec {
-                        id: "next-up",
-                        heading: "Next Up",
-                        episodes: &detail.next_up,
-                        current_id: "",
-                        current_index: None,
-                        plays: true,
-                    },
-                    width,
+                    "seasons",
+                    "Seasons",
+                    &detail.seasons,
+                    Shape::Portrait,
+                    1,
+                    &detail.id,
                     actions,
                 );
             }
-            season_shelf(
-                ui,
-                images,
-                SeasonShelfSpec {
-                    id: "seasons",
-                    heading: "Seasons",
-                    seasons: &detail.seasons,
-                    current_id: "",
-                    summary: &detail.series_summary,
-                    failed: !state.message.is_empty(),
-                },
-                width,
-                actions,
-            );
         }
         Some(DetailKind::Season) => {
             draw_episode_list(
@@ -994,675 +1096,279 @@ fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut
                 detail,
                 !state.message.is_empty(),
                 state.busy,
-                width,
+                layout,
                 actions,
             );
-            if detail.seasons.len() > 1 {
-                season_shelf(
-                    ui,
-                    images,
-                    SeasonShelfSpec {
-                        id: "more-seasons",
-                        heading: "More Seasons",
-                        seasons: &detail.seasons,
-                        current_id: &detail.id,
-                        summary: "",
-                        failed: false,
-                    },
-                    width,
-                    actions,
-                );
-            }
         }
-        Some(DetailKind::Episode) if !detail.episodes.is_empty() => {
+        Some(DetailKind::Episode) => {
             let heading = if detail.season_name.is_empty() {
                 "More from this season".to_owned()
             } else {
                 format!("More from {}", detail.season_name)
             };
-            episode_shelf(
+            shelf.cards(
                 ui,
                 images,
-                EpisodeShelfSpec {
-                    id: "season-episodes",
-                    heading: &heading,
-                    episodes: &detail.episodes,
-                    current_id: &detail.id,
-                    current_index: detail.current_episode_index,
-                    plays: false,
-                },
-                width,
+                "season-episodes",
+                &heading,
+                &detail.episodes,
+                Shape::Backdrop,
+                1,
+                &detail.id,
                 actions,
             );
         }
         _ => {}
     }
-    if !detail.people.is_empty() {
-        people_shelf(ui, images, "Cast & Crew", &detail.people, width);
-    }
-    if !detail.guest_stars.is_empty() {
-        people_shelf(ui, images, "Guest Stars", &detail.guest_stars, width);
-    }
-    if !detail.similar.is_empty() {
-        season_shelf(
-            ui,
-            images,
-            SeasonShelfSpec {
-                id: "similar",
-                heading: "More Like This",
-                seasons: &detail.similar,
-                current_id: "",
-                summary: "",
-                failed: false,
-            },
-            width,
-            actions,
-        );
-    }
-}
-
-/// A shelf's own scroll identity: per page, so another item's shelf opens
-/// at its start.
-fn shelf_id(name: &str, page: &str) -> Id {
-    Id::new(("detail-shelf", name, page.to_owned()))
-}
-
-struct EpisodeShelfSpec<'a> {
-    id: &'a str,
-    heading: &'a str,
-    episodes: &'a [DetailCard],
-    current_id: &'a str,
-    current_index: Option<usize>,
-    /// Next Up plays the episode on click, as Jellyfin's does; other uses
-    /// open the episode's page.
-    plays: bool,
-}
-
-/// Wide thumbnail cards: Next Up, and "More from Season N" with the open
-/// episode highlighted and centered.
-fn episode_shelf(
-    ui: &mut Ui,
-    images: &mut ImageCache,
-    spec: EpisodeShelfSpec<'_>,
-    width: f32,
-    actions: &mut Vec<UiAction>,
-) {
-    const CARD: f32 = 264.0;
-    const GAP: f32 = 16.0;
-    let card_height = CARD * 9.0 / 16.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, card_height + 116.0), Sense::hover());
-    if !ui.is_rect_visible(rect) {
-        return;
-    }
-    ui.painter().rect_filled(rect, 0.0, theme::BG);
-    let viewport_width = (width - 96.0).min(1400.0);
-    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
-    ui.painter().text(
-        pos2(viewport_x, rect.top() + 14.0),
-        Align2::LEFT_TOP,
-        spec.heading,
-        theme::bold(21.0),
-        theme::TEXT_PRIMARY,
+    shelf.people(ui, images, "Cast & Crew", &detail.people, &detail.id);
+    shelf.people(ui, images, "Guest Stars", &detail.guest_stars, &detail.id);
+    shelf.cards(
+        ui,
+        images,
+        "similar",
+        "More Like This",
+        &detail.similar,
+        Shape::Portrait,
+        2,
+        &detail.id,
+        actions,
     );
-    let viewport = Rect::from_min_size(
-        pos2(viewport_x, rect.top() + 52.0),
-        vec2(viewport_width, rect.height() - 60.0),
-    );
-    let content = (spec.episodes.len() as f32 * (CARD + GAP) - GAP).max(0.0);
-    let id = shelf_id(spec.id, spec.current_id);
-    let mut shelf = Shelf::begin(ui, id, viewport, content);
-    if let Some(index) = spec.current_index {
-        shelf.center_on(index, CARD, GAP);
-    }
-    let offset = shelf.scroll(ui);
-    let strip = widgets::clipped_child(ui, viewport);
-    for (index, episode) in spec.episodes.iter().enumerate() {
-        let left = index as f32 * (CARD + GAP);
-        let card = Rect::from_min_size(
-            pos2(viewport.left() + offset + left, viewport.top()),
-            vec2(CARD, card_height),
-        );
-        if card.right() < viewport.left() - viewport.width()
-            || card.left() > viewport.right() + viewport.width()
-        {
-            continue;
+}
+
+/// Shelves in the text column: the title row, then a row of cards that
+/// scrolls from the column's left edge to the window's right edge.
+struct ShelfSpec<'a> {
+    layout: &'a Layout,
+}
+
+impl ShelfSpec<'_> {
+    /// The shelf's frame: title row and card viewport, plus its scroller.
+    fn frame(
+        &self,
+        ui: &mut Ui,
+        title: &str,
+        count: usize,
+        card_width: f32,
+        card_height: f32,
+        id: Id,
+    ) -> Option<(Shelf, Rect, f32)> {
+        let layout = self.layout;
+        ui.allocate_exact_size(vec2(layout.width, 10.0), Sense::hover());
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(layout.width, 46.0 + card_height), Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return None;
         }
-        let current = episode.id == spec.current_id;
-        let response = strip.interact(card, id.with(index), Sense::click());
-        widgets::describe_button(&response, true, &episode.title);
-        let hovered = response.hovered();
-        let painter = strip.painter().clone();
-        widgets::drop_shadow(
-            &painter,
-            card,
-            theme::RADIUS_MEDIUM,
-            8.0,
-            3.0,
-            theme::with_alpha(theme::SCRIM, 0.44),
+        let viewport = Rect::from_min_max(
+            pos2(rect.left() + layout.content_left, rect.top() + 46.0),
+            rect.max,
         );
-        painter.rect_filled(card, theme::RADIUS_MEDIUM, theme::SURFACE);
-        match resident(images, episode.art.as_ref()) {
-            Some((texture, size)) => {
-                widgets::image_cover(&painter, texture, size, card, theme::RADIUS_MEDIUM)
+        let content_width = count as f32 * card_width + layout.padding;
+        let mut shelf = Shelf::begin(ui, id, viewport, content_width);
+        let offset = shelf.scroll(ui);
+        let title_row = Rect::from_min_max(
+            pos2(rect.left() + layout.content_left, rect.top()),
+            pos2(rect.right(), rect.top() + 46.0),
+        );
+        let paging = (content_width > viewport.width())
+            .then(|| (shelf.can_page_back(offset), shelf.can_page_forward(offset)));
+        match jf::section_title(ui, title_row, title, 0.0, paging, id.with("paging")) {
+            -1 => shelf.page(false),
+            1 => shelf.page(true),
+            _ => {}
+        }
+        Some((shelf, viewport, offset))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cards(
+        &self,
+        ui: &mut Ui,
+        images: &mut ImageCache,
+        name: &str,
+        title: &str,
+        cards: &[DetailCard],
+        shape: Shape,
+        lines: usize,
+        page: &str,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if cards.is_empty() {
+            return;
+        }
+        let width = jf::overflow_width(self.layout.width, shape);
+        let height = jf::card_height(width, shape, lines);
+        let id = Id::new(("detail-shelf", name, page.to_owned()));
+        let Some((mut shelf, viewport, offset)) =
+            self.frame(ui, title, cards.len(), width, height, id)
+        else {
+            return;
+        };
+        let mut strip = widgets::clipped_child(ui, viewport);
+        for (index, card) in cards.iter().enumerate() {
+            let left = index as f32 * width;
+            let x = viewport.left() + offset + left;
+            if x + width < viewport.left() - viewport.width()
+                || x > viewport.right() + viewport.width()
+            {
+                continue;
             }
-            None => {
-                let galley = widgets::wrapped(
-                    &strip,
-                    &episode.title,
-                    theme::regular(13.0),
-                    theme::BORDER_STRONG,
-                    CARD - 20.0,
-                    Some(3),
-                );
-                widgets::galley_centered(&painter, card, galley);
+            let title = card_title(card);
+            let model = CardModel {
+                title: &title,
+                subtitle: &card.subtitle,
+                art: card.art.as_ref(),
+                watched: card.watched,
+                unplayed: u32::try_from(card.unplayed_count).unwrap_or(0),
+                progress: if matches!(card.kind, "Movie" | "Episode") {
+                    card.progress
+                } else {
+                    0.0
+                },
+                favorite: card.favorite,
+                playable: true,
+                actions: true,
+            };
+            let response = jf::card(
+                &mut strip,
+                images,
+                &model,
+                pos2(x, viewport.top()),
+                width,
+                shape,
+                lines,
+                id.with(index),
+            );
+            if response.gained_focus {
+                shelf.reveal(left, width);
             }
-        }
-        if episode.watched {
-            widgets::watched_badge(
-                &painter,
-                Rect::from_min_size(
-                    pos2(card.right() - 33.0, card.top() + 8.0),
-                    vec2(25.0, 25.0),
-                ),
-                16.0,
-            );
-        }
-        widgets::card_progress(&painter, card.shrink(1.0), 5.0, episode.progress);
-        if spec.plays && hovered {
-            painter.circle_filled(card.center(), 26.0, theme::with_alpha(theme::SCRIM, 0.63));
-            icons::paint_centered(
-                &painter,
-                Icon::Play,
-                card.center(),
-                28.0,
-                theme::TEXT_BRIGHT,
-            );
-        }
-        let (border_width, border_color) = if response.has_focus() {
-            (3.0, theme::ACCENT_BRIGHT)
-        } else if current {
-            (3.0, theme::ACCENT)
-        } else if hovered {
-            (2.0, theme::BORDER_STRONG)
-        } else {
-            (1.0, theme::SURFACE_HOVER)
-        };
-        widgets::border(
-            &painter,
-            card,
-            theme::RADIUS_MEDIUM,
-            border_width,
-            border_color,
-        );
-        let label = if episode.index_label.is_empty() {
-            episode.title.clone()
-        } else {
-            format!("{} {}", episode.index_label, episode.title)
-        };
-        let (font, color) = if current {
-            (theme::bold(13.0), theme::TEXT_PRIMARY)
-        } else {
-            (theme::regular(13.0), theme::TEXT_SECONDARY)
-        };
-        let title = widgets::elided(&strip, &label, font, color, CARD);
-        let title_rect =
-            widgets::galley_at(&painter, pos2(card.left(), card.bottom() + 4.0), title);
-        if !episode.subtitle.is_empty() {
-            let subtitle = widgets::elided(
-                &strip,
-                &episode.subtitle,
-                theme::regular(12.0),
-                theme::TEXT_MUTED,
-                CARD,
-            );
-            widgets::galley_at(
-                &painter,
-                pos2(card.left(), title_rect.bottom() + 4.0),
-                subtitle,
-            );
-        }
-        widgets::pointer_on_hover(&response);
-        if response.gained_focus() {
-            shelf.reveal(left, CARD);
-        }
-        if response.clicked() {
-            actions.push(if spec.plays {
-                UiAction::PlayDetail(episode.id.clone())
-            } else {
-                UiAction::OpenDetail {
-                    id: episode.id.clone(),
-                    kind: episode.kind.to_owned(),
-                }
-            });
-        }
-    }
-    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 80.0, id);
-    shelf.end(ui);
-}
-
-/// The outlined ‹ › buttons the detail shelves use, straddling the viewport
-/// edges.
-fn shelf_arrows(ui: &mut Ui, shelf: &mut Shelf, offset: f32, viewport: Rect, y: f32, id: Id) {
-    if shelf.can_page_back(offset) {
-        let rect = Rect::from_min_size(pos2(viewport.left() - 18.0, y), vec2(38.0, 56.0));
-        if widgets::shelf_arrow(
-            ui,
-            rect,
-            id.with("left"),
-            true,
-            theme::OVERLAY,
-            theme::OVERLAY_RAISED,
-            true,
-        ) {
-            shelf.page(false);
-        }
-    }
-    if shelf.can_page_forward(offset) {
-        let rect = Rect::from_min_size(pos2(viewport.right() - 20.0, y), vec2(38.0, 56.0));
-        if widgets::shelf_arrow(
-            ui,
-            rect,
-            id.with("right"),
-            false,
-            theme::OVERLAY,
-            theme::OVERLAY_RAISED,
-            true,
-        ) {
-            shelf.page(true);
-        }
-    }
-}
-
-struct SeasonShelfSpec<'a> {
-    id: &'a str,
-    heading: &'a str,
-    seasons: &'a [DetailCard],
-    /// The season whose page this is, highlighted like the current episode.
-    current_id: &'a str,
-    summary: &'a str,
-    failed: bool,
-}
-
-/// Portrait cards: Seasons, More Seasons, More Like This.
-fn season_shelf(
-    ui: &mut Ui,
-    images: &mut ImageCache,
-    spec: SeasonShelfSpec<'_>,
-    width: f32,
-    actions: &mut Vec<UiAction>,
-) {
-    const CARD: f32 = 158.0;
-    const GAP: f32 = 16.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 360.0), Sense::hover());
-    if !ui.is_rect_visible(rect) {
-        return;
-    }
-    let painter = ui.painter().clone();
-    painter.rect_filled(rect, 0.0, theme::BG);
-    let viewport_width = (width - 56.0).min(1180.0);
-    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
-    let heading = painter.text(
-        pos2(viewport_x, rect.top() + 16.0),
-        Align2::LEFT_TOP,
-        spec.heading,
-        theme::bold(22.0),
-        theme::TEXT_PRIMARY,
-    );
-    if !spec.seasons.is_empty() && !spec.summary.is_empty() {
-        let summary = widgets::elided(
-            ui,
-            spec.summary,
-            theme::regular(12.0),
-            theme::TEXT_FAINT,
-            viewport_width - heading.width() - 24.0,
-        );
-        let x = viewport_x + viewport_width - summary.size().x;
-        widgets::galley_at(&painter, pos2(x, rect.top() + 20.0), summary);
-    }
-    if spec.seasons.is_empty() {
-        let empty = Rect::from_min_size(
-            pos2(viewport_x, rect.top() + 55.0),
-            vec2(viewport_width, 116.0),
-        );
-        painter.rect_filled(empty, theme::RADIUS_MEDIUM, theme::SURFACE);
-        widgets::border(
-            &painter,
-            empty,
-            theme::RADIUS_MEDIUM,
-            1.0,
-            theme::SURFACE_HOVER,
-        );
-        let text = if spec.failed {
-            "Seasons could not be loaded."
-        } else {
-            "No seasons are available for this series."
-        };
-        painter.text(
-            empty.center(),
-            Align2::CENTER_CENTER,
-            text,
-            theme::regular(13.0),
-            theme::TEXT_MUTED,
-        );
-        return;
-    }
-    let viewport = Rect::from_min_size(
-        pos2(viewport_x, rect.top() + 55.0),
-        vec2(viewport_width, rect.height() - 64.0),
-    );
-    let content = spec.seasons.len() as f32 * (CARD + GAP) - GAP;
-    let id = shelf_id(spec.id, spec.current_id);
-    let mut shelf = Shelf::begin(ui, id, viewport, content);
-    let offset = shelf.scroll(ui);
-    let strip = widgets::clipped_child(ui, viewport);
-    for (index, season) in spec.seasons.iter().enumerate() {
-        let left = index as f32 * (CARD + GAP);
-        let poster = Rect::from_min_size(
-            pos2(viewport.left() + offset + left, viewport.top()),
-            vec2(CARD, CARD * 1.5),
-        );
-        if poster.right() < viewport.left() - viewport.width()
-            || poster.left() > viewport.right() + viewport.width()
-        {
-            continue;
-        }
-        let current = !spec.current_id.is_empty() && season.id == spec.current_id;
-        let response = strip.interact(poster, id.with(index), Sense::click());
-        widgets::describe_button(&response, true, &season.title);
-        let hovered = response.hovered();
-        let painter = strip.painter().clone();
-        if hovered {
-            widgets::drop_shadow(
-                &painter,
-                poster,
-                theme::RADIUS_MEDIUM,
-                14.0,
-                5.0,
-                theme::with_alpha(theme::SCRIM, 0.63),
-            );
-        } else {
-            widgets::drop_shadow(
-                &painter,
-                poster,
-                theme::RADIUS_MEDIUM,
-                7.0,
-                3.0,
-                theme::with_alpha(theme::SCRIM, 0.4),
-            );
-        }
-        match resident(images, season.art.as_ref()) {
-            Some((texture, size)) => {
-                widgets::image_cover(&painter, texture, size, poster, theme::RADIUS_MEDIUM)
+            if response.open {
+                actions.push(UiAction::OpenDetail {
+                    id: card.id.clone(),
+                    kind: card.kind.to_owned(),
+                });
             }
-            None => {
-                widgets::diagonal_gradient(
-                    &painter,
-                    poster,
-                    theme::RADIUS_MEDIUM,
-                    theme::SURFACE_HOVER,
-                    theme::BG,
-                );
-                let galley = widgets::wrapped(
-                    &strip,
-                    &season.title,
-                    theme::regular(14.0),
-                    theme::BORDER_STRONG,
-                    CARD - 16.0,
-                    Some(4),
-                );
-                widgets::galley_centered(&painter, poster, galley);
+            if response.play {
+                actions.push(UiAction::PlayItem(card.id.clone()));
+            }
+            if response.toggle_played {
+                actions.push(UiAction::SetWatched {
+                    id: card.id.clone(),
+                    watched: !card.watched,
+                });
+            }
+            if response.toggle_favorite {
+                actions.push(UiAction::SetFavorite {
+                    id: card.id.clone(),
+                    favorite: !card.favorite,
+                });
             }
         }
-        if season.unplayed_count > 0 {
-            let badge = Rect::from_min_size(
-                pos2(poster.right() - 42.0, poster.top() + 9.0),
-                vec2(32.0, 25.0),
-            );
-            painter.rect_filled(badge, theme::RADIUS_LARGE, theme::ACCENT);
-            painter.text(
-                badge.center(),
-                Align2::CENTER_CENTER,
-                season.unplayed_count.to_string(),
-                theme::bold(11.0),
-                Color32::WHITE,
-            );
-        } else if season.watched {
-            widgets::watched_badge(
-                &painter,
-                Rect::from_min_size(
-                    pos2(poster.right() - 35.0, poster.top() + 9.0),
-                    vec2(25.0, 25.0),
-                ),
-                16.0,
-            );
-        }
-        let (border_width, border_color) = if response.has_focus() {
-            (3.0, theme::ACCENT_BRIGHT)
-        } else if current {
-            (3.0, theme::ACCENT)
-        } else if hovered {
-            (2.0, theme::BORDER_STRONG)
-        } else {
-            (1.0, theme::SURFACE_HOVER)
-        };
-        widgets::border(
-            &painter,
-            poster,
-            theme::RADIUS_MEDIUM,
-            border_width,
-            border_color,
-        );
-        let title_color = if current {
-            theme::ACCENT_BRIGHT
-        } else {
-            theme::TEXT_PRIMARY
-        };
-        let title = widgets::elided(&strip, &season.title, theme::bold(14.0), title_color, CARD);
-        let title_rect =
-            widgets::galley_at(&painter, pos2(poster.left(), poster.bottom() + 7.0), title);
-        let subtitle = widgets::elided(
-            &strip,
-            &season.subtitle,
-            theme::regular(11.0),
-            theme::TEXT_FAINT,
-            CARD,
-        );
-        widgets::galley_at(
-            &painter,
-            pos2(poster.left(), title_rect.bottom() + 7.0),
-            subtitle,
-        );
-        widgets::pointer_on_hover(&response);
-        if response.gained_focus() {
-            shelf.reveal(left, CARD);
-        }
-        if response.clicked() {
-            actions.push(UiAction::OpenDetail {
-                id: season.id.clone(),
-                kind: season.kind.to_owned(),
-            });
-        }
+        shelf.end(ui);
     }
-    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 142.0, id);
-    shelf.end(ui);
-}
 
-/// Round cast photos with name and role.
-fn people_shelf(
-    ui: &mut Ui,
-    images: &mut ImageCache,
-    heading: &str,
-    people: &[DetailPerson],
-    width: f32,
-) {
-    const CARD: f32 = 112.0;
-    const GAP: f32 = 14.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 220.0), Sense::hover());
-    if !ui.is_rect_visible(rect) {
-        return;
-    }
-    ui.painter().rect_filled(rect, 0.0, theme::BG);
-    let viewport_width = (width - 56.0).min(1180.0);
-    let viewport_x = rect.left() + (width - viewport_width) / 2.0;
-    ui.painter().text(
-        pos2(viewport_x, rect.top() + 12.0),
-        Align2::LEFT_TOP,
-        heading,
-        theme::bold(21.0),
-        theme::TEXT_PRIMARY,
-    );
-    let viewport = Rect::from_min_size(
-        pos2(viewport_x, rect.top() + 49.0),
-        vec2(viewport_width, rect.height() - 57.0),
-    );
-    let content = people.len() as f32 * (CARD + GAP) - GAP;
-    let id = Id::new((
-        "detail-people",
-        heading,
-        people.first().map(|person| person.name.clone()),
-    ));
-    let mut shelf = Shelf::begin(ui, id, viewport, content);
-    let offset = shelf.scroll(ui);
-    let strip = widgets::clipped_child(ui, viewport);
-    let painter = strip.painter().clone();
-    for (index, person) in people.iter().enumerate() {
-        let left = index as f32 * (CARD + GAP);
-        let photo = Rect::from_min_size(
-            pos2(viewport.left() + offset + left, viewport.top()),
-            vec2(CARD, CARD),
-        );
-        if photo.right() < viewport.left() - viewport.width()
-            || photo.left() > viewport.right() + viewport.width()
-        {
-            continue;
+    /// Cast and crew: portrait photos with the name and role.
+    fn people(
+        &self,
+        ui: &mut Ui,
+        images: &mut ImageCache,
+        title: &str,
+        people: &[DetailPerson],
+        page: &str,
+    ) {
+        if people.is_empty() {
+            return;
         }
-        let radius = CARD / 2.0;
-        match resident(images, person.art.as_ref()) {
-            Some((texture, size)) => widgets::image_cover(&painter, texture, size, photo, radius),
-            None => {
-                widgets::diagonal_gradient(
-                    &painter,
-                    photo,
-                    radius,
-                    theme::SURFACE_HOVER,
-                    theme::SURFACE,
-                );
-                painter.text(
-                    photo.center(),
-                    Align2::CENTER_CENTER,
-                    "?",
-                    theme::bold(28.0),
-                    theme::BORDER_STRONG,
-                );
+        let width = jf::overflow_width(self.layout.width, Shape::Portrait);
+        let height = jf::card_height(width, Shape::Portrait, 2);
+        let id = Id::new(("detail-people", title, page.to_owned()));
+        let Some((shelf, viewport, offset)) =
+            self.frame(ui, title, people.len(), width, height, id)
+        else {
+            return;
+        };
+        let mut strip = widgets::clipped_child(ui, viewport);
+        for (index, person) in people.iter().enumerate() {
+            let x = viewport.left() + offset + index as f32 * width;
+            if x + width < viewport.left() - viewport.width()
+                || x > viewport.right() + viewport.width()
+            {
+                continue;
             }
+            let model = CardModel {
+                title: &person.name,
+                subtitle: &person.role,
+                art: person.art.as_ref(),
+                watched: false,
+                unplayed: 0,
+                progress: 0.0,
+                favorite: false,
+                playable: false,
+                actions: false,
+            };
+            jf::card(
+                &mut strip,
+                images,
+                &model,
+                pos2(x, viewport.top()),
+                width,
+                Shape::Portrait,
+                2,
+                id.with(index),
+            );
         }
-        widgets::border(&painter, photo, radius, 1.0, theme::BORDER);
-        let name = widgets::elided(
-            &strip,
-            &person.name,
-            theme::bold(12.0),
-            theme::TEXT_PRIMARY,
-            CARD,
-        );
-        let name_rect = Rect::from_min_size(
-            pos2(photo.center().x - name.size().x / 2.0, photo.bottom() + 6.0),
-            name.size(),
-        );
-        painter.galley(name_rect.min, name, Color32::WHITE);
-        let role = widgets::elided(
-            &strip,
-            &person.role,
-            theme::regular(10.0),
-            theme::TEXT_FAINT,
-            CARD,
-        );
-        painter.galley(
-            pos2(
-                photo.center().x - role.size().x / 2.0,
-                name_rect.bottom() + 6.0,
-            ),
-            role,
-            Color32::WHITE,
-        );
+        shelf.end(ui);
     }
-    shelf_arrows(ui, &mut shelf, offset, viewport, rect.top() + 80.0, id);
-    shelf.end(ui);
 }
 
-/// A season page's episode list: Jellyfin-style rows with a wide thumbnail
-/// that plays, a title that opens, metadata, overview, and toggles.
+/// A shelf card's text: "1. Title" for an episode, "S1:E16 - Title" on
+/// Next Up (the presenter puts the number in the label), else the title.
+fn card_title(card: &DetailCard) -> String {
+    if card.index_label.is_empty() {
+        card.title.clone()
+    } else {
+        format!("{} {}", card.index_label, card.title)
+    }
+}
+
+/// A season page's episode list, as jellyfin-web's: thumbnail with a play
+/// button, number and title, runtime/rating/ends-at, overview, and the
+/// info / played / favorite buttons.
 fn draw_episode_list(
     ui: &mut Ui,
     images: &mut ImageCache,
     detail: &DetailVm,
     failed: bool,
     busy: bool,
-    width: f32,
+    layout: &Layout,
     actions: &mut Vec<UiAction>,
 ) {
-    let side = ((width - 1180.0) / 2.0).max(28.0);
-    let inner = width - side * 2.0;
-    ui.allocate_exact_size(vec2(width, 20.0), Sense::hover());
-    let (header, _) = ui.allocate_exact_size(vec2(width, 38.0), Sense::hover());
-    let painter = ui.painter().clone();
-    painter.text(
-        pos2(header.left() + side, header.center().y),
-        Align2::LEFT_CENTER,
-        "Episodes",
-        theme::bold(22.0),
-        theme::TEXT_PRIMARY,
-    );
-    if !detail.episodes.is_empty() {
-        painter.text(
-            pos2(header.right() - side, header.center().y),
-            Align2::RIGHT_CENTER,
-            &detail.season_summary,
-            theme::regular(12.0),
-            theme::TEXT_FAINT,
-        );
-    }
+    let left = layout.content_left;
+    let width = layout.content_width();
     if detail.episodes.is_empty() {
-        ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
-        let (rect, _) = ui.allocate_exact_size(vec2(width, 116.0), Sense::hover());
-        let empty = Rect::from_min_size(pos2(rect.left() + side, rect.top()), vec2(inner, 116.0));
-        painter.rect_filled(empty, theme::RADIUS_MEDIUM, theme::SURFACE);
-        widgets::border(
-            &painter,
-            empty,
-            theme::RADIUS_MEDIUM,
-            1.0,
-            theme::SURFACE_HOVER,
-        );
+        let (rect, _) = ui.allocate_exact_size(vec2(layout.width, 60.0), Sense::hover());
         let text = if failed {
             "Episodes could not be loaded."
         } else {
             "No episodes are available for this season."
         };
-        painter.text(
-            empty.center(),
-            Align2::CENTER_CENTER,
+        ui.painter().text(
+            pos2(rect.left() + left, rect.center().y),
+            Align2::LEFT_CENTER,
             text,
-            theme::regular(13.0),
-            theme::TEXT_MUTED,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
         );
+        return;
     }
     for (index, episode) in detail.episodes.iter().enumerate() {
-        ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
-        let (row, _) = ui.allocate_exact_size(vec2(width, 158.0), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(layout.width, 181.0), Sense::hover());
         if !ui.is_rect_visible(row) {
             continue;
         }
-        episode_row(
-            ui,
-            images,
-            episode,
-            Rect::from_min_size(pos2(row.left() + side, row.top()), vec2(inner, 158.0)),
-            busy,
-            index,
-            actions,
-        );
+        let row = Rect::from_min_size(pos2(row.left() + left, row.top()), vec2(width, 181.0));
+        episode_row(ui, images, episode, row, busy, index, actions);
     }
-    ui.allocate_exact_size(vec2(width, 28.0), Sense::hover());
 }
 
 fn episode_row(
@@ -1675,75 +1381,42 @@ fn episode_row(
     actions: &mut Vec<UiAction>,
 ) {
     let painter = ui.painter().clone();
-    let thumb = Rect::from_min_size(row.min + vec2(0.0, 4.0), vec2(240.0, 135.0));
-    let sense = if busy { Sense::hover() } else { Sense::click() };
+    let thumb = Rect::from_min_size(row.min + vec2(8.0, 9.0), vec2(246.0, 164.0));
     let response = ui.interact(
         thumb,
         Id::new(("episode-thumb", index, episode.id.as_str())),
-        sense,
+        if busy { Sense::hover() } else { Sense::click() },
     );
     widgets::describe_button(&response, !busy, &format!("Play {}", episode.title));
-    let hovered = response.hovered();
-    widgets::drop_shadow(
-        &painter,
-        thumb,
-        theme::RADIUS_MEDIUM,
-        8.0,
-        3.0,
-        theme::with_alpha(theme::SCRIM, 0.44),
-    );
-    painter.rect_filled(thumb, theme::RADIUS_MEDIUM, theme::SURFACE);
     match resident(images, episode.art.as_ref()) {
-        Some((texture, size)) => {
-            widgets::image_cover(&painter, texture, size, thumb, theme::RADIUS_MEDIUM)
-        }
+        Some((texture, size)) => widgets::image_cover(&painter, texture, size, thumb, 0.0),
         None => {
-            let galley = widgets::wrapped(
-                ui,
-                &episode.title,
-                theme::regular(13.0),
-                theme::BORDER_STRONG,
-                220.0,
-                Some(3),
-            );
-            widgets::galley_centered(&painter, thumb, galley);
+            painter.rect_filled(thumb, 0.0, theme::JF_CARD_EMPTY);
         }
     }
-    if episode.watched {
-        widgets::watched_badge(
-            &painter,
-            Rect::from_min_size(
-                pos2(thumb.right() - 33.0, thumb.top() + 8.0),
-                vec2(25.0, 25.0),
-            ),
-            16.0,
+    if episode.progress > 0.0 && episode.progress < 1.0 {
+        let track = Rect::from_min_max(
+            pos2(thumb.left(), thumb.bottom() - 4.0),
+            thumb.right_bottom(),
+        );
+        painter.rect_filled(track, 0.0, theme::JF_PROGRESS_TRACK);
+        painter.rect_filled(
+            Rect::from_min_size(track.min, vec2(track.width() * episode.progress, 4.0)),
+            0.0,
+            theme::JF_ACCENT,
         );
     }
-    widgets::card_progress(&painter, thumb.shrink(1.0), 5.0, episode.progress);
-    if hovered {
-        painter.circle_filled(thumb.center(), 23.0, theme::with_alpha(theme::SCRIM, 0.63));
-        icons::paint_centered(
-            &painter,
-            Icon::Play,
-            thumb.center(),
-            26.0,
-            theme::TEXT_BRIGHT,
-        );
-    }
-    let border_color = if response.has_focus() {
-        theme::ACCENT_BRIGHT
-    } else if hovered {
-        theme::BORDER_STRONG
+    // jellyfin-web's list play button: a large, faint play icon centred on
+    // the thumbnail, brighter under the pointer.
+    let play_color = if response.hovered() {
+        Color32::WHITE
     } else {
-        theme::SURFACE_HOVER
+        Color32::from_white_alpha(153)
     };
-    widgets::border(
-        &painter,
-        thumb,
-        theme::RADIUS_MEDIUM,
-        if response.has_focus() { 3.0 } else { 1.0 },
-        border_color,
-    );
+    icons::paint_centered(&painter, Icon::Play, thumb.center(), 40.0, play_color);
+    if response.has_focus() {
+        widgets::border(&painter, thumb, 0.0, 2.0, theme::JF_ACCENT);
+    }
     if !busy {
         widgets::pointer_on_hover(&response);
     }
@@ -1751,50 +1424,75 @@ fn episode_row(
         actions.push(UiAction::PlayDetail(episode.id.clone()));
     }
 
-    // Toggles on the right.
-    let toggles_left = row.right() - 34.0 * 2.0 - 8.0;
-    let watched = RoundIconButton {
-        icon: Icon::Check,
-        label: "Played",
-        size: 34.0,
-        active: episode.watched,
-        active_color: theme::TEXT_BRIGHT,
-        enabled: !busy,
+    // Buttons on the right: info, played, favorite.
+    let buttons_left = row.right() - 3.0 * 41.5;
+    let center_y = row.top() + 90.0;
+    let mut x = buttons_left;
+    let mut button = |icon: Icon, color: Color32, label: &str, name: &str| {
+        let rect = Rect::from_min_size(pos2(x, center_y - 20.5), vec2(41.0, 41.0));
+        x += 41.5;
+        jf::round_icon_button(
+            ui,
+            rect,
+            icon,
+            color,
+            24.8,
+            label,
+            !busy,
+            Id::new(("episode-action", index, name)),
+        )
+        .clicked()
+    };
+    if button(Icon::InfoOutline, theme::JF_TEXT, "Info", "info") {
+        actions.push(UiAction::OpenDetail {
+            id: episode.id.clone(),
+            kind: episode.kind.to_owned(),
+        });
     }
-    .show(
-        ui,
-        Rect::from_min_size(pos2(toggles_left, row.top() + 4.0), vec2(34.0, 34.0)),
-        Id::new(("episode-played", index)),
-    );
-    if watched.clicked() {
+    let played_color = if episode.watched {
+        theme::JF_PLAYED_RED
+    } else {
+        theme::JF_TEXT
+    };
+    if button(
+        Icon::Check,
+        played_color,
+        if episode.watched {
+            "Mark unplayed"
+        } else {
+            "Mark played"
+        },
+        "played",
+    ) {
         actions.push(UiAction::SetWatched {
             id: episode.id.clone(),
             watched: !episode.watched,
         });
     }
-    let favorite = RoundIconButton {
-        icon: Icon::Favorite,
-        label: "Favorite",
-        size: 34.0,
-        active: episode.favorite,
-        active_color: theme::DANGER_TEXT,
-        enabled: !busy,
-    }
-    .show(
-        ui,
-        Rect::from_min_size(pos2(toggles_left + 42.0, row.top() + 4.0), vec2(34.0, 34.0)),
-        Id::new(("episode-favorite", index)),
-    );
-    if favorite.clicked() {
+    let favorite_color = if episode.favorite {
+        theme::JF_PLAYED_RED
+    } else {
+        theme::JF_TEXT
+    };
+    if button(
+        Icon::Favorite,
+        favorite_color,
+        if episode.favorite {
+            "Remove from favorites"
+        } else {
+            "Add to favorites"
+        },
+        "favorite",
+    ) {
         actions.push(UiAction::SetFavorite {
             id: episode.id.clone(),
             favorite: !episode.favorite,
         });
     }
 
-    // Text column between the thumbnail and the toggles.
-    let left = thumb.right() + 18.0;
-    let text_width = (toggles_left - 18.0 - left).max(40.0);
+    // Text column between the thumbnail and the buttons.
+    let text_left = thumb.right() + 22.0;
+    let text_width = (buttons_left - 12.0 - text_left).max(60.0);
     let label = if episode.index_label.is_empty() {
         episode.title.clone()
     } else {
@@ -1803,23 +1501,17 @@ fn episode_row(
     let title = widgets::elided(
         ui,
         &label,
-        theme::bold(16.0),
-        theme::TEXT_PRIMARY,
+        theme::regular(theme::JF_FONT),
+        theme::JF_TEXT,
         text_width,
     );
-    let title_rect = Rect::from_min_size(pos2(left, row.top()), title.size());
+    let title_rect = Rect::from_min_size(pos2(text_left, row.top() + 17.0), title.size());
     let title_response = ui.interact(
         title_rect,
         Id::new(("episode-title", index)),
         Sense::click(),
     );
-    widgets::describe_button(&title_response, true, &episode.title);
-    let color = if title_response.hovered() {
-        theme::ACCENT_BRIGHT
-    } else {
-        theme::TEXT_PRIMARY
-    };
-    painter.galley(title_rect.min, title, color);
+    painter.galley(title_rect.min, title, Color32::WHITE);
     widgets::pointer_on_hover(&title_response);
     if title_response.clicked() {
         actions.push(UiAction::OpenDetail {
@@ -1827,48 +1519,68 @@ fn episode_row(
             kind: episode.kind.to_owned(),
         });
     }
-    let meta_y = title_rect.bottom() + 5.0 + 8.0;
-    let mut x = left;
-    let mut meta = |text: &str, font: egui::FontId, color: Color32| {
-        if text.is_empty() || x >= left + text_width {
-            return;
+    let meta_y = title_rect.bottom() + 12.0;
+    let mut meta_x = text_left;
+    let runtime = episode
+        .subtitle
+        .rsplit(" • ")
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    for (text, star) in [
+        (runtime, false),
+        (
+            if episode.rating > 0.0 {
+                format!("{}", (episode.rating * 10.0).round() / 10.0)
+            } else {
+                String::new()
+            },
+            true,
+        ),
+        (episode.ends_at.clone(), false),
+    ] {
+        if text.is_empty() {
+            continue;
         }
-        let galley = widgets::elided(ui, text, font, color, left + text_width - x);
-        x = widgets::galley_v_centered(&painter, x, meta_y, galley).right() + 12.0;
-    };
-    meta(
-        &episode.subtitle,
-        theme::regular(12.0),
-        theme::TEXT_SECONDARY,
-    );
-    if episode.rating > 0.0 {
-        meta(
-            &format!("★ {}", (episode.rating * 10.0).round() / 10.0),
-            theme::bold(12.0),
-            theme::RATING_GOLD,
+        if star {
+            icons::paint_centered(
+                &painter,
+                Icon::Star,
+                pos2(meta_x + 9.0, meta_y),
+                18.0,
+                theme::RATING_GOLD,
+            );
+            meta_x += 21.0;
+        }
+        let galley = widgets::elided(
+            ui,
+            &text,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
+            text_left + text_width - meta_x,
         );
+        meta_x = widgets::galley_v_centered(&painter, meta_x, meta_y, galley).right() + 15.0;
     }
-    meta(&episode.ends_at, theme::regular(12.0), theme::TEXT_MUTED);
     if !episode.overview.is_empty() {
         let overview = widgets::wrapped(
             ui,
             &episode.overview,
-            theme::regular(12.0),
-            theme::TEXT_MUTED,
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
             text_width,
-            Some(3),
+            Some(5),
         );
-        painter.galley(pos2(left, meta_y + 8.0 + 5.0), overview, Color32::WHITE);
+        painter.galley(pos2(text_left, meta_y + 22.0), overview, Color32::WHITE);
     }
 }
 
-/// The poster (or episode still), floating over the hero/content boundary.
-fn draw_poster_card(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32) {
+/// The poster (or episode still), overlapping the ribbon on the left.
+fn draw_poster(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32) {
     let detail = &state.detail;
     let rect = Rect::from_min_size(
         pos2(
-            ui.max_rect().left() + CONTENT_MARGIN,
-            page_top + HERO_HEIGHT - POSTER_OVERLAP,
+            ui.max_rect().left() + layout.padding,
+            page_top + layout.ribbon_top() - 86.0,
         ),
         layout.poster,
     );
@@ -1876,64 +1588,40 @@ fn draw_poster_card(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top:
         return;
     }
     let painter = ui.painter().clone();
-    widgets::drop_shadow(
-        &painter,
-        rect,
-        theme::RADIUS_MEDIUM,
-        22.0,
-        6.0,
-        theme::with_alpha(theme::SCRIM, 0.63),
-    );
-    painter.rect_filled(rect, theme::RADIUS_MEDIUM, theme::SURFACE);
     match resident(&mut state.images, detail.artwork.as_ref()) {
         Some((texture, size)) => {
-            widgets::image_cover(&painter, texture, size, rect, theme::RADIUS_MEDIUM)
+            widgets::image_cover(&painter, texture, size, rect, theme::JF_RADIUS)
         }
         None => {
-            let galley = widgets::wrapped(
-                ui,
-                &detail.title,
-                theme::regular(15.0),
-                theme::BORDER_STRONG,
-                rect.width() - 24.0,
-                Some(4),
-            );
-            widgets::galley_centered(&painter, rect, galley);
+            painter.rect_filled(rect, theme::JF_RADIUS, theme::JF_CARD_EMPTY);
         }
     }
-    widgets::border(&painter, rect, theme::RADIUS_MEDIUM, 1.0, theme::BORDER);
-    // Jellyfin's corner indicator: what is left to watch, or a check once a
-    // series or season is done.
-    if detail.unplayed_count > 0 {
-        let text = detail.unplayed_count.to_string();
-        let width = (widgets::text_width(ui, &text, theme::bold(13.0)) + 16.0).max(30.0);
-        let badge = Rect::from_min_size(
-            pos2(rect.right() - width - 10.0, rect.top() + 10.0),
-            vec2(width, 30.0),
-        );
-        painter.rect_filled(badge, 15.0, theme::ACCENT);
-        painter.text(
-            badge.center(),
-            Align2::CENTER_CENTER,
-            text,
-            theme::bold(13.0),
-            theme::TEXT_BRIGHT,
-        );
-    } else if detail.watched && matches!(detail.kind, Some(DetailKind::Season | DetailKind::Series))
+    if detail.progress > 0.0
+        && detail.progress < 1.0
+        && !matches!(detail.kind, Some(DetailKind::Series | DetailKind::Season))
     {
-        let badge = Rect::from_min_size(
-            pos2(rect.right() - 40.0, rect.top() + 10.0),
-            vec2(30.0, 30.0),
-        );
-        painter.rect_filled(badge, 15.0, theme::ACCENT);
-        icons::paint_centered(
-            &painter,
-            Icon::Check,
-            badge.center(),
-            18.0,
-            theme::TEXT_BRIGHT,
+        let track = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 4.0), rect.right_bottom());
+        painter.rect_filled(track, 0.0, theme::JF_PROGRESS_TRACK);
+        painter.rect_filled(
+            Rect::from_min_size(track.min, vec2(track.width() * detail.progress, 4.0)),
+            0.0,
+            theme::JF_ACCENT,
         );
     }
+    // The same corner indicator as on cards.
+    let model = CardModel {
+        title: "",
+        subtitle: "",
+        art: None,
+        watched: detail.watched
+            && matches!(detail.kind, Some(DetailKind::Season | DetailKind::Series)),
+        unplayed: u32::try_from(detail.unplayed_count).unwrap_or(0),
+        progress: 0.0,
+        favorite: false,
+        playable: false,
+        actions: false,
+    };
+    jf::corner_indicator(&painter, rect, &model);
 }
 
 fn next_up_label(item: &DetailItemData) -> String {
@@ -1969,30 +1657,6 @@ fn detail_card_subtitle(item: &DetailItemData) -> String {
     .flatten()
     .collect::<Vec<_>>()
     .join(" • ")
-}
-
-fn detail_episode_number(item: &DetailItemData) -> Option<String> {
-    match (item.parent_index_number, item.index_number) {
-        (Some(season), Some(episode)) if item.kind == DetailKind::Episode => {
-            Some(format!("S{season:02}E{episode:02}"))
-        }
-        (_, Some(episode)) if item.kind == DetailKind::Episode => {
-            Some(format!("Episode {episode}"))
-        }
-        _ => None,
-    }
-}
-
-/// Where an episode page's own episode sits in its season list, or -1.
-fn current_episode_index(page: &DetailPageData) -> i32 {
-    if page.item.kind != DetailKind::Episode {
-        return -1;
-    }
-    page.episodes
-        .iter()
-        .position(|episode| episode.id == page.item.id)
-        .and_then(|index| i32::try_from(index).ok())
-        .unwrap_or(-1)
 }
 
 fn detail_stream_label(stream: &StreamData, fallback: &str, index: usize) -> String {
@@ -2098,257 +1762,71 @@ fn format_air_date((year, month, day): (i32, u32, u32)) -> String {
     format!("{month}/{day}/{year}")
 }
 
-/// The title strip's info row. A season counts its episodes, as Jellyfin's
-/// does; every other kind reads its own metadata.
-fn detail_info_line(page: &DetailPageData) -> String {
-    let item = &page.item;
-    if item.kind != DetailKind::Season {
-        return detail_metadata_line(item);
-    }
-    let episodes = match page.episodes.len() {
-        0 => None,
-        1 => Some("1 episode".to_owned()),
-        count => Some(format!("{count} episodes")),
-    };
-    [
-        item.production_year.map(|year| year.to_string()),
-        episodes,
-        item.official_rating.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" • ")
-}
-
-fn series_air_span(item: &DetailItemData, start: i32) -> String {
-    if item.series_continuing {
-        format!("{start} – Present")
-    } else {
-        match item.end_year {
-            Some(end) if end != start => format!("{start} – {end}"),
-            _ => start.to_string(),
-        }
-    }
-}
-
-fn detail_metadata_line(item: &DetailItemData) -> String {
-    let runtime = item.runtime_seconds.map(format_runtime);
-    // Episodes read like Jellyfin's: the air date leads, and there is no
-    // S01E03 label because the subheading already carries the number.
-    if item.kind == DetailKind::Episode {
-        let aired = item
-            .premiere_date
-            .map(format_air_date)
-            .or_else(|| item.production_year.map(|year| year.to_string()));
-        return [aired, item.official_rating.clone(), runtime]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" • ");
-    }
-    // A series reads its air span, "2019 – Present" or "2019 – 2022".
-    if item.kind == DetailKind::Series {
-        return [
-            item.production_year.map(|year| series_air_span(item, year)),
-            item.official_rating.clone(),
-            runtime,
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" • ");
-    }
-    let leading_label = match item.kind {
-        DetailKind::Movie => None,
-        _ => Some(detail_kind_name(item.kind).to_owned()),
-    };
-    // Community/critic ratings render as dedicated colored elements in the
-    // title strip, not as part of this line.
-    [
-        leading_label,
-        item.production_year.map(|year| year.to_string()),
-        item.official_rating.clone(),
-        runtime,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(" • ")
-}
-
-fn detail_progress_label(item: &DetailItemData) -> String {
-    if item.watched || item.resume_seconds <= 0.0 {
-        String::new()
-    } else {
-        format!("Resume at {}", format_playback_time(item.resume_seconds))
-    }
-}
-
-fn detail_series_summary(page: &DetailPageData) -> String {
-    if page.item.kind != DetailKind::Series {
-        return String::new();
-    }
-    if page.seasons.is_empty() && page.episodes.is_empty() {
-        return if page.children_error.is_some() {
-            "Series contents unavailable".to_owned()
-        } else {
-            "No seasons available".to_owned()
-        };
-    }
-    let mut parts = Vec::new();
-    if !page.seasons.is_empty() {
-        parts.push(if page.seasons.len() == 1 {
-            "1 season".to_owned()
-        } else {
-            format!("{} seasons", page.seasons.len())
-        });
-    }
-    if !page.episodes.is_empty() {
-        parts.push(if page.episodes.len() == 1 {
-            "1 episode".to_owned()
-        } else {
-            format!("{} episodes", page.episodes.len())
-        });
-        let unwatched = page
-            .episodes
-            .iter()
-            .filter(|episode| !episode.watched)
-            .count();
-        parts.push(if unwatched == 0 {
-            "All watched".to_owned()
-        } else {
-            format!("{unwatched} unwatched")
-        });
-    }
-    parts.join(" • ")
-}
-
-fn detail_series_play_context(page: &DetailPageData) -> String {
-    if page.item.kind != DetailKind::Series {
-        return String::new();
-    }
-    let Some(target) = page.play_target() else {
-        return String::new();
-    };
-    let episode = detail_episode_number(target).unwrap_or_else(|| target.title.clone());
-    if target.resume_seconds > 0.0 && !target.watched {
-        format!(
-            "{episode} • Resume at {}",
-            format_playback_time(target.resume_seconds)
-        )
-    } else if !target.watched {
-        format!("{episode} • Up next")
-    } else {
-        format!("{episode} • Start again")
-    }
-}
-
-fn detail_season_summary(page: &DetailPageData) -> String {
-    if page.item.kind != DetailKind::Season {
-        return String::new();
-    }
-    let episode_count = page.episodes.len();
-    if episode_count == 0 {
-        return if page.children_error.is_some() {
-            "Episodes unavailable".to_owned()
-        } else {
-            "No episodes available".to_owned()
-        };
-    }
-    let unwatched_count = page
-        .episodes
-        .iter()
-        .filter(|episode| !episode.watched)
-        .count();
-    let episode_label = if episode_count == 1 {
-        "1 episode".to_owned()
-    } else {
-        format!("{episode_count} episodes")
-    };
-    if unwatched_count == 0 {
-        format!("{episode_label} • All watched")
-    } else {
-        format!("{episode_label} • {unwatched_count} unwatched")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn season_summary_reports_episode_and_unwatched_counts() {
-        let mut watched = DetailItemData::fixture("watched", DetailKind::Episode);
-        watched.watched = true;
-        let unwatched = DetailItemData::fixture("unwatched", DetailKind::Episode);
-        let page = DetailPageData {
-            item: DetailItemData::fixture("season", DetailKind::Season),
-            seasons: Vec::new(),
-            episodes: vec![watched, unwatched],
-            similar: Vec::new(),
-            children_error: None,
-        };
-
-        assert_eq!(detail_season_summary(&page), "2 episodes • 1 unwatched");
-    }
-
-    #[test]
-    fn season_summary_distinguishes_empty_from_unavailable() {
-        let mut page = DetailPageData {
-            item: DetailItemData::fixture("season", DetailKind::Season),
+    fn page(item: DetailItemData) -> DetailPageData {
+        DetailPageData {
+            item,
             seasons: Vec::new(),
             episodes: Vec::new(),
             similar: Vec::new(),
             children_error: None,
-        };
-        assert_eq!(detail_season_summary(&page), "No episodes available");
-
-        page.children_error = Some("offline".into());
-        assert_eq!(detail_season_summary(&page), "Episodes unavailable");
+        }
     }
 
     #[test]
-    fn episode_metadata_leads_with_the_air_date_like_jellyfin() {
+    fn an_episode_info_row_leads_with_the_air_date_like_jellyfin() {
         let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
-        episode.series_name = Some("Example Show".into());
-        episode.season_name = Some("Season 2".into());
-        episode.parent_index_number = Some(2);
-        episode.index_number = Some(3);
         episode.production_year = Some(2026);
         episode.premiere_date = Some((2026, 1, 31));
         episode.official_rating = Some("TV-MA".into());
         episode.runtime_seconds = Some(2_700.0);
-
-        let metadata = detail_metadata_line(&episode);
-        // The subheading already carries the number and the parents.
-        assert_eq!(metadata, "1/31/2026 • TV-MA • 45m");
-
+        episode.community_rating = Some(8.24);
+        episode.playable = false;
+        assert_eq!(
+            misc_items(&page(episode.clone())),
+            [
+                MiscItem::Text("1/31/2026".into()),
+                MiscItem::Text("45m".into()),
+                MiscItem::Badge("TV-MA".into()),
+                MiscItem::Stars(8.24),
+            ]
+        );
         episode.premiere_date = None;
-        assert_eq!(detail_metadata_line(&episode), "2026 • TV-MA • 45m");
+        assert_eq!(misc_items(&page(episode))[0], MiscItem::Text("2026".into()));
     }
 
     #[test]
-    fn series_info_line_reads_the_air_span() {
+    fn a_series_info_row_reads_the_air_span() {
         let mut series = DetailItemData::fixture("series", DetailKind::Series);
         series.production_year = Some(2019);
-        series.official_rating = Some("TV-MA".into());
         series.runtime_seconds = Some(3_000.0);
         series.series_continuing = true;
+        series.critic_rating = Some(91.4);
         assert_eq!(
-            detail_metadata_line(&series),
-            "2019 – Present • TV-MA • 50m"
+            misc_items(&page(series.clone())),
+            [
+                MiscItem::Text("2019 - Present".into()),
+                MiscItem::Critic(91)
+            ]
         );
-
         series.series_continuing = false;
         series.end_year = Some(2022);
-        assert_eq!(detail_metadata_line(&series), "2019 – 2022 • TV-MA • 50m");
-
+        assert_eq!(
+            misc_items(&page(series.clone()))[0],
+            MiscItem::Text("2019 - 2022".into())
+        );
         series.end_year = Some(2019);
-        assert_eq!(detail_metadata_line(&series), "2019 • TV-MA • 50m");
+        assert_eq!(misc_items(&page(series))[0], MiscItem::Text("2019".into()));
+    }
 
-        series.production_year = None;
-        assert_eq!(detail_metadata_line(&series), "TV-MA • 50m");
+    #[test]
+    fn a_season_has_no_info_row() {
+        let mut season = DetailItemData::fixture("season", DetailKind::Season);
+        season.production_year = Some(2025);
+        assert!(misc_items(&page(season)).is_empty());
     }
 
     #[test]
@@ -2362,25 +1840,6 @@ mod tests {
     }
 
     #[test]
-    fn season_info_line_counts_its_episodes() {
-        let mut season = DetailItemData::fixture("season", DetailKind::Season);
-        season.production_year = Some(2025);
-        season.official_rating = Some("TV-MA".into());
-        let page = |count: usize| DetailPageData {
-            item: season.clone(),
-            seasons: Vec::new(),
-            episodes: (0..count)
-                .map(|number| DetailItemData::fixture(&format!("e{number}"), DetailKind::Episode))
-                .collect(),
-            similar: Vec::new(),
-            children_error: None,
-        };
-        assert_eq!(detail_info_line(&page(10)), "2025 • 10 episodes • TV-MA");
-        assert_eq!(detail_info_line(&page(1)), "2025 • 1 episode • TV-MA");
-        assert_eq!(detail_info_line(&page(0)), "2025 • TV-MA");
-    }
-
-    #[test]
     fn episode_cards_show_when_they_aired_and_how_long_they_run() {
         let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
         episode.runtime_seconds = Some(2_940.0);
@@ -2389,84 +1848,5 @@ mod tests {
         assert_eq!(detail_card_subtitle(&episode), "1/31/2025 • 49m");
         episode.runtime_seconds = Some(3_900.0);
         assert_eq!(detail_card_subtitle(&episode), "1/31/2025 • 1h 5m");
-    }
-
-    #[test]
-    fn episode_pages_know_where_the_episode_sits_in_its_season() {
-        let episodes = (1..=20)
-            .map(|number| DetailItemData::fixture(&format!("e{number}"), DetailKind::Episode))
-            .collect::<Vec<_>>();
-        let page = DetailPageData {
-            item: DetailItemData::fixture("e12", DetailKind::Episode),
-            seasons: Vec::new(),
-            episodes,
-            similar: Vec::new(),
-            children_error: None,
-        };
-        assert_eq!(current_episode_index(&page), 11);
-
-        let season = DetailPageData {
-            item: DetailItemData::fixture("e12", DetailKind::Season),
-            ..page
-        };
-        assert_eq!(current_episode_index(&season), -1);
-    }
-
-    #[test]
-    fn detail_progress_label_formats_resume_position() {
-        let mut movie = DetailItemData::fixture("movie", DetailKind::Movie);
-        movie.resume_seconds = 3_661.0;
-        assert_eq!(detail_progress_label(&movie), "Resume at 1:01:01");
-
-        movie.watched = true;
-        assert_eq!(detail_progress_label(&movie), "");
-    }
-
-    #[test]
-    fn series_summary_reports_loaded_seasons_and_episode_state() {
-        let mut watched = DetailItemData::fixture("watched", DetailKind::Episode);
-        watched.watched = true;
-        let unwatched = DetailItemData::fixture("unwatched", DetailKind::Episode);
-        let page = DetailPageData {
-            item: DetailItemData::fixture("series", DetailKind::Series),
-            seasons: vec![
-                DetailItemData::fixture("season-1", DetailKind::Season),
-                DetailItemData::fixture("season-2", DetailKind::Season),
-            ],
-            episodes: vec![watched, unwatched],
-            similar: Vec::new(),
-            children_error: None,
-        };
-
-        assert_eq!(
-            detail_series_summary(&page),
-            "2 seasons • 2 episodes • 1 unwatched"
-        );
-    }
-
-    #[test]
-    fn series_play_context_describes_the_selected_episode() {
-        let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
-        episode.parent_index_number = Some(1);
-        episode.index_number = Some(4);
-        episode.resume_seconds = 1_227.0;
-        let mut page = DetailPageData {
-            item: DetailItemData::fixture("series", DetailKind::Series),
-            seasons: Vec::new(),
-            episodes: vec![episode],
-            similar: Vec::new(),
-            children_error: None,
-        };
-
-        assert_eq!(
-            detail_series_play_context(&page),
-            "S01E04 • Resume at 20:27"
-        );
-
-        page.episodes[0].resume_seconds = 0.0;
-        assert_eq!(detail_series_play_context(&page), "S01E04 • Up next");
-
-        page.episodes[0].watched = true;
-        assert_eq!(detail_series_play_context(&page), "S01E04 • Start again");
     }
 }

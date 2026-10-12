@@ -2,19 +2,14 @@
 //! cover-fit artwork with rounded corners, gradients, shadows, the round icon
 //! button, and the horizontal shelf scroller.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use egui::epaint::{RectShape, Shadow};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
-    Align2, Color32, ColorImage, CornerRadius, CursorIcon, FontId, Galley, Id, Mesh, Painter, Pos2,
-    Rect, Response, Sense, Shape, Stroke, StrokeKind, TextFormat, TextureHandle, TextureId,
-    TextureOptions, Ui, Vec2, pos2, vec2,
+    Color32, CornerRadius, CursorIcon, FontId, Galley, Id, Mesh, Painter, Pos2, Rect, Response,
+    Shape, Stroke, StrokeKind, TextFormat, TextureId, Ui, Vec2, pos2, vec2,
 };
-
-use super::icons::{self, Icon};
-use super::theme;
 
 /// One line of text, cut with an ellipsis at `max_width`.
 pub fn elided(ui: &Ui, text: &str, font: FontId, color: Color32, max_width: f32) -> Arc<Galley> {
@@ -141,71 +136,6 @@ pub fn drop_shadow(
     painter.add(shadow.as_shape(rect, radius));
 }
 
-/// A rounded rect filled with a 145° linear gradient from `from` to `to`.
-///
-/// The gradient is a tiny cached texture stretched over the rect, which keeps
-/// the rounded corners (a vertex-colored mesh would not have them).
-pub fn diagonal_gradient(painter: &Painter, rect: Rect, radius: f32, from: Color32, to: Color32) {
-    let texture = gradient_texture(painter.ctx(), from, to);
-    painter.add(
-        RectShape::filled(rect, radius, Color32::WHITE)
-            .with_texture(texture, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0))),
-    );
-}
-
-#[derive(Clone, Default)]
-struct GradientTextures(HashMap<([u8; 4], [u8; 4]), TextureHandle>);
-
-fn gradient_texture(ctx: &egui::Context, from: Color32, to: Color32) -> TextureId {
-    let key = (from.to_array(), to.to_array());
-    let id = Id::new("jellybridge-gradient-textures");
-    let cached = ctx.data_mut(|data| {
-        data.get_temp_mut_or_default::<GradientTextures>(id)
-            .0
-            .get(&key)
-            .map(TextureHandle::id)
-    });
-    if let Some(texture) = cached {
-        return texture;
-    }
-    const SIZE: usize = 32;
-    // CSS 145deg: the gradient runs toward the lower right, mostly down.
-    let angle = 145_f32.to_radians();
-    let direction = vec2(angle.sin(), -angle.cos());
-    let span = direction.x.abs() + direction.y.abs();
-    let mut pixels = Vec::with_capacity(SIZE * SIZE);
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let point = vec2(
-                x as f32 / (SIZE - 1) as f32 - 0.5,
-                y as f32 / (SIZE - 1) as f32 - 0.5,
-            );
-            let t = (point.dot(direction) / span + 0.5).clamp(0.0, 1.0);
-            pixels.push(lerp_color(from, to, t));
-        }
-    }
-    let image = ColorImage {
-        size: [SIZE, SIZE],
-        source_size: vec2(SIZE as f32, SIZE as f32),
-        pixels,
-    };
-    let handle = ctx.load_texture("gradient", image, TextureOptions::LINEAR);
-    let texture = handle.id();
-    ctx.data_mut(|data| {
-        data.get_temp_mut_or_default::<GradientTextures>(id)
-            .0
-            .insert(key, handle);
-    });
-    texture
-}
-
-fn lerp_color(from: Color32, to: Color32, t: f32) -> Color32 {
-    let a = from.to_srgba_unmultiplied();
-    let b = to.to_srgba_unmultiplied();
-    let mix = |i: usize| (f32::from(a[i]) + (f32::from(b[i]) - f32::from(a[i])) * t).round() as u8;
-    Color32::from_rgba_unmultiplied(mix(0), mix(1), mix(2), mix(3))
-}
-
 /// A rect filled with a top-to-bottom gradient (square corners).
 pub fn vertical_gradient(painter: &Painter, rect: Rect, top: Color32, bottom: Color32) {
     let mut mesh = Mesh::default();
@@ -223,33 +153,6 @@ pub fn border(painter: &Painter, rect: Rect, radius: f32, width: f32, color: Col
     painter.rect_stroke(rect, radius, Stroke::new(width, color), StrokeKind::Inside);
 }
 
-/// A thin progress bar along the bottom of a card: overlay rail, accent fill
-/// anchored to the left edge.
-pub fn card_progress(painter: &Painter, card: Rect, height: f32, progress: f32) {
-    if !(progress > 0.0 && progress < 1.0) {
-        return;
-    }
-    let rail = Rect::from_min_max(
-        pos2(card.left(), card.bottom() - height),
-        card.right_bottom(),
-    );
-    painter.rect_filled(rail, 0.0, theme::OVERLAY);
-    let fill = Rect::from_min_size(rail.min, vec2(rail.width() * progress, height));
-    painter.rect_filled(fill, 0.0, theme::ACCENT);
-}
-
-/// The round accent "watched" badge with a check mark.
-pub fn watched_badge(painter: &Painter, rect: Rect, check_size: f32) {
-    painter.rect_filled(rect, theme::RADIUS_LARGE, theme::ACCENT);
-    icons::paint_centered(
-        painter,
-        Icon::Check,
-        rect.center(),
-        check_size,
-        theme::TEXT_BRIGHT,
-    );
-}
-
 /// Marks a response as a button for assistive technology and gives it a
 /// tooltip, which icon-only controls otherwise lack.
 pub fn describe_button(response: &Response, enabled: bool, label: &str) {
@@ -263,111 +166,6 @@ pub fn pointer_on_hover(response: &Response) {
     }
 }
 
-/// The detail page's round icon toggle: played, favorite, play from start.
-pub struct RoundIconButton<'a> {
-    pub icon: Icon,
-    pub label: &'a str,
-    pub size: f32,
-    pub active: bool,
-    pub active_color: Color32,
-    pub enabled: bool,
-}
-
-impl RoundIconButton<'_> {
-    pub fn show(self, ui: &mut Ui, rect: Rect, id: Id) -> Response {
-        let sense = if self.enabled {
-            Sense::click()
-        } else {
-            Sense::hover()
-        };
-        let response = ui.interact(rect, id, sense);
-        describe_button(&response, self.enabled, self.label);
-        let hovered = response.hovered() && self.enabled;
-        let painter = ui.painter();
-        let opacity = if self.enabled { 1.0 } else { 0.45 };
-        let fill = if self.active {
-            theme::ACCENT_DEEP
-        } else if hovered {
-            theme::SURFACE_HOVER
-        } else {
-            theme::SURFACE_RAISED
-        };
-        let radius = rect.width() / 2.0;
-        painter.rect_filled(rect, radius, fill.gamma_multiply(opacity));
-        if !self.active {
-            border(
-                painter,
-                rect,
-                radius,
-                1.0,
-                theme::BORDER.gamma_multiply(opacity),
-            );
-        }
-        if response.has_focus() {
-            border(
-                painter,
-                rect.expand(2.0),
-                radius + 2.0,
-                2.0,
-                theme::ACCENT_BRIGHT,
-            );
-        }
-        let color = if self.active {
-            self.active_color
-        } else {
-            theme::TEXT_SECONDARY
-        };
-        icons::paint_centered(
-            painter,
-            self.icon,
-            rect.center(),
-            self.size * 0.5,
-            color.gamma_multiply(opacity),
-        );
-        if self.enabled {
-            pointer_on_hover(&response);
-        }
-        response.on_hover_text(self.label)
-    }
-}
-
-/// A round ‹ or › paging button over a shelf.
-pub fn shelf_arrow(
-    ui: &mut Ui,
-    rect: Rect,
-    id: Id,
-    left: bool,
-    fill: Color32,
-    hover_fill: Color32,
-    outlined: bool,
-) -> bool {
-    let response = ui.interact(rect, id, Sense::click());
-    describe_button(
-        &response,
-        true,
-        if left { "Scroll left" } else { "Scroll right" },
-    );
-    let painter = ui.painter();
-    let radius = rect.width() / 2.0;
-    painter.rect_filled(
-        rect,
-        radius,
-        if response.hovered() { hover_fill } else { fill },
-    );
-    if outlined {
-        border(painter, rect, radius, 1.0, theme::BORDER);
-    }
-    painter.text(
-        rect.center() - vec2(0.0, 2.0),
-        Align2::CENTER_CENTER,
-        if left { "‹" } else { "›" },
-        theme::regular(28.0),
-        theme::TEXT_BRIGHT,
-    );
-    pointer_on_hover(&response);
-    response.clicked()
-}
-
 /// Per-shelf scroll state, kept in egui memory under the shelf's id.
 #[derive(Clone, Copy, Debug, Default)]
 struct ShelfState {
@@ -376,8 +174,6 @@ struct ShelfState {
     /// The gesture's locked axis: 0 none, 1 horizontal, 2 vertical.
     axis: u8,
     last_event: f64,
-    /// What `center_on` last centered, so it re-centers only on change.
-    centered: Option<(usize, u32)>,
 }
 
 /// A horizontally scrolling strip: wheel and trackpad scrolling with a
@@ -412,18 +208,6 @@ impl Shelf {
             minimum_offset,
             state,
         }
-    }
-
-    /// Opens scrolled so item `index` (of width `card_width`, `gap` apart)
-    /// is centered, and re-centers whenever `index` or the content changes.
-    pub fn center_on(&mut self, index: usize, card_width: f32, gap: f32) {
-        let key = (index, self.content_width.round() as u32);
-        if self.state.centered == Some(key) {
-            return;
-        }
-        self.state.centered = Some(key);
-        let center = index as f32 * (card_width + gap) + card_width / 2.0;
-        self.state.target = (self.viewport.width() / 2.0 - center).clamp(self.minimum_offset, 0.0);
     }
 
     /// Applies this frame's scroll input and returns the drawn offset.

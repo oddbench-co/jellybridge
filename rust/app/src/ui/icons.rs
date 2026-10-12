@@ -27,6 +27,13 @@ pub enum Icon {
     Favorite,
     Fullscreen,
     FullscreenExit,
+    Home,
+    Person,
+    Search,
+    InfoOutline,
+    Star,
+    ChevronLeft,
+    SortByAlpha,
 }
 
 impl Icon {
@@ -69,6 +76,23 @@ impl Icon {
             }
             Icon::FullscreenExit => {
                 "M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"
+            }
+            Icon::Home => "M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z",
+            Icon::Person => {
+                "M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"
+            }
+            Icon::Search => {
+                "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"
+            }
+            Icon::InfoOutline => {
+                "M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z"
+            }
+            Icon::Star => {
+                "M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"
+            }
+            Icon::ChevronLeft => "M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z",
+            Icon::SortByAlpha => {
+                "M14.94 4.66h-4.72l2.36-2.36zm-4.69 14.71h4.66l-2.33 2.33zM6.1 6.27L1.6 17.73h1.84l.92-2.45h5.11l.92 2.45h1.84L7.74 6.27H6.1zm-1.13 7.37l1.94-5.18 1.94 5.18H4.97zm10.76 2.5h6.12v1.59h-8.53v-1.29l5.92-8.56h-5.88v-1.6h8.3v1.26l-5.93 8.6z"
             }
         }
     }
@@ -167,6 +191,13 @@ mod tests {
             Icon::Favorite,
             Icon::Fullscreen,
             Icon::FullscreenExit,
+            Icon::Home,
+            Icon::Person,
+            Icon::Search,
+            Icon::InfoOutline,
+            Icon::Star,
+            Icon::ChevronLeft,
+            Icon::SortByAlpha,
         ] {
             let image = rasterize(icon, 24);
             let opaque = image.pixels.iter().filter(|pixel| pixel.a() > 128).count();

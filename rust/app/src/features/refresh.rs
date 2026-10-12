@@ -23,7 +23,7 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug)]
 pub enum RefreshTarget {
     Home,
-    Browse(CatalogItemData),
+    Browse(Box<CatalogItemData>),
     Search {
         term: String,
         parent_id: Option<String>,
@@ -55,7 +55,7 @@ pub fn refresh_target(state: &AppState, playing: bool, loading: bool) -> Option<
             parent_id: current.parent.as_ref().map(|parent| parent.id.clone()),
         }
     } else if let Some(parent) = current.parent.clone() {
-        RefreshTarget::Browse(parent)
+        RefreshTarget::Browse(Box::new(parent))
     } else {
         RefreshTarget::Home
     })
@@ -211,6 +211,7 @@ mod tests {
             progress: 0.0,
             is_container: true,
             playable: false,
+            ..CatalogItemData::default()
         }
     }
 

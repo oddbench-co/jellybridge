@@ -40,6 +40,20 @@ impl CatalogSort {
         }
     }
 
+    pub fn from_index(index: i32) -> Option<Self> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
+    }
+
+    pub fn index(self) -> i32 {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .and_then(|index| i32::try_from(index).ok())
+            .unwrap_or(0)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::NameAscending => "Name A-Z",
@@ -70,19 +84,6 @@ impl CatalogSort {
             .unwrap_or_default()
     }
 
-    pub fn from_index(index: i32) -> Option<Self> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| Self::ALL.get(index).copied())
-    }
-
-    pub fn index(self) -> i32 {
-        Self::ALL
-            .iter()
-            .position(|candidate| *candidate == self)
-            .and_then(|index| i32::try_from(index).ok())
-            .unwrap_or(0)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,19 +105,6 @@ impl CatalogDensity {
         }
     }
 
-    /// The pixel width to request artwork at for this density.
-    ///
-    /// Cards were always fetched at a hardcoded 320 px while being drawn at
-    /// `card_width * scale_factor` physical pixels -- 390 px for Normal
-    /// density on a 1.5x display, so every poster was upscaled 22% past its
-    /// own resolution. Rounding up to a multiple of 40 keeps the number of
-    /// distinct sizes in the disk cache small without wasting much.
-    pub fn artwork_width(self, scale_factor: f32) -> u32 {
-        let needed = (self.card_width() as f32 * scale_factor.max(1.0)).ceil() as u32;
-        let rounded = needed.div_ceil(40) * 40;
-        rounded.clamp(160, 1200)
-    }
-
     pub fn from_card_width(value: Option<i32>) -> Self {
         let value = value.unwrap_or(Self::Normal.card_width());
         Self::ALL
@@ -125,19 +113,6 @@ impl CatalogDensity {
             .unwrap_or_default()
     }
 
-    pub fn from_index(index: i32) -> Option<Self> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| Self::ALL.get(index).copied())
-    }
-
-    pub fn index(self) -> i32 {
-        Self::ALL
-            .iter()
-            .position(|candidate| *candidate == self)
-            .and_then(|index| i32::try_from(index).ok())
-            .unwrap_or(1)
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,14 +154,18 @@ pub fn flatten_sections(sections: &[CatalogSectionData]) -> FlattenedCatalog {
 pub enum EmptySearchDestination {
     Ignore,
     Home,
-    Parent(CatalogItemData),
+    Parent(Box<CatalogItemData>),
+    /// The search page stays, emptied.
+    ClearSearch,
 }
 
 pub fn empty_search_destination(current: &PageSnapshot) -> EmptySearchDestination {
-    if current.search_text.is_empty() {
+    if current.search_page {
+        EmptySearchDestination::ClearSearch
+    } else if current.search_text.is_empty() {
         EmptySearchDestination::Ignore
     } else if let Some(parent) = current.parent.clone() {
-        EmptySearchDestination::Parent(parent)
+        EmptySearchDestination::Parent(Box::new(parent))
     } else {
         EmptySearchDestination::Home
     }
@@ -266,6 +245,21 @@ pub fn install_home(
     ui::catalog::present(context, "");
 }
 
+/// Opens the global search page, as the header's search button does.
+pub fn open_search(context: &AppContext) {
+    context.next_generation();
+    cancel_catalog_request(context);
+    if let Ok(mut state) = context.state.lock() {
+        if state.current.search_page {
+            return;
+        }
+        let previous = std::mem::replace(&mut state.current, PageSnapshot::search());
+        state.back_stack.push(previous);
+        state.detail.update(DetailMessage::Reset);
+    }
+    ui::catalog::present(context, "");
+}
+
 pub fn show_home(context: &AppContext, clear_history: bool) {
     context.next_generation();
     cancel_catalog_request(context);
@@ -280,6 +274,58 @@ pub fn show_home(context: &AppContext, clear_history: bool) {
     // The cached dashboard shows instantly; the refresh patches in whatever
     // was watched since it was fetched.
     context.request_refresh();
+}
+
+/// A played/favorite toggle on a home or library card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardToggle {
+    Played(bool),
+    Favorite(bool),
+}
+
+/// Flips a card's played or favorite state, as the buttons on a jellyfin-web
+/// card do. The card changes at once; the server is told in the background
+/// and the visible screen is refreshed from it afterwards, which also undoes
+/// the change if the server refused it.
+pub fn toggle_card(context: &AppContext, id: &str, toggle: CardToggle) {
+    let Some(api) = context.api() else { return };
+    if let Ok(mut state) = context.state.lock() {
+        let apply = |item: &mut CatalogItemData| {
+            if item.id == id {
+                match toggle {
+                    CardToggle::Played(played) => {
+                        item.watched = played;
+                        if played {
+                            item.progress = 0.0;
+                            item.unplayed_count = 0;
+                        }
+                    }
+                    CardToggle::Favorite(favorite) => item.favorite = favorite,
+                }
+            }
+        };
+        state.current.items.iter_mut().for_each(apply);
+        state
+            .home
+            .iter_mut()
+            .flat_map(|section| section.items.iter_mut())
+            .for_each(apply);
+    }
+    let generation = context.generation.load(std::sync::atomic::Ordering::Acquire);
+    ui::catalog::present_refresh(context, generation);
+    let ctx = context.clone();
+    let id = id.to_owned();
+    context.runtime.spawn(async move {
+        let result = match toggle {
+            CardToggle::Played(played) => api.set_watched(&id, played).await,
+            CardToggle::Favorite(favorite) => api.set_favorite(&id, favorite).await,
+        };
+        if let Err(error) = result {
+            tracing::warn!(%error, "card state change failed");
+            ui::set_message(&ctx, "The change could not be saved");
+        }
+        ctx.request_refresh();
+    });
 }
 
 pub fn open_item(context: &AppContext, id: &str) {
@@ -313,7 +359,7 @@ pub fn start_browse_request(context: &AppContext, item: CatalogItemData, push_hi
         .map(|state| state.catalog_sort)
         .unwrap_or_default();
     if let Ok(mut state) = context.state.lock() {
-        state.retry = RetryAction::Browse(item.clone(), push_history);
+        state.retry = RetryAction::Browse(Box::new(item.clone()), push_history);
     }
     ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     let ctx = context.clone();
@@ -336,6 +382,7 @@ pub fn start_browse_request(context: &AppContext, item: CatalogItemData, push_hi
                         parent: Some(item.clone()),
                         search_text: String::new(),
                         total_record_count: page.total_record_count,
+                        search_page: false,
                     };
                     state.detail.update(DetailMessage::Reset);
                 }
@@ -359,7 +406,15 @@ pub fn start_search(context: &AppContext, term: String) {
             EmptySearchDestination::Ignore => {}
             EmptySearchDestination::Home => show_home(context, false),
             EmptySearchDestination::Parent(parent) => {
-                start_browse_request(context, parent, false);
+                start_browse_request(context, *parent, false);
+            }
+            EmptySearchDestination::ClearSearch => {
+                context.next_generation();
+                cancel_catalog_request(context);
+                if let Ok(mut state) = context.state.lock() {
+                    state.current = PageSnapshot::search();
+                }
+                ui::catalog::present(context, "");
             }
         }
         return;
@@ -426,17 +481,6 @@ pub fn change_catalog_sort(context: &AppContext, index: i32) {
     }
 }
 
-pub fn change_catalog_density(context: &AppContext, index: i32) {
-    let Some(density) = CatalogDensity::from_index(index) else {
-        return;
-    };
-    if let Ok(mut state) = context.state.lock() {
-        state.catalog_density = density;
-    }
-    persist_catalog_preferences(context);
-    ui::catalog::present_preferences(context);
-}
-
 fn persist_catalog_preferences(context: &AppContext) {
     let (density, sort) = match context.state.lock() {
         Ok(state) => (state.catalog_density, state.catalog_sort),
@@ -501,7 +545,7 @@ pub fn retry(context: &AppContext) {
     match action {
         RetryAction::Home => start_home_load(context),
         RetryAction::Browse(item, push_history) => {
-            start_browse_request(context, item, push_history);
+            start_browse_request(context, *item, push_history);
         }
         RetryAction::Search(term) => start_search(context, term),
         RetryAction::Detail(target) => crate::features::detail::start_detail(context, target),
@@ -510,34 +554,6 @@ pub fn retry(context: &AppContext) {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn artwork_is_requested_at_the_size_it_will_be_drawn() {
-        // A card is card_width * scale_factor physical pixels. Asking for 320
-        // regardless, as this used to, upscaled every poster on any display
-        // above 1x.
-        assert!(
-            CatalogDensity::Normal.artwork_width(1.5) >= (260.0 * 1.5) as u32,
-            "Normal density on a 1.5x display still under-requests"
-        );
-        assert!(
-            CatalogDensity::Large.artwork_width(2.0) >= (320.0 * 2.0) as u32,
-            "Large density on a 2x display still under-requests"
-        );
-
-        // Rounded, so a handful of sizes cover every density and scale rather
-        // than one cache entry per pixel width.
-        for density in CatalogDensity::ALL {
-            for scale in [1.0, 1.25, 1.5, 2.0] {
-                let width = density.artwork_width(scale);
-                assert_eq!(width % 40, 0, "{width} is not a rounded size");
-                assert!((160..=1200).contains(&width), "{width} is out of range");
-            }
-        }
-
-        // A scale factor below 1 must never shrink the request below the card.
-        assert!(CatalogDensity::Normal.artwork_width(0.5) >= 260);
-    }
-
     use super::*;
 
     fn item(id: &str) -> CatalogItemData {
@@ -552,6 +568,7 @@ mod tests {
             progress: 0.0,
             is_container: false,
             playable: true,
+            ..CatalogItemData::default()
         }
     }
 
