@@ -55,7 +55,9 @@ const TITLE_BASELINE: f32 = 21.65;
 const PLAIN_TITLE_RAISE: f32 = (TITLE_ROW_LINK - TITLE_ROW) / 2.0;
 const SECONDARY_BASELINE: f32 = 14.6;
 const PLAIN_SECONDARY_RAISE: f32 = (SECONDARY_ROW_LINK - SECONDARY_ROW) / 2.0;
-const SECTION_BASELINE: f32 = 33.71;
+/// Chrome's: 0.5em padding, then the 1.35em line's half-leading in 1/64
+/// px (truncated, -0.4375) above a 24 px ascent.
+const SECTION_BASELINE: f32 = 0.5 * 22.32 - 0.4375 + 24.0;
 const SECTION_BASELINE_LINKED: f32 = 41.92;
 /// A section titled by a bare `h2.sectionTitle` (the library Suggestions
 /// tab): the heading's margin and line, then the cards.

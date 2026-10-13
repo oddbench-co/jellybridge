@@ -9,7 +9,9 @@ BIN=${BIN:-$(cd "$(dirname "$0")/../.." && pwd)/target/release/jellybridge}
 if hyprctl clients -j | jq -e '.[] | select(.workspace.name=="19") | select(.class!="dev.nk.jellybridge")' >/dev/null; then
   echo "workspace 19 has user windows; aborting"; exit 1; fi
 hyprctl output create headless JBTEST >/dev/null; sleep 0.5
-hyprctl keyword monitor "JBTEST,3840x2160@240,10000x0,1.5" >/dev/null; sleep 0.5
+# MODE/SCALE pick another output: MODE=1929x1107@60 gives a 1262x688
+# window (both sides must divide by the scale, or Hyprland changes it).
+hyprctl eval "hl.monitor({ output = 'JBTEST', mode = '${MODE:-3840x2160@240}', position = '10000x0', scale = ${SCALE:-1.5} })" >/dev/null; sleep 0.5
 hyprctl eval "hl.dispatch(hl.dsp.workspace.move({ workspace='19', monitor='JBTEST' }))" >/dev/null 2>&1
 LOG=${LOG:-/dev/null}
 # The parity runs' own config (see use-session.sh), never the user's.
