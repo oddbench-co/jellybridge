@@ -75,12 +75,11 @@ impl MenuCommand {
         match self {
             Self::Play | Self::PlayAllFromHere => Icon::Play,
             Self::Shuffle => Icon::Shuffle,
-            Self::AddToCollection => Icon::Folder,
-            Self::AddToPlaylist => Icon::Queue,
-            Self::RemoveFromPlaylist => Icon::Close,
+            Self::AddToCollection | Self::AddToPlaylist => Icon::PlaylistAdd,
+            Self::RemoveFromPlaylist => Icon::Remove,
             Self::Download => Icon::Download,
-            Self::CopyStreamUrl => Icon::Link,
-            Self::MediaInfo => Icon::InfoOutline,
+            Self::CopyStreamUrl => Icon::ContentCopy,
+            Self::MediaInfo => Icon::Info,
             Self::GoToSeason | Self::GoToSeries => Icon::Tv,
         }
     }
@@ -193,7 +192,7 @@ pub fn draw_menu(ui: &mut Ui, menu: &mut Option<OpenMenu>, actions: &mut Vec<UiA
         Id::new("item-menu"),
         open.request.anchor,
         &items,
-        0,
+        None,
     );
     if let Some(index) = picked {
         actions.push(UiAction::MenuCommand(

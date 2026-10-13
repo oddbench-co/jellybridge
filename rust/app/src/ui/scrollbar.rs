@@ -51,10 +51,9 @@ enum Step {
 /// Space the page gives up to the bar: the bar's width while the page
 /// overflowed last frame (the bar itself decides, after laying it out). A
 /// page that drew no bar last frame reserves nothing.
-pub fn reserved(ui: &Ui) -> f32 {
-    let pass = ui.ctx().cumulative_pass_nr();
-    let shown = ui
-        .ctx()
+pub fn reserved(ctx: &egui::Context) -> f32 {
+    let pass = ctx.cumulative_pass_nr();
+    let shown = ctx
         .data(|data| data.get_temp::<(u64, bool)>(shown_id()))
         .is_some_and(|(drawn, overflows)| overflows && drawn + 1 >= pass);
     if shown { WIDTH } else { 0.0 }

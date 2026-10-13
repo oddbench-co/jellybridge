@@ -2,7 +2,7 @@
 //! sheet that opens on its button (view, item menus). Both dim the page
 //! behind them and close on Escape or a click outside.
 
-use egui::{Align2, Color32, Id, Order, Rect, Sense, Ui, pos2, vec2};
+use egui::{Color32, Id, Order, Rect, Sense, Ui, pos2, vec2};
 
 use super::icons::{self, Icon};
 use super::theme;
@@ -11,7 +11,7 @@ use super::widgets;
 /// The dim behind dialogs: black at 50%.
 const BACKDROP: Color32 = Color32::from_black_alpha(128);
 /// Action sheet rows.
-const SHEET_ROW: f32 = 40.0;
+const SHEET_ROW: f32 = 40.14;
 
 fn shadow() -> egui::Shadow {
     egui::Shadow {
@@ -20,6 +20,13 @@ fn shadow() -> egui::Shadow {
         spread: 2,
         color: Color32::from_black_alpha(90),
     }
+}
+
+/// Claims clicks on a dialog's box, so a click on its empty parts is not
+/// taken for a click on the dim (which closes the dialog): egui sends a
+/// click to the topmost widget under the pointer, whatever layer it is in.
+fn claim(ui: &Ui, rect: Rect, id: Id) {
+    ui.interact(rect, id.with("box"), Sense::click());
 }
 
 /// Dims the whole window and reports a click on the dim (outside whatever is
@@ -81,91 +88,122 @@ pub struct SheetItem<'a> {
     pub checked: bool,
 }
 
-/// An action sheet anchored on `anchor`, its `selected` row level with the
-/// anchor's centre as jellyfin-web places it. Returns the picked row, and
-/// whether the sheet closed (a pick closes it too).
+// jellyfin-web's action sheet metrics at 1em = 14.88 px.
+const SHEET_PADDING: f32 = 0.4 * theme::JF_FONT;
+/// Icon column: 0.45em margin after the row's 0.5em padding, 0.85em after.
+const SHEET_ICON_LEFT: f32 = 16.53;
+const SHEET_ICON: f32 = 1.36 * theme::JF_FONT;
+const SHEET_TEXT_LEFT_ICON: f32 = 62.88;
+const SHEET_TEXT_LEFT: f32 = 7.44 + 8.928;
+const SHEET_TEXT_RIGHT: f32 = 14.88 + 3.72;
+const SHEET_TEXT_TOP: f32 = 9.66;
+const SHEET_TEXT_LINE: f32 = 20.83;
+
+/// An action sheet opened from `anchor`. With `selected` its row is level
+/// with the anchor's centre, as a select's list opens; without, the sheet is
+/// centred on the anchor and pulled back inside the window, as jellyfin-web
+/// places its menus. Returns the picked row, and whether the sheet closed
+/// (a pick closes it too).
 pub fn action_sheet(
     ctx: &egui::Context,
     id: Id,
     anchor: Rect,
     items: &[SheetItem<'_>],
-    selected: usize,
+    selected: Option<usize>,
 ) -> (Option<usize>, bool) {
     let close = backdrop(ctx, id);
     let screen = ctx.content_rect();
     let any_icon = items.iter().any(|item| item.icon.is_some() || item.checked);
     let font = theme::regular(theme::JF_FONT);
-    let text_left = if any_icon { 63.0 } else { 17.0 };
-    let widest = items
+    let text_left = if any_icon { SHEET_TEXT_LEFT_ICON } else { SHEET_TEXT_LEFT };
+    let galleys: Vec<_> = items
         .iter()
         .map(|item| {
-            ctx.fonts_mut(|fonts| {
-                fonts
-                    .layout_no_wrap(item.label.to_owned(), font.clone(), Color32::WHITE)
-                    .size()
-                    .x
-            })
+            ctx.fonts_mut(|fonts| fonts.layout_no_wrap(item.label.to_owned(), font.clone(), theme::JF_TEXT))
         })
-        .fold(0.0, f32::max);
-    let width = (text_left + widest + 24.0).max(168.0);
-    let height = items.len() as f32 * SHEET_ROW + 12.0;
-    let top = anchor.center().y - 6.0 - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
-    let top = top.clamp(
-        screen.top() + 8.0,
-        (screen.bottom() - height - 8.0).max(8.0),
-    );
-    let left = anchor
-        .left()
-        .clamp(screen.left() + 8.0, (screen.right() - width - 8.0).max(8.0));
+        .collect();
+    let widest = galleys.iter().map(|galley| galley.size().x).fold(0.0, f32::max);
+    let width = (text_left + widest + SHEET_TEXT_RIGHT).min(screen.width() * 0.9);
+    let height = (items.len() as f32 * SHEET_ROW + 2.0 * SHEET_PADDING).min(screen.height() * 0.9);
+    let (left, top) = match selected {
+        Some(selected) => {
+            let top = anchor.center().y - SHEET_PADDING - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
+            let top = top.clamp(screen.top() + 8.0, (screen.bottom() - height - 8.0).max(8.0));
+            let left = anchor
+                .left()
+                .clamp(screen.left() + 8.0, (screen.right() - width - 8.0).max(8.0));
+            (left, top)
+        }
+        None => {
+            // jellyfin-web's actionsheet getPosition: centred on the
+            // anchor, offset sizes rounded as offsetWidth/Height are.
+            let mut left = anchor.center().x - width.round() / 2.0;
+            let mut top = anchor.center().y - height.round() / 2.0;
+            let overflow_x = left + width.round() - screen.right();
+            let overflow_y = top + height.round() - screen.bottom();
+            if overflow_x > 0.0 {
+                left -= overflow_x + 20.0;
+            }
+            if overflow_y > 0.0 {
+                top -= overflow_y + 20.0;
+            }
+            (left.max(screen.left() + 10.0), top.max(screen.top() + 10.0))
+        }
+    };
+    let rect = Rect::from_min_size(pos2(left, top), vec2(width, height));
+    let radius = 0.1 * theme::JF_FONT;
     let area = egui::Area::new(id)
         .order(Order::Tooltip)
-        .fixed_pos(pos2(left, top))
+        .fixed_pos(rect.min)
         .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(theme::JF_BG)
-                .corner_radius(1.5)
-                .shadow(shadow())
-                .inner_margin(egui::Margin::symmetric(0, 6))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                    let mut picked = None;
-                    for (index, item) in items.iter().enumerate() {
-                        let (row, response) =
-                            ui.allocate_exact_size(vec2(width, SHEET_ROW), Sense::click());
-                        widgets::describe_button(&response, true, item.label);
-                        if response.hovered() || response.has_focus() {
-                            ui.painter()
-                                .rect_filled(row, 0.0, Color32::from_white_alpha(20));
-                        }
-                        let icon = if item.checked {
-                            Some(Icon::Check)
-                        } else {
-                            item.icon
-                        };
-                        if let Some(icon) = icon {
-                            icons::paint_centered(
-                                ui.painter(),
-                                icon,
-                                pos2(row.left() + 27.0, row.center().y),
-                                20.0,
-                                theme::JF_TEXT,
-                            );
-                        }
-                        ui.painter().text(
-                            pos2(row.left() + text_left, row.center().y),
-                            Align2::LEFT_CENTER,
-                            item.label,
-                            font.clone(),
-                            theme::JF_TEXT,
-                        );
-                        widgets::pointer_on_hover(&response);
-                        if response.clicked() {
-                            picked = Some(index);
-                        }
-                    }
-                    picked
-                })
-                .inner
+            claim(ui, rect, id);
+            paint_dialog_shadow(ui.painter(), rect, radius);
+            ui.painter().rect_filled(rect, radius, theme::JF_BG);
+            let mut picked = None;
+            for (index, (item, galley)) in items.iter().zip(galleys).enumerate() {
+                let row = Rect::from_min_size(
+                    pos2(rect.left(), rect.top() + SHEET_PADDING + index as f32 * SHEET_ROW),
+                    vec2(width, SHEET_ROW),
+                );
+                if row.bottom() > rect.bottom() {
+                    break;
+                }
+                let response = ui.interact(row, id.with(("row", index)), Sense::click());
+                widgets::describe_button(&response, true, item.label);
+                if response.has_focus() {
+                    ui.painter().rect_filled(row, 0.2 * theme::JF_FONT, Color32::from_gray(0x33));
+                } else if response.hovered() {
+                    ui.painter().rect_filled(row, 0.0, Color32::from_gray(0x24));
+                }
+                let icon = if item.checked { Some(Icon::Check) } else { item.icon };
+                if let Some(icon) = icon {
+                    icons::paint_centered(
+                        ui.painter(),
+                        icon,
+                        pos2(
+                            row.left() + SHEET_ICON_LEFT + SHEET_ICON / 2.0,
+                            row.top() + 9.95 + SHEET_ICON / 2.0,
+                        ),
+                        SHEET_ICON,
+                        theme::JF_TEXT,
+                    );
+                }
+                let clip = Rect::from_min_max(
+                    pos2(row.left() + text_left, row.top()),
+                    pos2(row.right() - SHEET_TEXT_RIGHT, row.bottom()),
+                );
+                widgets::galley_on_baseline(
+                    &ui.painter().with_clip_rect(clip),
+                    row.left() + text_left,
+                    super::jf::baseline(row.top() + SHEET_TEXT_TOP, theme::JF_FONT, SHEET_TEXT_LINE),
+                    galley,
+                );
+                widgets::pointer_on_hover(&response);
+                if response.clicked() {
+                    picked = Some(index);
+                }
+            }
+            picked
         });
     let picked = area.inner;
     (picked, close || picked.is_some())
@@ -238,6 +276,7 @@ pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button:
         .order(Order::Tooltip)
         .fixed_pos(rect.min)
         .show(ctx, |ui| {
+            claim(ui, rect, id);
             let painter = ui.painter();
             paint_dialog_shadow(painter, rect, radius);
             painter.rect_filled(rect, radius, theme::JF_BG);
@@ -280,109 +319,253 @@ pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button:
     close || area.inner || enter
 }
 
-/// A dialog section heading, 22.3 px like jellyfin-web's `h2`.
-pub fn heading(ui: &mut Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
-    ui.painter().text(
-        pos2(rect.left(), rect.center().y),
-        Align2::LEFT_CENTER,
-        text,
-        theme::regular(theme::JF_FONT_SECTION),
-        theme::JF_TEXT,
+/// A dialog laid out by hand: the dim, then a `size` box centred on the
+/// page (the window less the page scrollbar, as jellyfin-web centres in the
+/// viewport), or `top` below the window's top, with jellyfin's radius and shadow. `content` draws into the
+/// box. Returns its result and whether the dialog asked to close (Escape or
+/// a click on the dim).
+pub fn panel<R>(
+    ctx: &egui::Context,
+    id: Id,
+    size: egui::Vec2,
+    top: Option<f32>,
+    content: impl FnOnce(&mut Ui, Rect) -> R,
+) -> (R, bool) {
+    let close = backdrop(ctx, id);
+    let screen = ctx.content_rect();
+    let page_width = screen.width() - super::scrollbar::reserved(ctx);
+    let size = vec2(size.x.min(page_width - 16.0), size.y.min(screen.height() - 16.0));
+    let rect = Rect::from_min_size(
+        pos2(
+            screen.left() + (page_width - size.x) / 2.0,
+            screen.top() + top.unwrap_or((screen.height() - size.y) / 2.0),
+        ),
+        size,
+    );
+    let radius = 0.2 * theme::JF_FONT;
+    // Above the dim's order: egui raises a pressed area within its order,
+    // and the dim covers the window, so the same order would put the dim
+    // over the box after the first click.
+    let area = egui::Area::new(id)
+        .order(Order::Tooltip)
+        .fixed_pos(rect.min)
+        .show(ctx, |ui| {
+            claim(ui, rect, id);
+            paint_dialog_shadow(ui.painter(), rect, radius);
+            ui.painter().rect_filled(rect, radius, theme::JF_BG);
+            ui.set_clip_rect(rect);
+            content(ui, rect)
+        });
+    (area.inner, close)
+}
+
+// jellyfin-web's form controls in dialogs, at 1em = 14.88 px.
+/// An `h2` in a dialog: 1.5em on a 30.13 px line.
+pub const FORM_HEADING: f32 = 30.11;
+pub const FORM_HEADING_FONT: f32 = 1.5 * theme::JF_FONT;
+/// A radio or checkbox row: 24 px, with 0.5em margins that collapse.
+pub const FORM_ROW: f32 = 24.0;
+pub const FORM_ROW_MARGIN: f32 = 0.5 * theme::JF_FONT;
+const RADIO: f32 = 16.06;
+/// From the row's left edge to its label.
+pub const FORM_LABEL_LEFT: f32 = RADIO + 8.035;
+
+/// A text baseline inside a dialog, Chrome's way: the half-leading in
+/// LayoutUnits (1/64 px, truncated toward zero, so a line box shorter than
+/// the font loses less than a pixel), and, as dialogs are composited as their
+/// own layer, rounded to device pixels where page text is floored.
+/// `galley_on_baseline` floors, hence the half pixel.
+fn layer_baseline(ui: &Ui, top: f32, size: f32, line_height: f32) -> f32 {
+    let ascent = (1.069 * size).round();
+    let descent = (0.293 * size).round();
+    let half_leading = ((line_height - ascent - descent) / 2.0 * 64.0).trunc() / 64.0;
+    top + ascent + half_leading + 0.5 / ui.ctx().pixels_per_point()
+}
+
+/// A dialog `h2` whose line box starts at `top`.
+pub fn form_heading(ui: &Ui, left: f32, top: f32, text: &str) {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::regular(FORM_HEADING_FONT), theme::JF_TEXT);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        left,
+        layer_baseline(ui, top, FORM_HEADING_FONT, 30.132),
+        galley,
     );
 }
 
-/// A radio row: a 16 px ring, filled with the accent when selected.
-pub fn radio(ui: &mut Ui, label: &str, selected: bool, id: Id) -> bool {
-    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 31.5), Sense::click());
-    let response = ui.interact(rect, id, Sense::click()).union(response);
+/// jellyfin-web's `emby-radio` row at `row` (24 px tall): a 1.9 px ring with
+/// a dot when selected, accent with a halo while focused.
+/// Returns true when clicked (or Space/Enter while focused).
+pub fn form_radio(ui: &Ui, row: Rect, label: &str, selected: bool, id: Id) -> bool {
+    let response = ui.interact(row, id, Sense::click());
     widgets::describe_button(&response, true, label);
-    let center = pos2(rect.left() + 8.0, rect.center().y);
-    let ring = if selected || response.hovered() {
-        theme::JF_ACCENT
-    } else {
-        theme::JF_TEXT_SECONDARY
-    };
-    ui.painter()
-        .circle_stroke(center, 7.0, egui::Stroke::new(2.0, ring));
-    if selected {
-        ui.painter().circle_filled(center, 3.5, theme::JF_ACCENT);
+    let center = pos2(row.left() + RADIO / 2.0, row.top() + 3.97 + RADIO / 2.0);
+    let focused = response.has_focus();
+    let color = if focused { theme::JF_ACCENT } else { theme::JF_TEXT };
+    if focused {
+        ui.painter().circle_filled(
+            center,
+            RADIO * 1.75 / 2.0,
+            theme::with_alpha(theme::JF_ACCENT, 0.26),
+        );
     }
-    ui.painter().text(
-        pos2(rect.left() + 26.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        theme::regular(theme::JF_FONT),
-        theme::JF_TEXT,
+    // The SVG strokes 3.87 px on the circle's edge, clipped to the circle:
+    // a ring 1.93 px wide inside the edge. egui strokes outside the radius.
+    let ring = 3.8688 / 2.0;
+    ui.painter()
+        .circle_stroke(center, RADIO / 2.0 - ring, egui::Stroke::new(ring, color));
+    if selected {
+        ui.painter().circle_filled(center, RADIO / 4.0, color);
+    }
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::regular(theme::JF_FONT), theme::JF_TEXT);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        row.left() + FORM_LABEL_LEFT,
+        layer_baseline(ui, row.top(), theme::JF_FONT, FORM_ROW),
+        galley,
     );
     widgets::pointer_on_hover(&response);
     response.clicked()
 }
 
-/// A checkbox row, jellyfin-web's square box with a check when ticked.
+/// Moves keyboard focus to `first` as a dialog opens, as jellyfin-web
+/// focuses a dialog's first control. Asked for a few frames, since the
+/// click that opened the dialog can still be settling focus. `open` false
+/// forgets the dialog so the next opening focuses again.
+pub fn autofocus(ctx: &egui::Context, dialog: Id, first: Id, open: bool) {
+    let key = dialog.with("autofocus");
+    if !open {
+        ctx.data_mut(|data| data.remove::<u8>(key));
+        return;
+    }
+    let frames = ctx.data_mut(|data| *data.get_temp_mut_or_default::<u8>(key));
+    if frames < 3 {
+        ctx.data_mut(|data| data.insert_temp(key, frames + 1));
+        ctx.memory_mut(|memory| memory.request_focus(first));
+        ctx.request_repaint();
+    }
+}
+
+/// The width of the widest label, for dialogs that shrink to fit.
+pub fn widest_label(ctx: &egui::Context, labels: impl IntoIterator<Item = impl Into<String>>) -> f32 {
+    labels
+        .into_iter()
+        .map(|label| {
+            ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(label.into(), theme::regular(theme::JF_FONT), Color32::WHITE)
+                    .size()
+                    .x
+            })
+        })
+        .fold(0.0, f32::max)
+}
+
+// jellyfin-web's `emby-checkbox` and `emby-collapse`, at 1em = 14.88 px.
+const CHECKBOX_ROW: f32 = 34.95;
+const CHECKBOX: f32 = 27.22;
+const CHECKBOX_LABEL_LEFT: f32 = 2.4 * theme::JF_FONT;
+/// A collapsible section's button: 0.9em padding around a 1.17em `h3`, and
+/// its hairline.
+const COLLAPSE_BUTTON: f32 = 51.27;
+const COLLAPSE_BODY_PADDING: f32 = 1.25 * theme::JF_FONT;
+
+/// A checkbox row, jellyfin-web's: a 27 px box with a 2 px border, accent
+/// with a white check when ticked, and the label. Lays out its 0.5em top
+/// margin (margins between rows collapse to one). Returns true when clicked.
 pub fn checkbox(ui: &mut Ui, label: &str, checked: bool, id: Id) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 31.5), Sense::hover());
+    ui.add_space(FORM_ROW_MARGIN);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CHECKBOX_ROW), Sense::hover());
     let response = ui.interact(rect, id, Sense::click());
     widgets::describe_button(&response, true, label);
-    let boxed = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(18.0, 18.0));
+    let boxed = Rect::from_min_size(pos2(rect.left(), rect.top() + 3.0), vec2(CHECKBOX, CHECKBOX));
+    let radius = 0.14 * theme::JF_FONT;
+    let focused = response.has_focus();
     if checked {
-        ui.painter().rect_filled(boxed, 2.0, theme::JF_ACCENT);
-        icons::paint_centered(
-            ui.painter(),
-            Icon::Check,
-            boxed.center(),
-            16.0,
-            Color32::WHITE,
-        );
+        ui.painter().rect_filled(boxed, radius, theme::JF_ACCENT);
+        widgets::border(ui.painter(), boxed, radius, 2.0, Color32::WHITE);
+        icons::paint_centered(ui.painter(), Icon::Check, boxed.center(), 1.6 * theme::JF_FONT, Color32::WHITE);
     } else {
-        let color = if response.hovered() {
-            theme::JF_ACCENT
-        } else {
-            theme::JF_TEXT_SECONDARY
-        };
-        ui.painter().rect_stroke(
-            boxed.shrink(1.0),
-            2.0,
-            egui::Stroke::new(2.0, color),
-            egui::StrokeKind::Inside,
-        );
+        let color = if focused { theme::JF_ACCENT } else { theme::JF_TEXT };
+        widgets::border(ui.painter(), boxed, radius, 2.0, color);
     }
-    ui.painter().text(
-        pos2(rect.left() + 28.0, rect.center().y),
-        Align2::LEFT_CENTER,
-        label,
-        theme::regular(theme::JF_FONT),
-        theme::JF_TEXT,
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::regular(theme::JF_FONT), theme::JF_TEXT);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        rect.left() + CHECKBOX_LABEL_LEFT,
+        layer_baseline(ui, rect.top() + 7.43, theme::JF_FONT, 1.35 * theme::JF_FONT),
+        galley,
     );
     widgets::pointer_on_hover(&response);
     response.clicked()
 }
 
-/// A collapsible section header: the title, a chevron, and a hairline under
-/// it. Returns whether it was clicked.
+/// A collapsible section header: the `h3` title, the expand chevron (turned
+/// over while open) and a hairline under it. Lays out its 0.5em top margin.
+/// Returns whether it was clicked.
 pub fn collapsible(ui: &mut Ui, title: &str, open: bool, id: Id) -> bool {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
+    ui.add_space(FORM_ROW_MARGIN);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), COLLAPSE_BUTTON), Sense::hover());
     let response = ui.interact(rect, id, Sense::click());
     widgets::describe_button(&response, true, title);
-    ui.painter().text(
-        pos2(rect.left(), rect.center().y),
-        Align2::LEFT_CENTER,
-        title,
-        theme::regular(theme::JF_FONT),
+    let size = 1.17 * theme::JF_FONT;
+    let galley = ui
+        .painter()
+        .layout_no_wrap(title.to_owned(), theme::regular(size), theme::JF_TEXT);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        rect.left() + 0.1 * theme::JF_FONT,
+        layer_baseline(ui, rect.top() + 0.9 * theme::JF_FONT, size, 23.48),
+        galley,
+    );
+    let icon = if open { Icon::ExpandLess } else { Icon::ExpandMore };
+    let icon_size = 1.36 * theme::JF_FONT;
+    icons::paint_centered(
+        ui.painter(),
+        icon,
+        pos2(rect.right() - 30.33 + icon_size / 2.0, rect.top() + 15.0 + icon_size / 2.0),
+        icon_size,
         theme::JF_TEXT,
     );
-    let chevron_center = pos2(rect.right() - 10.0, rect.center().y);
-    let icon = if open {
-        Icon::ExpandLess
-    } else {
-        Icon::ExpandMore
-    };
-    icons::paint_centered(ui.painter(), icon, chevron_center, 20.0, theme::JF_TEXT);
-    ui.painter().hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        egui::Stroke::new(1.33, Color32::from_white_alpha(34)),
+    ui.painter().rect_filled(
+        Rect::from_min_max(pos2(rect.left(), rect.bottom() - 1.0), rect.right_bottom()),
+        0.0,
+        Color32::from_white_alpha(34),
     );
     widgets::pointer_on_hover(&response);
     response.clicked()
 }
+
+/// An open section's body: #202020 behind `content`, with 1.25em padding.
+pub fn collapse_body<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
+    let background = ui.painter().add(egui::Shape::Noop);
+    let top = ui.cursor().top();
+    ui.add_space(COLLAPSE_BODY_PADDING);
+    let inner = ui
+        .scope_builder(
+            egui::UiBuilder::new().max_rect(Rect::from_min_max(
+                pos2(ui.max_rect().left() + COLLAPSE_BODY_PADDING, ui.cursor().top()),
+                pos2(ui.max_rect().right() - COLLAPSE_BODY_PADDING, f32::INFINITY),
+            )),
+            |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                let inner = content(ui);
+                ui.add_space(FORM_ROW_MARGIN);
+                inner
+            },
+        );
+    ui.add_space(COLLAPSE_BODY_PADDING);
+    let rect = Rect::from_min_max(
+        pos2(ui.max_rect().left(), top),
+        pos2(ui.max_rect().right(), inner.response.rect.bottom() + COLLAPSE_BODY_PADDING),
+    );
+    ui.painter().set(background, egui::Shape::rect_filled(rect, 0.0, Color32::from_gray(32)));
+    inner.inner
+}
+

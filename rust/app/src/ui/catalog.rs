@@ -498,7 +498,7 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let metrics = jf::header_metrics(screen.width());
     // The page scrollbar takes its width from the header and the page,
     // not from what media queries and `vw` lengths measure.
-    let page_width = screen.width() - scrollbar::reserved(ui);
+    let page_width = screen.width() - scrollbar::reserved(ui.ctx());
     let bar = Rect::from_min_size(screen.min, vec2(page_width, metrics.height));
     // Pages with tabs start their content at jellyfin-web's padding-top,
     // a little under the header (more on wide windows, where the tabs sit
@@ -1129,9 +1129,8 @@ fn draw_toolbar(
             "view" => actions.push(UiAction::GridDialog(Some(GridDialog::View))),
             "sort" => actions.push(UiAction::GridDialog(Some(GridDialog::Sort))),
             _ => {
-                actions.push(UiAction::GridDialog(Some(GridDialog::Filter(vec![
-                    "Filters",
-                ]))));
+                // Every section starts collapsed, as on jellyfin-web.
+                actions.push(UiAction::GridDialog(Some(GridDialog::Filter(Vec::new()))));
                 actions.push(UiAction::LoadFilterOptions);
             }
         }
@@ -1280,16 +1279,12 @@ fn draw_dialog(
                     checked: *view == grid.settings.view,
                 })
                 .collect::<Vec<_>>();
-            let selected = ViewMode::ALL
-                .iter()
-                .position(|view| *view == grid.settings.view)
-                .unwrap_or(0);
             let anchor = buttons.view.unwrap_or(Rect::from_min_size(
                 ui.max_rect().center(),
                 vec2(41.0, 41.0),
             ));
             let (picked, close) =
-                dialogs::action_sheet(&ctx, Id::new("grid-view-sheet"), anchor, &items, selected);
+                dialogs::action_sheet(&ctx, Id::new("grid-view-sheet"), anchor, &items, None);
             if let Some(index) = picked {
                 let mut next = grid.settings.clone();
                 next.view = ViewMode::ALL[index];
@@ -1300,58 +1295,97 @@ fn draw_dialog(
             }
         }
         GridDialog::Sort => {
-            let ((), close) = dialogs::modal(&ctx, Id::new("grid-sort"), 199.0, None, |ui| {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(22, 12))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                        dialogs::heading(ui, "Sort By");
-                        for sort in grid.kind.sorts() {
-                            let selected = sort.value == grid.settings.sort;
-                            if dialogs::radio(
-                                ui,
-                                sort.label,
-                                selected,
-                                Id::new(("sort-by", sort.value)),
-                            ) && !selected
-                            {
-                                let mut next = grid.settings.clone();
-                                next.sort = sort.value.to_owned();
-                                actions.push(UiAction::GridSettings(next));
-                            }
-                        }
-                        ui.add_space(12.0);
-                        dialogs::heading(ui, "Sort Order");
-                        for (label, descending) in [("Ascending", false), ("Descending", true)] {
-                            let selected = grid.settings.descending == descending;
-                            if dialogs::radio(ui, label, selected, Id::new(("sort-order", label)))
-                                && !selected
-                            {
-                                let mut next = grid.settings.clone();
-                                next.descending = descending;
-                                actions.push(UiAction::GridSettings(next));
-                            }
-                        }
-                    });
+            // jellyfin-web's sort menu: "Sort By" radios, then "Sort Order".
+            let sorts = grid.kind.sorts();
+            let orders = [("Ascending", false), ("Descending", true)];
+            let widest = dialogs::widest_label(
+                &ctx,
+                sorts.iter().map(|sort| sort.label).chain(orders.iter().map(|order| order.0)),
+            );
+            let content_width = dialogs::FORM_LABEL_LEFT + widest;
+            let pitch = dialogs::FORM_ROW + dialogs::FORM_ROW_MARGIN;
+            let section = |rows: usize| dialogs::FORM_HEADING + 11.16 + rows as f32 * pitch - dialogs::FORM_ROW_MARGIN;
+            let height = 18.6 + section(sorts.len()) + 22.32 + section(orders.len()) + dialogs::FORM_ROW_MARGIN + 22.32;
+            let id = Id::new("grid-sort");
+            dialogs::autofocus(&ctx, id, id.with(("sort-by", 0)), true);
+            let (next, close) = dialogs::panel(&ctx, id, vec2(content_width + 44.64, height), None, |ui, rect| {
+                let left = rect.left() + 22.32;
+                let row = |top: f32| Rect::from_min_size(pos2(left, top), vec2(content_width, dialogs::FORM_ROW));
+                let mut next = None;
+                let mut y = rect.top() + 18.6;
+                dialogs::form_heading(ui, left, y, "Sort By");
+                y += dialogs::FORM_HEADING + 11.16;
+                for (index, sort) in sorts.iter().enumerate() {
+                    let selected = sort.value == grid.settings.sort;
+                    if dialogs::form_radio(ui, row(y), sort.label, selected, id.with(("sort-by", index))) && !selected {
+                        let mut settings = grid.settings.clone();
+                        settings.sort = sort.value.to_owned();
+                        next = Some(settings);
+                    }
+                    y += pitch;
+                }
+                y += 22.32 - dialogs::FORM_ROW_MARGIN;
+                dialogs::form_heading(ui, left, y, "Sort Order");
+                y += dialogs::FORM_HEADING + 11.16;
+                for (label, descending) in orders {
+                    let selected = grid.settings.descending == descending;
+                    if dialogs::form_radio(ui, row(y), label, selected, id.with(("sort-order", label))) && !selected {
+                        let mut settings = grid.settings.clone();
+                        settings.descending = descending;
+                        next = Some(settings);
+                    }
+                    y += pitch;
+                }
+                next
             });
+            if let Some(next) = next {
+                actions.push(UiAction::GridSettings(next));
+            }
             if close {
+                dialogs::autofocus(&ctx, id, Id::NULL, false);
                 state.catalog.dialog = None;
             }
         }
         GridDialog::Filter(expanded) => {
             let options = state.catalog.filter_options.clone().unwrap_or_default();
-            // jellyfin-web's filter dialog keeps one height as sections open.
-            let height = Some(ui.ctx().content_rect().height() * 0.65);
-            let (toggled, close) =
-                dialogs::modal(&ctx, Id::new("grid-filter"), 300.0, height, |ui| {
-                    egui::Frame::new()
-                        .inner_margin(egui::Margin::symmetric(29, 16))
-                        .show(ui, |ui| {
+            // jellyfin-web's filter dialog: 300 px wide, 65% of the window
+            // tall and 10% from its top, scrolling inside as sections open.
+            let screen = ui.ctx().content_rect();
+            let id = Id::new("grid-filter");
+            let (toggled, close) = dialogs::panel(
+                &ctx,
+                id,
+                vec2(299.97, screen.height() * 0.65),
+                Some(screen.height() * 0.1),
+                |ui, rect| {
+                    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                    egui::ScrollArea::vertical()
+                        .id_salt(id.with("scroll"))
+                        .auto_shrink([false, false])
+                        .show(&mut ui, |ui| {
                             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                            filter_sections(ui, grid, &options, &expanded, actions)
+                            // egui starts scrolled content on a whole device
+                            // pixel; Chrome keeps the fractional top.
+                            let pixels = ui.ctx().pixels_per_point();
+                            let snapped = (rect.top() * pixels).round() / pixels;
+                            ui.add_space(22.32 - (snapped - rect.top()));
+                            let toggled = ui
+                                .horizontal(|ui| {
+                                    ui.add_space(29.76);
+                                    ui.vertical(|ui| {
+                                        ui.set_width(rect.width() - 2.0 * 29.76);
+                                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                                        filter_sections(ui, grid, &options, &expanded, actions)
+                                    })
+                                    .inner
+                                })
+                                .inner;
+                            ui.add_space(dialogs::FORM_ROW_MARGIN + 22.32);
+                            toggled
                         })
                         .inner
-                });
+                },
+            );
             if close {
                 state.catalog.dialog = None;
             } else if let Some(section) = toggled {
@@ -1388,79 +1422,95 @@ fn filter_sections(
         _ => &StatusFilter::ALL,
     };
     if section_header(ui, "Filters", expanded, &mut toggled) {
-        for status in statuses {
-            if checkbox_row(
-                ui,
-                "status",
-                status.label(),
-                filters.status.contains(status),
-            ) {
-                toggle(&mut next.filters.status, *status);
+        dialogs::collapse_body(ui, |ui| {
+            for status in statuses {
+                if checkbox_row(
+                    ui,
+                    "status",
+                    status.label(),
+                    filters.status.contains(status),
+                ) {
+                    toggle(&mut next.filters.status, *status);
+                }
             }
-        }
+        });
     }
     if grid.kind == GridKind::Shows && section_header(ui, "Status", expanded, &mut toggled) {
-        for status in SeriesStatus::ALL {
-            let checked = filters.series_status.contains(&status);
-            if checkbox_row(ui, "series", status.label(), checked) {
-                toggle(&mut next.filters.series_status, status);
+        dialogs::collapse_body(ui, |ui| {
+            for status in SeriesStatus::ALL {
+                let checked = filters.series_status.contains(&status);
+                if checkbox_row(ui, "series", status.label(), checked) {
+                    toggle(&mut next.filters.series_status, status);
+                }
             }
-        }
+        });
     }
     if section_header(ui, "Features", expanded, &mut toggled) {
-        for feature in Feature::ALL {
-            if checkbox_row(
-                ui,
-                "feature",
-                feature.label(),
-                filters.features.contains(&feature),
-            ) {
-                toggle(&mut next.filters.features, feature);
+        dialogs::collapse_body(ui, |ui| {
+            for feature in Feature::ALL {
+                if checkbox_row(
+                    ui,
+                    "feature",
+                    feature.label(),
+                    filters.features.contains(&feature),
+                ) {
+                    toggle(&mut next.filters.features, feature);
+                }
             }
-        }
+        });
     }
     if section_header(ui, "Genres", expanded, &mut toggled) {
-        for value in values_or_none(ui, &options.genres) {
-            if checkbox_row(ui, "genre", value, filters.genres.contains(value)) {
-                toggle(&mut next.filters.genres, value.clone());
+        dialogs::collapse_body(ui, |ui| {
+            for value in values_or_none(ui, &options.genres) {
+                if checkbox_row(ui, "genre", value, filters.genres.contains(value)) {
+                    toggle(&mut next.filters.genres, value.clone());
+                }
             }
-        }
+        });
     }
     if section_header(ui, "Parental Ratings", expanded, &mut toggled) {
-        for value in values_or_none(ui, &options.ratings) {
-            if checkbox_row(ui, "rating", value, filters.ratings.contains(value)) {
-                toggle(&mut next.filters.ratings, value.clone());
+        dialogs::collapse_body(ui, |ui| {
+            for value in values_or_none(ui, &options.ratings) {
+                if checkbox_row(ui, "rating", value, filters.ratings.contains(value)) {
+                    toggle(&mut next.filters.ratings, value.clone());
+                }
             }
-        }
+        });
     }
     if section_header(ui, "Tags", expanded, &mut toggled) {
-        for value in values_or_none(ui, &options.tags) {
-            if checkbox_row(ui, "tag", value, filters.tags.contains(value)) {
-                toggle(&mut next.filters.tags, value.clone());
+        dialogs::collapse_body(ui, |ui| {
+            for value in values_or_none(ui, &options.tags) {
+                if checkbox_row(ui, "tag", value, filters.tags.contains(value)) {
+                    toggle(&mut next.filters.tags, value.clone());
+                }
             }
-        }
+        });
     }
     if matches!(
         grid.kind,
         GridKind::Movies | GridKind::Episodes | GridKind::Folder
     ) && section_header(ui, "Video Types", expanded, &mut toggled)
     {
-        for video_type in VideoType::ALL {
-            let checked = filters.video_types.contains(&video_type);
-            if checkbox_row(ui, "video", video_type.label(), checked) {
-                toggle(&mut next.filters.video_types, video_type);
+        dialogs::collapse_body(ui, |ui| {
+            for video_type in VideoType::ALL {
+                let checked = filters.video_types.contains(&video_type);
+                if checkbox_row(ui, "video", video_type.label(), checked) {
+                    toggle(&mut next.filters.video_types, video_type);
+                }
             }
-        }
+        });
     }
     if section_header(ui, "Years", expanded, &mut toggled) {
-        if options.years.is_empty() {
-            values_or_none(ui, &[]);
-        }
-        for year in &options.years {
-            if checkbox_row(ui, "year", &year.to_string(), filters.years.contains(year)) {
-                toggle(&mut next.filters.years, *year);
+        dialogs::collapse_body(ui, |ui| {
+            if options.years.is_empty() {
+                values_or_none(ui, &[]);
             }
-        }
+            for year in &options.years {
+                if checkbox_row(ui, "year", &year.to_string(), filters.years.contains(year)) {
+                    toggle(&mut next.filters.years, *year);
+                }
+            }
+        });
     }
     if next != grid.settings {
         actions.push(UiAction::GridSettings(next));
@@ -1478,9 +1528,6 @@ fn section_header(
     let open = expanded.contains(&title);
     if dialogs::collapsible(ui, title, open, Id::new(("filter-section", title))) {
         *toggled = Some(title);
-    }
-    if open {
-        ui.add_space(6.0);
     }
     open
 }

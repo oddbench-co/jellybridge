@@ -947,7 +947,7 @@ fn draw_select_sheet(ui: &Ui, vm: &mut SettingsVm) {
         Id::new("settings-select-sheet"),
         anchor,
         &items,
-        selected,
+        Some(selected),
     );
     if let Some(index) = picked {
         vm.values

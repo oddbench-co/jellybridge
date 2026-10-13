@@ -625,7 +625,7 @@ impl Layout {
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
     ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
-    let page_width = screen.width() - scrollbar::reserved(ui);
+    let page_width = screen.width() - scrollbar::reserved(ui.ctx());
     let page = Rect::from_min_size(screen.min, vec2(page_width, screen.height()));
     let bar = Rect::from_min_size(screen.min, vec2(page_width, top_bar::HEIGHT));
     if state.busy {
@@ -1595,7 +1595,7 @@ fn track_select(
             })
             .collect::<Vec<_>>();
         let (choice, close) =
-            super::dialogs::action_sheet(ui.ctx(), id.with("sheet"), field, &items, selected);
+            super::dialogs::action_sheet(ui.ctx(), id.with("sheet"), field, &items, Some(selected));
         if let Some(choice) = choice {
             picked = (choice != selected).then(|| i32::try_from(choice).unwrap_or(0));
             open = false;
