@@ -6,6 +6,7 @@ use super::app::UiAction;
 use super::icons::{self, Icon};
 use super::images::{Art, ImageCache};
 use super::jf::{self, CardModel, Shape};
+use super::scrollbar;
 use super::top_bar;
 use super::widgets::{self, Shelf};
 use super::{Screen, UiState, detail_art, primary_card_image, theme};
@@ -25,19 +26,25 @@ pub struct DetailVm {
     pub title: String,
     pub heading: String,
     pub subheading: String,
-    pub tags: String,
+    pub tags: Vec<String>,
     pub links: Vec<(String, String)>,
-    pub director: String,
-    pub writers: String,
+    /// Genres, Director, Writers, Studios: each name links to its page.
+    pub credits: Vec<(&'static str, Vec<CreditLink>)>,
+    /// Which item types a genre or studio link lists ("Movie", "Series").
+    pub link_types: String,
+    /// A person's Born / Died / Birth place rows.
+    pub person_rows: Vec<(&'static str, String)>,
     pub overview: String,
     pub artwork: Option<Art>,
     pub backdrop: Option<Art>,
     pub logo: Option<Art>,
     pub kind: Option<DetailKind>,
     pub tagline: String,
-    pub genres: String,
-    pub studios: String,
     pub media_info: String,
+    /// Jellyfin's type name, for the item menu.
+    pub kind_name: &'static str,
+    /// Filmography, collection contents, or a playlist's entries.
+    pub sections: Vec<SectionVm>,
     pub series_id: String,
     pub season_id: String,
     pub season_name: String,
@@ -73,6 +80,21 @@ pub enum MiscItem {
     Critic(i32),
 }
 
+/// A name in a credit row and where it leads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreditLink {
+    pub name: String,
+    pub target: Option<crate::features::items::LinkTarget>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionVm {
+    pub title: String,
+    pub wide: bool,
+    pub list: bool,
+    pub cards: Vec<DetailCard>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailCard {
     pub id: String,
@@ -88,10 +110,15 @@ pub struct DetailCard {
     pub rating: f32,
     pub ends_at: String,
     pub index_label: String,
+    pub series_id: Option<String>,
+    pub season_id: Option<String>,
+    /// The entry's id within a playlist.
+    pub playlist_entry: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailPerson {
+    pub id: Option<String>,
     pub name: String,
     pub role: String,
     pub art: Option<Art>,
@@ -202,10 +229,11 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         title: item.title.clone(),
         heading,
         subheading,
-        tags: item.tags.join(", "),
+        tags: item.tags.clone(),
         links: item.external_urls.clone(),
-        director: item.directors.join(", "),
-        writers: item.writers.join(", "),
+        credits: credit_rows(item),
+        link_types: link_types(item.kind).to_owned(),
+        person_rows: person_rows(item),
         overview: item.overview.clone(),
         // The hero poster asks for a still-sized thumbnail on episode pages.
         artwork: primary_card_image(item).map(|image| {
@@ -222,9 +250,39 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         logo: item.logo.as_ref().map(|image| detail_art(image, 600)),
         kind: Some(item.kind),
         tagline: item.tagline.clone(),
-        genres: item.genres.join(" • "),
-        studios: item.studios.join(" • "),
         media_info: item.media_summary.clone(),
+        kind_name: detail_kind_name(item.kind),
+        sections: page
+            .sections
+            .iter()
+            .map(|section| SectionVm {
+                title: section.title.clone(),
+                wide: section.wide,
+                list: section.list,
+                cards: section
+                    .items
+                    .iter()
+                    .map(|item| {
+                        let mut card = to_detail_card(item, 900);
+                        if !section.list && item.kind == DetailKind::Episode {
+                            // jellyfin-web's episode card away from its
+                            // season: the show, then "S1:E10 - Title".
+                            card.title = item.series_name.clone().unwrap_or_default();
+                            card.index_label.clear();
+                            card.subtitle = format!("{} {}", next_up_label(item), item.title)
+                                .trim()
+                                .to_owned();
+                        } else if !section.list {
+                            card.subtitle = item
+                                .production_year
+                                .map(|year| year.to_string())
+                                .unwrap_or_default();
+                        }
+                        card
+                    })
+                    .collect(),
+            })
+            .collect(),
         series_id: item.series_id.clone().unwrap_or_default(),
         season_id: episode_page
             .then(|| item.season_id.clone())
@@ -235,7 +293,13 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
             .flatten()
             .unwrap_or_default(),
         progress: progress_item.progress,
-        playable: item.playable || !page.episodes.is_empty(),
+        playable: item.kind != DetailKind::Person
+            && (item.playable
+                || !page.episodes.is_empty()
+                || page
+                    .sections
+                    .iter()
+                    .any(|section| !section.items.is_empty())),
         watched: item.watched,
         favorite: item.favorite,
         seasons: page
@@ -333,6 +397,106 @@ fn misc_items(page: &DetailPageData) -> Vec<MiscItem> {
     misc
 }
 
+/// The item types a genre or studio link on this page lists.
+fn link_types(kind: DetailKind) -> &'static str {
+    match kind {
+        DetailKind::Series | DetailKind::Season | DetailKind::Episode => "Series",
+        DetailKind::Movie => "Movie",
+        _ => "Movie,Series",
+    }
+}
+
+/// jellyfin-web's label/value credit rows, each name a link.
+fn credit_rows(item: &DetailItemData) -> Vec<(&'static str, Vec<CreditLink>)> {
+    use crate::features::items::LinkTarget;
+    let types = link_types(item.kind);
+    let links = |names: &[crate::features::detail::NamedId],
+                 make: &dyn Fn(String, String) -> LinkTarget| {
+        names
+            .iter()
+            .map(|named| CreditLink {
+                name: named.name.clone(),
+                target: named.id.clone().map(|id| make(id, named.name.clone())),
+            })
+            .collect::<Vec<_>>()
+    };
+    let genre = |id, name| LinkTarget::Genre {
+        id,
+        name,
+        item_types: types.to_owned(),
+    };
+    let studio = |id, name| LinkTarget::Studio {
+        id,
+        name,
+        item_types: types.to_owned(),
+    };
+    let person = |id, _name| LinkTarget::Person(id);
+    [
+        ("Genres", links(&item.genres, &genre)),
+        ("Director", links(&item.directors, &person)),
+        ("Writers", links(&item.writers, &person)),
+        ("Studios", links(&item.studios, &studio)),
+    ]
+    .into_iter()
+    .filter(|(_, links)| !links.is_empty())
+    .collect()
+}
+
+/// A person's "Born", "Died" and "Birth place" rows.
+fn person_rows(item: &DetailItemData) -> Vec<(&'static str, String)> {
+    if item.kind != DetailKind::Person {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    if let Some(born) = item.premiere_date {
+        let age = age_in_years(born, item.end_date.unwrap_or_else(today));
+        let text = if item.end_date.is_some() {
+            format_short_date(born)
+        } else {
+            format!("{} ({age} years old)", format_short_date(born))
+        };
+        rows.push(("Born", text));
+    }
+    if let Some(died) = item.end_date {
+        let age = item.premiere_date.map(|born| age_in_years(born, died));
+        rows.push((
+            "Died",
+            match age {
+                Some(age) => format!("{} ({age} years old)", format_short_date(died)),
+                None => format_short_date(died),
+            },
+        ));
+    }
+    if let Some(place) = item.birth_place.clone().filter(|place| !place.is_empty()) {
+        rows.push(("Birth place", place));
+    }
+    rows
+}
+
+/// "11/30/1965", as jellyfin-web writes dates in the en-US locale.
+fn format_short_date((year, month, day): (i32, u32, u32)) -> String {
+    format!("{month}/{day}/{year}")
+}
+
+fn age_in_years(born: (i32, u32, u32), at: (i32, u32, u32)) -> i32 {
+    let birthday_passed = (at.1, at.2) >= (born.1, born.2);
+    at.0 - born.0 - i32::from(!birthday_passed)
+}
+
+/// Today's date in local time.
+fn today() -> (i32, u32, u32) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    // libc::localtime_r fills the struct from the epoch in local time.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let time: libc::time_t = now;
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return (1970, 1, 1);
+    }
+    (tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32)
+}
+
 /// `thumb_width` is the size asked for when the card art is a 16:9 still.
 fn to_detail_card(item: &DetailItemData, thumb_width: u32) -> DetailCard {
     let index_label = (item.kind == DetailKind::Episode)
@@ -363,6 +527,9 @@ fn to_detail_card(item: &DetailItemData, thumb_width: u32) -> DetailCard {
         rating: item.community_rating.unwrap_or(0.0),
         ends_at: ends_at_label(item),
         index_label,
+        series_id: item.series_id.clone(),
+        season_id: item.season_id.clone(),
+        playlist_entry: item.playlist_item_id.clone(),
     }
 }
 
@@ -376,6 +543,7 @@ fn to_next_up_card(item: &DetailItemData) -> DetailCard {
 
 fn to_detail_person(person: &PersonData) -> DetailPerson {
     DetailPerson {
+        id: person.id.clone(),
         name: person.name.clone(),
         role: person.role.clone(),
         art: person.image.as_ref().map(|image| detail_art(image, 320)),
@@ -405,16 +573,22 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(width: f32, height: f32, kind: Option<DetailKind>) -> Self {
+    fn new(width: f32, height: f32, kind: Option<DetailKind>, backdrop: bool) -> Self {
         let poster_width = width * 0.25;
-        let ratio = if kind == Some(DetailKind::Episode) {
-            9.0 / 16.0
-        } else {
-            1.5
+        let ratio = match kind {
+            Some(DetailKind::Episode | DetailKind::Video) => 9.0 / 16.0,
+            Some(DetailKind::Playlist) => 1.0,
+            _ => 1.5,
         };
         Self {
             width,
-            backdrop_height: (height * 0.4).max(RIBBON_HEIGHT + 120.0),
+            // Without a backdrop jellyfin-web puts the ribbon right under
+            // the header.
+            backdrop_height: if backdrop {
+                (height * 0.4).max(RIBBON_HEIGHT + 120.0)
+            } else {
+                top_bar::HEIGHT + 30.0 + RIBBON_HEIGHT
+            },
             padding: jf::page_padding(width),
             poster: vec2(poster_width, poster_width * ratio),
             content_left: width * 0.3245,
@@ -433,7 +607,8 @@ impl Layout {
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
     ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
-    let bar = Rect::from_min_size(screen.min, vec2(screen.width(), top_bar::HEIGHT));
+    let page_width = screen.width() - scrollbar::reserved(ui);
+    let bar = Rect::from_min_size(screen.min, vec2(page_width, top_bar::HEIGHT));
     if state.busy {
         ui.put(
             Rect::from_center_size(screen.center(), vec2(56.0, 56.0)),
@@ -442,10 +617,17 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         top_bar::draw(ui, state, bar, actions);
         return;
     }
-    let layout = Layout::new(screen.width(), screen.height(), state.detail.kind);
-    let mut page_ui = widgets::clipped_child(ui, screen);
-    ScrollArea::vertical()
+    let layout = Layout::new(
+        page_width,
+        screen.height(),
+        state.detail.kind,
+        state.detail.backdrop.is_some(),
+    );
+    let page = Rect::from_min_size(screen.min, vec2(page_width, screen.height()));
+    let mut page_ui = widgets::clipped_child(ui, page);
+    let output = ScrollArea::vertical()
         .id_salt(("detail-page", state.detail.id.as_str()))
+        .scroll_bar_visibility(scrollbar::HIDDEN)
         .auto_shrink(false)
         .show(&mut page_ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -460,6 +642,7 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             ui.allocate_exact_size(vec2(layout.width, 40.0), Sense::hover());
             draw_poster(ui, state, &layout, page_top);
         });
+    scrollbar::draw(&mut page_ui, &output);
     // The header floats over the backdrop, translucent.
     top_bar::draw(ui, state, bar, actions);
 }
@@ -530,7 +713,8 @@ fn draw_ribbon(
     let resumable = detail.playable
         && detail.progress > 0.0
         && detail.progress < 1.0
-        && !matches!(detail.kind, Some(DetailKind::Series | DetailKind::Season));
+        && detail.kind.is_some_and(DetailKind::is_video);
+    let kind = detail.kind.unwrap_or(DetailKind::Other);
     let mut buttons: Vec<(Icon, &str, Color32, &str)> = Vec::new();
     if detail.playable {
         buttons.push((
@@ -547,21 +731,29 @@ fn draw_ribbon(
                 "restart",
             ));
         }
+        if matches!(
+            kind,
+            DetailKind::Series | DetailKind::Season | DetailKind::BoxSet | DetailKind::Playlist
+        ) {
+            buttons.push((Icon::Shuffle, "Shuffle", Color32::WHITE, "shuffle"));
+        }
     }
-    buttons.push((
-        Icon::Check,
-        if detail.watched {
-            "Mark unplayed"
-        } else {
-            "Mark played"
-        },
-        if detail.watched {
-            theme::JF_PLAYED_RED
-        } else {
-            Color32::WHITE
-        },
-        "played",
-    ));
+    if !matches!(kind, DetailKind::Person | DetailKind::Playlist) {
+        buttons.push((
+            Icon::Check,
+            if detail.watched {
+                "Mark unplayed"
+            } else {
+                "Mark played"
+            },
+            if detail.watched {
+                theme::JF_PLAYED_RED
+            } else {
+                Color32::WHITE
+            },
+            "played",
+        ));
+    }
     buttons.push((
         Icon::Favorite,
         if detail.favorite {
@@ -576,6 +768,18 @@ fn draw_ribbon(
         },
         "favorite",
     ));
+    let menu = super::menu::MenuRequest {
+        item_id: detail.id.clone(),
+        name: detail.title.clone(),
+        kind: detail.kind_name.to_owned(),
+        series_id: None,
+        season_id: None,
+        anchor: Rect::NOTHING,
+        origin: super::menu::MenuOrigin::Detail,
+    };
+    if !super::menu::menu_commands(&menu).is_empty() {
+        buttons.push((Icon::MoreVert, "More", Color32::WHITE, "more"));
+    }
     let buttons_width = buttons.len() as f32 * 49.0;
     let mut x = ribbon.right() - layout.padding - buttons_width;
     let text_right = x - 16.0;
@@ -597,20 +801,34 @@ fn draw_ribbon(
             Id::new(("detail-action", name)),
         )
         .clicked();
-        if clicked {
-            actions.push(match name {
-                "play" => UiAction::PlayCurrent { from_start: false },
-                "restart" => UiAction::PlayCurrent { from_start: true },
-                "played" => UiAction::SetWatched {
-                    id: detail.id.clone(),
-                    watched: !detail.watched,
-                },
-                _ => UiAction::SetFavorite {
-                    id: detail.id.clone(),
-                    favorite: !detail.favorite,
-                },
-            });
+        if !clicked {
+            continue;
         }
+        let queue = matches!(kind, DetailKind::BoxSet | DetailKind::Playlist);
+        actions.push(match name {
+            "play" if queue => UiAction::PlayQueue {
+                source: crate::features::items::queue_source(detail.kind_name, &detail.id),
+                shuffle: false,
+            },
+            "play" => UiAction::PlayCurrent { from_start: false },
+            "restart" => UiAction::PlayCurrent { from_start: true },
+            "shuffle" => UiAction::PlayQueue {
+                source: crate::features::items::queue_source(detail.kind_name, &detail.id),
+                shuffle: true,
+            },
+            "played" => UiAction::SetWatched {
+                id: detail.id.clone(),
+                watched: !detail.watched,
+            },
+            "more" => UiAction::OpenMenu(Box::new(super::menu::MenuRequest {
+                anchor: rect,
+                ..menu.clone()
+            })),
+            _ => UiAction::SetFavorite {
+                id: detail.id.clone(),
+                favorite: !detail.favorite,
+            },
+        });
     }
 
     // Title block, vertically centred in the ribbon.
@@ -913,31 +1131,115 @@ fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Ve
         );
     }
     if !detail.overview.is_empty() {
-        paragraph(
+        // jellyfin-web shows five lines and a "Show more" under long text.
+        let expanded_id = Id::new(("detail-overview-expanded", detail.id.as_str()));
+        let expanded = ui
+            .ctx()
+            .data(|data| data.get_temp::<bool>(expanded_id))
+            .unwrap_or(false);
+        let full = widgets::wrapped(
             ui,
             &detail.overview,
             theme::regular(theme::JF_FONT),
             theme::JF_TEXT,
-            &mut gap,
+            width,
+            None,
         );
+        let long = full.rows.len() > 5;
+        let galley = if long && !expanded {
+            widgets::wrapped(
+                ui,
+                &detail.overview,
+                theme::regular(theme::JF_FONT),
+                theme::JF_TEXT,
+                width,
+                Some(5),
+            )
+        } else {
+            full
+        };
+        let rect = row(ui, galley.size().y, gap);
+        ui.painter().galley(rect.min, galley, Color32::WHITE);
+        gap = 18.0;
+        if long {
+            let text = if expanded { "Show less" } else { "Show more" };
+            let galley =
+                widgets::elided(ui, text, theme::bold(theme::JF_FONT), theme::JF_TEXT, width);
+            let rect = row(ui, galley.size().y + 12.0, 6.0);
+            let button = Rect::from_min_size(
+                pos2(rect.right() - galley.size().x - 8.0, rect.top()),
+                galley.size() + vec2(8.0, 12.0),
+            );
+            let response = ui.interact(button, expanded_id.with("button"), Sense::click());
+            widgets::describe_button(&response, true, text);
+            ui.painter()
+                .galley(button.min + vec2(4.0, 6.0), galley, Color32::WHITE);
+            widgets::pointer_on_hover(&response);
+            if response.clicked() {
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(expanded_id, !expanded));
+            }
+        }
     }
-    if !detail.tags.is_empty() {
-        // "Tags:" then the tags in bold, as jellyfin-web lists them.
+    for (label, value) in &detail.person_rows {
+        let rect = row(ui, 24.0, gap.max(8.0));
+        gap = 0.0;
         let mut job = egui::text::LayoutJob::default();
-        job.wrap.max_width = width;
         job.append(
-            "Tags: ",
+            &format!("{label}: "),
             0.0,
-            egui::TextFormat::simple(theme::regular(theme::JF_FONT_SMALL), theme::JF_TEXT),
+            egui::TextFormat::simple(theme::regular(theme::JF_FONT), theme::JF_TEXT_SECONDARY),
         );
+        let bold = *label == "Birth place";
         job.append(
-            &detail.tags,
+            value,
             0.0,
-            egui::TextFormat::simple(theme::bold(theme::JF_FONT_SMALL), theme::JF_TEXT),
+            egui::TextFormat::simple(
+                if bold {
+                    theme::bold(theme::JF_FONT)
+                } else {
+                    theme::regular(theme::JF_FONT)
+                },
+                if bold {
+                    Color32::WHITE
+                } else {
+                    theme::JF_TEXT_SECONDARY
+                },
+            ),
         );
         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-        let rect = row(ui, galley.size().y, gap.max(12.0));
-        ui.painter().galley(rect.min, galley, Color32::WHITE);
+        widgets::galley_v_centered(ui.painter(), rect.left(), rect.center().y, galley);
+        if !detail.person_rows.is_empty() {
+            gap = 0.0;
+        }
+    }
+    if !detail.person_rows.is_empty() {
+        gap = 12.0;
+    }
+    if !detail.tags.is_empty() {
+        // "Tags:" then each tag in bold, linking to everything with it.
+        let tags = detail
+            .tags
+            .iter()
+            .map(|tag| CreditLink {
+                name: tag.clone(),
+                target: Some(crate::features::items::LinkTarget::Tag {
+                    name: tag.clone(),
+                    item_types: detail.link_types.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        let height = link_flow_height(ui, &tags, theme::JF_FONT_SMALL, width, "Tags: ");
+        let rect = row(ui, height, gap.max(12.0));
+        draw_link_flow(
+            ui,
+            rect,
+            &tags,
+            theme::JF_FONT_SMALL,
+            "Tags: ",
+            "detail-tag",
+            actions,
+        );
         gap = 8.0;
     }
     if !detail.links.is_empty() {
@@ -980,38 +1282,110 @@ fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Ve
         }
         gap = 18.0;
     }
-    let credits = [
-        ("Genres", &detail.genres),
-        ("Director", &detail.director),
-        ("Writers", &detail.writers),
-        ("Studios", &detail.studios),
-    ];
-    for (title, value) in credits {
-        if value.is_empty() {
-            continue;
-        }
-        let value = value.replace(" • ", ", ");
-        let galley = widgets::wrapped(
-            ui,
-            &value,
-            theme::bold(theme::JF_FONT),
-            theme::JF_TEXT,
-            (width - LABEL_WIDTH).min(450.0),
-            None,
-        );
-        let rect = row(ui, galley.size().y + 7.3, gap);
+    let value_width = (width - LABEL_WIDTH).min(450.0);
+    for (title, links) in &detail.credits {
+        let height = link_flow_height(ui, links, theme::JF_FONT, value_width, "");
+        let rect = row(ui, height + 7.3, gap);
         gap = 0.0;
         ui.painter().text(
             rect.min,
             Align2::LEFT_TOP,
-            title,
+            *title,
             theme::regular(theme::JF_FONT),
             theme::JF_TEXT,
         );
-        ui.painter()
-            .galley(rect.min + vec2(LABEL_WIDTH, 0.0), galley, Color32::WHITE);
+        let values =
+            Rect::from_min_size(rect.min + vec2(LABEL_WIDTH, 0.0), vec2(value_width, height));
+        draw_link_flow(ui, values, links, theme::JF_FONT, "", title, actions);
     }
     ui.allocate_exact_size(vec2(layout.width, 20.0), Sense::hover());
+}
+
+/// Lays out `prefix` then the names, comma separated, bold, wrapping at
+/// `width`: (position, size, index) for each name, and the total height.
+fn link_flow_layout(
+    ui: &Ui,
+    links: &[CreditLink],
+    size: f32,
+    width: f32,
+    prefix: &str,
+) -> (Vec<(egui::Pos2, egui::Vec2)>, f32) {
+    let line = size * 1.45;
+    let prefix_width = if prefix.is_empty() {
+        0.0
+    } else {
+        widgets::text_width(ui, prefix, theme::regular(size))
+    };
+    let mut x = prefix_width;
+    let mut y = 0.0;
+    let mut placed = Vec::with_capacity(links.len());
+    for (index, link) in links.iter().enumerate() {
+        let text = if index + 1 < links.len() {
+            format!("{},", link.name)
+        } else {
+            link.name.clone()
+        };
+        let text_width = widgets::text_width(ui, &text, theme::bold(size)).min(width);
+        if x > 0.0 && x + text_width > width {
+            x = 0.0;
+            y += line;
+        }
+        placed.push((pos2(x, y), vec2(text_width, line)));
+        x += text_width + size * 0.3;
+    }
+    (placed, y + line)
+}
+
+fn link_flow_height(ui: &Ui, links: &[CreditLink], size: f32, width: f32, prefix: &str) -> f32 {
+    link_flow_layout(ui, links, size, width, prefix).1
+}
+
+/// Draws a link flow in `rect`; a clicked name becomes an `OpenLink`.
+fn draw_link_flow(
+    ui: &mut Ui,
+    rect: Rect,
+    links: &[CreditLink],
+    size: f32,
+    prefix: &str,
+    id: &str,
+    actions: &mut Vec<UiAction>,
+) {
+    let (placed, _) = link_flow_layout(ui, links, size, rect.width(), prefix);
+    if !prefix.is_empty() {
+        ui.painter().text(
+            rect.min,
+            Align2::LEFT_TOP,
+            prefix,
+            theme::regular(size),
+            theme::JF_TEXT,
+        );
+    }
+    for (index, (link, (offset, extent))) in links.iter().zip(placed).enumerate() {
+        let area = Rect::from_min_size(rect.min + offset.to_vec2(), extent);
+        let text = if index + 1 < links.len() {
+            format!("{},", link.name)
+        } else {
+            link.name.clone()
+        };
+        let color = match &link.target {
+            Some(target) => {
+                let response = ui.interact(area, Id::new((id, index)), Sense::click());
+                widgets::describe_button(&response, true, &link.name);
+                widgets::pointer_on_hover(&response);
+                if response.clicked() {
+                    actions.push(UiAction::OpenLink(target.clone()));
+                }
+                if response.hovered() {
+                    theme::JF_ACCENT
+                } else {
+                    Color32::WHITE
+                }
+            }
+            None => Color32::WHITE,
+        };
+        let galley = widgets::elided(ui, &text, theme::bold(size), color, area.width() + 1.0);
+        ui.painter().galley(area.min, galley, color);
+    }
 }
 
 /// jellyfin-web's select: a `#292929` field with a chevron, opening a list.
@@ -1120,8 +1494,53 @@ fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut
         }
         _ => {}
     }
-    shelf.people(ui, images, "Cast & Crew", &detail.people, &detail.id);
-    shelf.people(ui, images, "Guest Stars", &detail.guest_stars, &detail.id);
+    for section in &detail.sections {
+        if section.list {
+            let origin = |card: &DetailCard| super::menu::MenuOrigin::PlaylistEntry {
+                playlist_id: detail.id.clone(),
+                entry_id: card.playlist_entry.clone().unwrap_or_default(),
+            };
+            draw_rows(
+                ui,
+                images,
+                &section.cards,
+                state.busy,
+                layout,
+                &origin,
+                actions,
+            );
+        } else {
+            shelf.wrapped(
+                ui,
+                images,
+                &section.title,
+                &section.cards,
+                if section.wide {
+                    Shape::Backdrop
+                } else {
+                    Shape::Portrait
+                },
+                &detail.id,
+                actions,
+            );
+        }
+    }
+    shelf.people(
+        ui,
+        images,
+        "Cast & Crew",
+        &detail.people,
+        &detail.id,
+        actions,
+    );
+    shelf.people(
+        ui,
+        images,
+        "Guest Stars",
+        &detail.guest_stars,
+        &detail.id,
+        actions,
+    );
     shelf.cards(
         ui,
         images,
@@ -1229,6 +1648,9 @@ impl ShelfSpec<'_> {
                 favorite: card.favorite,
                 playable: true,
                 actions: true,
+                more: true,
+                title_link: true,
+                subtitle_link: true,
             };
             let response = jf::card(
                 &mut strip,
@@ -1242,6 +1664,9 @@ impl ShelfSpec<'_> {
             );
             if response.gained_focus {
                 shelf.reveal(left, width);
+            }
+            if let Some(anchor) = response.more {
+                actions.push(card_menu(&cards[index..], anchor));
             }
             if response.open {
                 actions.push(UiAction::OpenDetail {
@@ -1268,6 +1693,98 @@ impl ShelfSpec<'_> {
         shelf.end(ui);
     }
 
+    /// A titled grid of cards wrapping within the text column, as person and
+    /// collection pages list their items.
+    #[allow(clippy::too_many_arguments)]
+    fn wrapped(
+        &self,
+        ui: &mut Ui,
+        images: &mut ImageCache,
+        title: &str,
+        cards: &[DetailCard],
+        shape: Shape,
+        page: &str,
+        actions: &mut Vec<UiAction>,
+    ) {
+        if cards.is_empty() {
+            return;
+        }
+        let layout = self.layout;
+        let grid = layout.content_width();
+        let width = jf::grid_card_width(layout.width, grid, shape);
+        let columns = ((grid / width).floor() as usize).max(1);
+        let height = jf::card_height(width, shape, 2);
+        let rows = cards.len().div_ceil(columns);
+        ui.allocate_exact_size(vec2(layout.width, 10.0), Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(
+            vec2(layout.width, 46.0 + rows as f32 * height),
+            Sense::hover(),
+        );
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let id = Id::new(("detail-grid", title, page.to_owned()));
+        let title_row = Rect::from_min_max(
+            pos2(rect.left() + layout.content_left, rect.top()),
+            pos2(rect.right(), rect.top() + 46.0),
+        );
+        jf::section_title(ui, title_row, title, 0.0, None, id.with("title"));
+        for (index, card) in cards.iter().enumerate() {
+            let origin = pos2(
+                rect.left() + layout.content_left + (index % columns) as f32 * width,
+                rect.top() + 46.0 + (index / columns) as f32 * height,
+            );
+            if !ui.is_rect_visible(Rect::from_min_size(origin, vec2(width, height))) {
+                continue;
+            }
+            let label = card_title(card);
+            let model = CardModel {
+                placeholder_icon: None,
+                title: &label,
+                subtitle: &card.subtitle,
+                art: card.art.as_ref(),
+                watched: card.watched,
+                unplayed: u32::try_from(card.unplayed_count).unwrap_or(0),
+                progress: if matches!(card.kind, "Movie" | "Episode") {
+                    card.progress
+                } else {
+                    0.0
+                },
+                favorite: card.favorite,
+                playable: true,
+                actions: true,
+                more: true,
+                title_link: true,
+                subtitle_link: true,
+            };
+            let response = jf::card(ui, images, &model, origin, width, shape, 2, id.with(index));
+            if let Some(anchor) = response.more {
+                actions.push(card_menu(&cards[index..], anchor));
+            }
+            if response.open {
+                actions.push(UiAction::OpenDetail {
+                    id: card.id.clone(),
+                    kind: card.kind.to_owned(),
+                });
+            }
+            if response.play {
+                actions.push(UiAction::PlayItem(card.id.clone()));
+            }
+            if response.toggle_played {
+                actions.push(UiAction::SetWatched {
+                    id: card.id.clone(),
+                    watched: !card.watched,
+                });
+            }
+            if response.toggle_favorite {
+                actions.push(UiAction::SetFavorite {
+                    id: card.id.clone(),
+                    favorite: !card.favorite,
+                });
+            }
+        }
+    }
+
     /// Cast and crew: portrait photos with the name and role.
     fn people(
         &self,
@@ -1276,6 +1793,7 @@ impl ShelfSpec<'_> {
         title: &str,
         people: &[DetailPerson],
         page: &str,
+        actions: &mut Vec<UiAction>,
     ) {
         if people.is_empty() {
             return;
@@ -1307,8 +1825,11 @@ impl ShelfSpec<'_> {
                 favorite: false,
                 playable: false,
                 actions: false,
+                more: false,
+                title_link: true,
+                subtitle_link: true,
             };
-            jf::card(
+            let response = jf::card(
                 &mut strip,
                 images,
                 &model,
@@ -1318,9 +1839,36 @@ impl ShelfSpec<'_> {
                 2,
                 id.with(index),
             );
+            if response.open
+                && let Some(person) = &person.id
+            {
+                actions.push(UiAction::OpenLink(
+                    crate::features::items::LinkTarget::Person(person.clone()),
+                ));
+            }
         }
         shelf.end(ui);
     }
+}
+
+/// The item menu for the first of `rest`, with "Play all from here" over
+/// the videos from it on.
+fn card_menu(rest: &[DetailCard], anchor: Rect) -> UiAction {
+    let card = &rest[0];
+    let queue = rest
+        .iter()
+        .filter(|card| matches!(card.kind, "Movie" | "Episode" | "Video"))
+        .map(|card| card.id.clone())
+        .collect();
+    UiAction::OpenMenu(Box::new(super::menu::MenuRequest {
+        item_id: card.id.clone(),
+        name: card.title.clone(),
+        kind: card.kind.to_owned(),
+        series_id: card.series_id.clone(),
+        season_id: card.season_id.clone(),
+        anchor,
+        origin: super::menu::MenuOrigin::Card { queue },
+    }))
 }
 
 /// A shelf card's text: "1. Title" for an episode, "S1:E16 - Title" on
@@ -1363,16 +1911,55 @@ fn draw_episode_list(
         );
         return;
     }
-    for (index, episode) in detail.episodes.iter().enumerate() {
+    let origin = |card: &DetailCard| {
+        let from = detail
+            .episodes
+            .iter()
+            .position(|episode| episode.id == card.id)
+            .unwrap_or(0);
+        super::menu::MenuOrigin::Card {
+            queue: detail.episodes[from..]
+                .iter()
+                .map(|episode| episode.id.clone())
+                .collect(),
+        }
+    };
+    draw_rows(ui, images, &detail.episodes, busy, layout, &origin, actions);
+    let _ = (left, width);
+}
+
+/// jellyfin-web's list rows (a season's episodes, a playlist's entries).
+fn draw_rows(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    cards: &[DetailCard],
+    busy: bool,
+    layout: &Layout,
+    origin: &dyn Fn(&DetailCard) -> super::menu::MenuOrigin,
+    actions: &mut Vec<UiAction>,
+) {
+    let left = layout.content_left;
+    let width = layout.content_width();
+    for (index, card) in cards.iter().enumerate() {
         let (row, _) = ui.allocate_exact_size(vec2(layout.width, 181.0), Sense::hover());
         if !ui.is_rect_visible(row) {
             continue;
         }
         let row = Rect::from_min_size(pos2(row.left() + left, row.top()), vec2(width, 181.0));
-        episode_row(ui, images, episode, row, busy, index, actions);
+        episode_row(
+            ui,
+            images,
+            card,
+            row,
+            busy,
+            index,
+            &|| origin(card),
+            actions,
+        );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn episode_row(
     ui: &mut Ui,
     images: &mut ImageCache,
@@ -1380,6 +1967,7 @@ fn episode_row(
     row: Rect,
     busy: bool,
     index: usize,
+    origin: &dyn Fn() -> super::menu::MenuOrigin,
     actions: &mut Vec<UiAction>,
 ) {
     let painter = ui.painter().clone();
@@ -1426,8 +2014,8 @@ fn episode_row(
         actions.push(UiAction::PlayDetail(episode.id.clone()));
     }
 
-    // Buttons on the right: info, played, favorite.
-    let buttons_left = row.right() - 3.0 * 41.5;
+    // Buttons on the right: info, played, favorite, more.
+    let buttons_left = row.right() - 4.0 * 41.5;
     let center_y = row.top() + 90.0;
     let mut x = buttons_left;
     let mut button = |icon: Icon, color: Color32, label: &str, name: &str| {
@@ -1490,6 +2078,21 @@ fn episode_row(
             id: episode.id.clone(),
             favorite: !episode.favorite,
         });
+    }
+    let more_rect = Rect::from_min_size(
+        pos2(buttons_left + 3.0 * 41.5, center_y - 20.5),
+        vec2(41.0, 41.0),
+    );
+    if button(Icon::MoreVert, theme::JF_TEXT, "More", "more") {
+        actions.push(UiAction::OpenMenu(Box::new(super::menu::MenuRequest {
+            item_id: episode.id.clone(),
+            name: episode.title.clone(),
+            kind: episode.kind.to_owned(),
+            series_id: episode.series_id.clone(),
+            season_id: episode.season_id.clone(),
+            anchor: more_rect,
+            origin: origin(),
+        })));
     }
 
     // Text column between the thumbnail and the buttons.
@@ -1623,6 +2226,9 @@ fn draw_poster(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32)
         favorite: false,
         playable: false,
         actions: false,
+        more: false,
+        title_link: true,
+        subtitle_link: true,
     };
     jf::corner_indicator(&painter, rect, &model);
 }
@@ -1746,6 +2352,10 @@ fn detail_kind_name(kind: DetailKind) -> &'static str {
         DetailKind::Series => "Series",
         DetailKind::Season => "Season",
         DetailKind::Episode => "Episode",
+        DetailKind::Person => "Person",
+        DetailKind::BoxSet => "BoxSet",
+        DetailKind::Playlist => "Playlist",
+        DetailKind::Video => "Video",
         DetailKind::Other => "Media",
     }
 }
@@ -1775,6 +2385,7 @@ mod tests {
             seasons: Vec::new(),
             episodes: Vec::new(),
             similar: Vec::new(),
+            sections: Vec::new(),
             children_error: None,
         }
     }

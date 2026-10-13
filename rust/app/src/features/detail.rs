@@ -11,6 +11,12 @@ pub enum DetailKind {
     Series,
     Season,
     Episode,
+    Person,
+    /// A collection.
+    BoxSet,
+    Playlist,
+    /// Any other single video (home videos, music videos, trailers).
+    Video,
     Other,
 }
 
@@ -21,9 +27,37 @@ impl DetailKind {
             "Series" => Self::Series,
             "Season" => Self::Season,
             "Episode" => Self::Episode,
+            "Person" => Self::Person,
+            "BoxSet" => Self::BoxSet,
+            "Playlist" => Self::Playlist,
+            "Video" | "MusicVideo" | "Trailer" => Self::Video,
             _ => Self::Other,
         }
     }
+
+    /// Whether the item itself is a video to play.
+    pub fn is_video(self) -> bool {
+        matches!(self, Self::Movie | Self::Episode | Self::Video)
+    }
+}
+
+/// A name that links somewhere: a genre, studio or person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedId {
+    pub name: String,
+    pub id: Option<String>,
+}
+
+/// A titled row of items on a detail page (a person's movies, a
+/// collection's contents, a playlist's entries).
+#[derive(Clone, Debug)]
+pub struct DetailSection {
+    pub title: String,
+    /// Wide cards (episodes) rather than posters.
+    pub wide: bool,
+    /// A list of rows instead of cards, as a playlist shows its entries.
+    pub list: bool,
+    pub items: Vec<DetailItemData>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +106,7 @@ impl ImageType {
 
 #[derive(Clone, Debug)]
 pub struct PersonData {
+    pub id: Option<String>,
     pub name: String,
     pub role: String,
     pub image: Option<ImageRef>,
@@ -107,12 +142,18 @@ pub struct DetailItemData {
     pub community_rating: Option<f32>,
     pub critic_rating: Option<f32>,
     pub runtime_seconds: Option<f64>,
-    pub genres: Vec<String>,
+    pub genres: Vec<NamedId>,
     pub tags: Vec<String>,
     pub external_urls: Vec<(String, String)>,
-    pub directors: Vec<String>,
-    pub writers: Vec<String>,
-    pub studios: Vec<String>,
+    pub directors: Vec<NamedId>,
+    pub writers: Vec<NamedId>,
+    pub studios: Vec<NamedId>,
+    /// A person's birth place (`ProductionLocations`).
+    pub birth_place: Option<String>,
+    /// A person's death date, or a series' end date.
+    pub end_date: Option<(i32, u32, u32)>,
+    /// A playlist entry's id within the playlist, for removing it.
+    pub playlist_item_id: Option<String>,
     pub people: Vec<PersonData>,
     /// An episode's guest cast, listed apart from the regulars as Jellyfin does.
     pub guest_stars: Vec<PersonData>,
@@ -162,6 +203,9 @@ impl DetailItemData {
             directors: Vec::new(),
             writers: Vec::new(),
             studios: Vec::new(),
+            birth_place: None,
+            end_date: None,
+            playlist_item_id: None,
             people: Vec::new(),
             guest_stars: Vec::new(),
             premiere_date: None,
@@ -177,7 +221,7 @@ impl DetailItemData {
             progress: 0.0,
             resume_seconds: 0.0,
             unplayed_count: None,
-            playable: matches!(kind, DetailKind::Movie | DetailKind::Episode),
+            playable: kind.is_video(),
             streams: Vec::new(),
         }
     }
@@ -190,13 +234,21 @@ pub struct DetailPageData {
     pub episodes: Vec<DetailItemData>,
     /// "More Like This", for series and movie pages.
     pub similar: Vec<DetailItemData>,
+    /// Filmography, collection or playlist contents.
+    pub sections: Vec<DetailSection>,
     pub children_error: Option<String>,
 }
 
 impl DetailPageData {
     pub(crate) fn play_target(&self) -> Option<&DetailItemData> {
-        if matches!(self.item.kind, DetailKind::Movie | DetailKind::Episode) {
+        if self.item.kind.is_video() {
             return Some(&self.item);
+        }
+        if matches!(self.item.kind, DetailKind::BoxSet | DetailKind::Playlist) {
+            return self
+                .sections
+                .first()
+                .and_then(|section| section.items.first());
         }
         self.episodes
             .iter()
@@ -204,7 +256,6 @@ impl DetailPageData {
             .or_else(|| self.episodes.iter().find(|episode| !episode.watched))
             .or_else(|| self.episodes.first())
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -396,6 +447,12 @@ fn find_item<'a>(page: &'a DetailPageData, id: &str) -> Option<&'a DetailItemDat
     std::iter::once(&page.item)
         .chain(page.seasons.iter())
         .chain(page.episodes.iter())
+        .chain(page.similar.iter())
+        .chain(
+            page.sections
+                .iter()
+                .flat_map(|section| section.items.iter()),
+        )
         .find(|item| item.id == id)
 }
 
@@ -407,6 +464,12 @@ fn update_matching_items(
     for item in std::iter::once(&mut page.item)
         .chain(page.seasons.iter_mut())
         .chain(page.episodes.iter_mut())
+        .chain(page.similar.iter_mut())
+        .chain(
+            page.sections
+                .iter_mut()
+                .flat_map(|section| section.items.iter_mut()),
+        )
     {
         if item.id == id {
             update(item);
@@ -652,6 +715,7 @@ mod tests {
             seasons: Vec::new(),
             episodes: Vec::new(),
             similar: Vec::new(),
+            sections: Vec::new(),
             children_error: None,
         }
     }
@@ -696,9 +760,11 @@ mod tests {
         let episode = model.take_page().unwrap();
         assert_eq!(episode.item.id, "episode");
         assert!(!model.is_active());
-        assert!(model
-            .update(DetailMessage::Restore(Box::new(episode)))
-            .is_empty());
+        assert!(
+            model
+                .update(DetailMessage::Restore(Box::new(episode)))
+                .is_empty()
+        );
         assert_eq!(model.snapshot().page.unwrap().item.id, "episode");
     }
 

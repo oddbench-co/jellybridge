@@ -202,7 +202,8 @@ fn load() -> Result<Api, String> {
     let Some(library) = library else {
         return Err(format!("libmpv was not found ({})", errors.join("; ")));
     };
-    let api = unsafe { resolve(library) }.map_err(|error| format!("libmpv is incomplete: {error}"))?;
+    let api =
+        unsafe { resolve(library) }.map_err(|error| format!("libmpv is incomplete: {error}"))?;
     // `c_ulong` is 64-bit here but 32-bit on Windows.
     #[allow(clippy::useless_conversion)]
     let version = u64::from(unsafe { (api.client_api_version)() });
@@ -323,7 +324,10 @@ pub enum Event<'a> {
     /// `MPV_END_FILE_REASON_*`.
     EndFile(i32),
     PlaybackRestart,
-    PropertyChange { name: &'a str, value: Option<Value<'a>> },
+    PropertyChange {
+        name: &'a str,
+        value: Option<Value<'a>>,
+    },
     Other,
 }
 
@@ -362,7 +366,8 @@ impl Mpv {
     }
 
     pub fn initialize(&self) -> Result<(), Error> {
-        self.api.check(unsafe { (self.api.initialize)(self.handle()) })
+        self.api
+            .check(unsafe { (self.api.initialize)(self.handle()) })
     }
 
     /// A second client of the same core (for the render context).
@@ -387,7 +392,12 @@ impl Mpv {
             match value {
                 Value::Flag(flag) => {
                     let mut raw = c_int::from(flag);
-                    (self.api.set_property)(self.handle(), name.as_ptr(), FORMAT_FLAG, (&mut raw as *mut c_int).cast())
+                    (self.api.set_property)(
+                        self.handle(),
+                        name.as_ptr(),
+                        FORMAT_FLAG,
+                        (&mut raw as *mut c_int).cast(),
+                    )
                 }
                 Value::Int(mut raw) => (self.api.set_property)(
                     self.handle(),
@@ -434,7 +444,9 @@ impl Mpv {
         if value.is_null() {
             return Ok(String::new());
         }
-        let text = unsafe { CStr::from_ptr(value) }.to_string_lossy().into_owned();
+        let text = unsafe { CStr::from_ptr(value) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { (self.api.free)(value.cast()) };
         Ok(text)
     }
@@ -459,9 +471,8 @@ impl Mpv {
 
     fn observe(&self, name: &str, format: c_int, id: u64) -> Result<(), Error> {
         let name = CString::new(name)?;
-        self.api.check(unsafe {
-            (self.api.observe_property)(self.handle(), id, name.as_ptr(), format)
-        })
+        self.api
+            .check(unsafe { (self.api.observe_property)(self.handle(), id, name.as_ptr(), format) })
     }
 
     /// Turns off `MPV_EVENT_IDLE`, which is deprecated and only ever noise.
@@ -491,7 +502,9 @@ impl Mpv {
             }
             EVENT_PROPERTY_CHANGE if !event.data.is_null() => {
                 let property = unsafe { &*event.data.cast::<mpv_event_property>() };
-                let name = unsafe { CStr::from_ptr(property.name) }.to_str().unwrap_or("");
+                let name = unsafe { CStr::from_ptr(property.name) }
+                    .to_str()
+                    .unwrap_or("");
                 Event::PropertyChange {
                     name,
                     value: unsafe { property_value(property) },

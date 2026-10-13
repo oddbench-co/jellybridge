@@ -3,24 +3,147 @@
 //! titles with paging buttons, and the round icon buttons of headers and
 //! detail pages. Measurements are in `docs/jellyfin-web-reference.md`.
 
-use egui::{Align2, Color32, Id, Rect, Response, Sense, Ui, pos2, vec2};
+use egui::{Color32, Id, Rect, Response, Sense, Ui, pos2, vec2};
 
 use super::icons::{self, Icon};
 use super::images::{Art, ImageCache};
 use super::theme;
 use super::widgets;
 
+/// `.cardPadder`, under every card image: a dark tile with a soft shadow
+/// (`box-shadow: 0 .0725em .29em rgba(0,0,0,.37)`), radius 0.2em.
+/// `card` is the card's whole box: jellyfin's `.card` clips paint to it,
+/// which hides the shadow left of the image (the box starts there) but keeps
+/// it in the gap to the right, the margin above and under the image.
+pub fn paint_card_padder(painter: &egui::Painter, image: Rect, card: Rect) {
+    let shadow = Color32::from_black_alpha(94);
+    painter
+        .with_clip_rect(card.intersect(painter.clip_rect()))
+        .add(
+            egui::epaint::RectShape::filled(
+                image.translate(vec2(0.0, 0.0725 * EM)),
+                CARD_RADIUS,
+                shadow,
+            )
+            .with_blur_width(CARD_SHADOW_BLUR),
+        );
+    painter.rect_filled(image, CARD_RADIUS, Color32::from_gray(36));
+}
+
+/// The card's corner radius, 0.2em.
+pub const CARD_RADIUS: f32 = 0.2 * EM;
+/// epaint's blur width matching the CSS blur radius .29em.
+const CARD_SHADOW_BLUR: f32 = 2.5 * 0.29 * EM;
+
 /// `cardBox` margins: the gap after a card is part of its width.
-pub const CARD_TOP: f32 = 8.928;
+pub const CARD_TOP: f32 = layout_unit(8.928);
 pub const CARD_GAP: f32 = 17.856;
 pub const CARD_BOTTOM: f32 = 26.784;
-const TITLE_ROW: f32 = 26.0;
-const SECONDARY_ROW: f32 = 20.0;
+/// `.cardText-first` as Chrome lays it out: plain text, or taller when the
+/// line is a link (its inline button raises the line box).
+const TITLE_ROW: f32 = 24.53;
+const TITLE_ROW_LINK: f32 = 26.5;
+/// `.cardText-secondary` (86% type), plain or a link.
+const SECONDARY_ROW: f32 = 18.8;
+const SECONDARY_ROW_LINK: f32 = 19.73;
+/// Baselines, from the box that holds the text, as Chrome places them
+/// (matched to its glyphs): a card title under its image, a card's second
+/// line under its row's top, and a section title in a plain or linked row.
+const TITLE_BASELINE: f32 = 21.65;
+/// A plain line's box is shorter, so its text sits half the difference
+/// higher than a link's.
+const PLAIN_TITLE_RAISE: f32 = (TITLE_ROW_LINK - TITLE_ROW) / 2.0;
+const SECONDARY_BASELINE: f32 = 14.6;
+const PLAIN_SECONDARY_RAISE: f32 = (SECONDARY_ROW_LINK - SECONDARY_ROW) / 2.0;
+const SECTION_BASELINE: f32 = 33.71;
+const SECTION_BASELINE_LINKED: f32 = 41.92;
+/// A section title row (`.sectionTitle-cards`: 0.5em above, a 1.35 line,
+/// 0.2em below, at 22.32 px) and where its text sits.
+pub const SECTION_TITLE: f32 = 45.72;
+/// A section title that links somewhere (`.sectionTitleContainer-cards`:
+/// 1.25em above a link button with a 0.35em margin), and its text centre.
+pub const SECTION_TITLE_LINKED: f32 = 56.5;
+/// The link's chevron: 1.5em, 3.89 px under the title's line top.
+pub const SECTION_CHEVRON: f32 = 22.31;
+pub const SECTION_CHEVRON_CENTER: f32 = 33.64;
 
-/// The page's side padding, 3.3vw.
-pub fn page_padding(window: f32) -> f32 {
-    window * 0.033
+/// jellyfin-web's root font size: 93% of 16 px.
+pub const EM: f32 = 14.88;
+
+/// A length as Chrome lays it out: in whole 1/64 px LayoutUnits, rounded
+/// down. Em-based offsets land a fraction of a device pixel higher than
+/// the exact value, which decides which pixel row an edge snaps to.
+pub const fn layout_unit(css_px: f32) -> f32 {
+    (css_px * 64.0) as i32 as f32 / 64.0
 }
+
+/// jellyfin-web's header at a window width. It changes at its 100em
+/// (1600 px) breakpoint: more padding, and the tabs move up into the
+/// button row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeaderMetrics {
+    pub wide: bool,
+    /// The button row's height (`.headerTop`).
+    pub height: f32,
+    /// The row's side padding, before the buttons' own 0.29em margins.
+    pub inset: f32,
+    pub button_top: f32,
+    pub tab_font: f32,
+    /// A tab's height: its 1.25 line plus 1.5em above and below.
+    pub tab_height: f32,
+    /// Where the tabs start: under the row, or up inside it.
+    pub tabs_top: f32,
+    /// Where a page with tabs starts its content (`padding-top`).
+    pub tabbed_content_top: f32,
+}
+
+pub const HEADER_BUTTON: f32 = 41.4;
+/// One header button and its 0.29em margins either side.
+pub const HEADER_STEP: f32 = 50.03;
+pub const HEADER_MARGIN: f32 = 4.315;
+
+pub fn header_metrics(width: f32) -> HeaderMetrics {
+    if width >= 1600.0 {
+        let tab_font = EM;
+        HeaderMetrics {
+            wide: true,
+            height: 65.16,
+            inset: 0.8 * EM,
+            button_top: 0.8 * EM,
+            tab_font,
+            tab_height: 4.25 * tab_font,
+            tabs_top: 65.16 - 4.3 * EM,
+            tabbed_content_top: layout_unit(6.7 * EM),
+        }
+    } else {
+        let tab_font = EM * 0.835;
+        HeaderMetrics {
+            wide: false,
+            height: 57.58,
+            inset: 0.0,
+            button_top: 8.09,
+            tab_font,
+            tab_height: 4.25 * tab_font,
+            tabs_top: 57.58,
+            tabbed_content_top: layout_unit(7.5 * EM),
+        }
+    }
+}
+
+/// The width CSS `vw` units and media queries measure: the whole window,
+/// even the part a page scrollbar covers.
+pub fn window_width(ui: &egui::Ui) -> f32 {
+    ui.ctx().content_rect().width()
+}
+
+/// The page's side padding: 3.3% of the page's width (which excludes the
+/// page scrollbar).
+pub fn page_padding(page_width: f32) -> f32 {
+    layout_unit(page_width * 0.033)
+}
+
+/// `.padded-bottom-page`: the space under a page's last section (5em).
+pub const PAGE_BOTTOM: f32 = 5.0 * EM;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
@@ -143,6 +266,129 @@ pub fn default_background(name: &str) -> Color32 {
     DEFAULT_BACKGROUNDS[(sum % 10 % 5) as usize]
 }
 
+/// A card shape as jellyfin-web's card builder names it, which sets how
+/// big an image it asks the server for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageShape {
+    Portrait,
+    Square,
+    Banner,
+    Backdrop,
+    OverflowPortrait,
+    OverflowSquare,
+    OverflowBackdrop,
+}
+
+impl ImageShape {
+    /// `uiAspect`: width over height.
+    pub fn aspect(self) -> f32 {
+        match self {
+            Self::Portrait | Self::OverflowPortrait => 2.0 / 3.0,
+            Self::Square | Self::OverflowSquare => 1.0,
+            Self::Backdrop | Self::OverflowBackdrop => 16.0 / 9.0,
+            Self::Banner => 1000.0 / 185.0,
+        }
+    }
+
+    pub fn for_card(shape: Shape, overflow: bool) -> Self {
+        match (shape, overflow) {
+            (Shape::Portrait, true) => Self::OverflowPortrait,
+            (Shape::Square, true) => Self::OverflowSquare,
+            (Shape::Backdrop, true) => Self::OverflowBackdrop,
+            (Shape::Portrait, false) => Self::Portrait,
+            (Shape::Square, false) => Self::Square,
+            (Shape::Backdrop, false) => Self::Backdrop,
+            (Shape::Banner, _) => Self::Banner,
+        }
+    }
+}
+
+/// jellyfin-web's `getPostersPerRow` (desktop): cards per window width.
+pub fn posters_per_row(shape: ImageShape, width: f32, landscape: bool) -> f32 {
+    use ImageShape::*;
+    match shape {
+        Portrait | Square => match width {
+            w if w >= 2200.0 => 10.0,
+            w if w >= 1920.0 => 9.0,
+            w if w >= 1600.0 => 8.0,
+            w if w >= 1400.0 => 7.0,
+            w if w >= 1200.0 => 6.0,
+            w if w >= 800.0 => 5.0,
+            w if w >= 700.0 => 4.0,
+            w if w >= 500.0 || shape == Portrait => 3.0,
+            _ => 2.0,
+        },
+        Banner => match width {
+            w if w >= 2200.0 => 4.0,
+            w if w >= 1200.0 => 3.0,
+            w if w >= 800.0 => 2.0,
+            _ => 1.0,
+        },
+        Backdrop => match width {
+            w if w >= 2500.0 => 6.0,
+            w if w >= 1600.0 => 5.0,
+            w if w >= 1200.0 => 4.0,
+            w if w >= 770.0 => 3.0,
+            w if w >= 420.0 => 2.0,
+            _ => 1.0,
+        },
+        OverflowPortrait | OverflowSquare => {
+            let small = shape == OverflowSquare && width < 540.0;
+            100.0
+                / match () {
+                    _ if landscape && width >= 1700.0 => 11.6,
+                    _ if landscape => 15.5,
+                    _ if width >= 1400.0 => 15.0,
+                    _ if width >= 1200.0 => 18.0,
+                    _ if width >= 760.0 => 23.0,
+                    _ if width >= 400.0 && !small => 31.5,
+                    _ => 42.0,
+                }
+        }
+        OverflowBackdrop => match () {
+            _ if landscape && width >= 1700.0 => 100.0 / 18.5,
+            _ if landscape => 100.0 / 23.3,
+            _ if width >= 1800.0 => 100.0 / 23.5,
+            _ if width >= 1400.0 => 100.0 / 30.0,
+            _ if width >= 760.0 => 2.5,
+            _ if width >= 640.0 => 100.0 / 56.0,
+            _ => 100.0 / 72.0,
+        },
+    }
+}
+
+/// The CSS width jellyfin-web asks a card image for: the window divided
+/// among the cards that fit, after rounding a window narrower than its
+/// screen down to the hundred.
+pub fn card_image_width(shape: ImageShape, window: egui::Vec2, screen_width: f32) -> f32 {
+    let mut width = window.x;
+    if screen_width - width > 20.0 {
+        width = (width / 100.0).floor() * 100.0;
+    }
+    let landscape = width > 1.3 * window.y;
+    (width / posters_per_row(shape, width, landscape)).round()
+}
+
+/// The fill size to request, in device pixels, as `getScaledImageUrl`
+/// computes it from the CSS width and the image's aspect.
+pub fn card_fill_size(
+    shape: ImageShape,
+    window: egui::Vec2,
+    screen_width: f32,
+    pixels_per_point: f32,
+    primary_aspect: Option<f32>,
+) -> (u32, u32) {
+    let width = card_image_width(shape, window, screen_width);
+    let height = match primary_aspect {
+        Some(aspect) => (width / aspect).round(),
+        None => width / shape.aspect(),
+    };
+    (
+        (width * pixels_per_point).round() as u32,
+        (height * pixels_per_point).round() as u32,
+    )
+}
+
 /// What a card shows.
 pub struct CardModel<'a> {
     pub title: &'a str,
@@ -158,6 +404,12 @@ pub struct CardModel<'a> {
     pub actions: bool,
     /// Drawn instead of the name on a card with no artwork (libraries).
     pub placeholder_icon: Option<Icon>,
+    /// Whether the card has jellyfin-web's "⋮" menu (and right-click).
+    pub more: bool,
+    /// Whether each line is a link, which sets its height and where its
+    /// text sits.
+    pub title_link: bool,
+    pub subtitle_link: bool,
 }
 
 /// What the user did with a card this frame.
@@ -168,21 +420,60 @@ pub struct CardResponse {
     pub toggle_played: bool,
     pub toggle_favorite: bool,
     pub gained_focus: bool,
+    /// The "⋮" or a right-click: where to anchor the menu.
+    pub more: Option<Rect>,
+}
+
+/// The text under a card: how many lines, and whether each is a link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CardText {
+    pub lines: usize,
+    pub title_link: bool,
+    pub subtitle_link: bool,
+}
+
+impl CardText {
+    /// Lines that are all links: the tallest text a card can have.
+    pub fn links(lines: usize) -> Self {
+        Self {
+            lines,
+            title_link: true,
+            subtitle_link: true,
+        }
+    }
+
+    fn title_row(self) -> f32 {
+        if self.title_link {
+            TITLE_ROW_LINK
+        } else {
+            TITLE_ROW
+        }
+    }
+
+    pub fn height(self) -> f32 {
+        let secondary = if self.subtitle_link {
+            SECONDARY_ROW_LINK
+        } else {
+            SECONDARY_ROW
+        };
+        match self.lines {
+            0 => 0.0,
+            1 => self.title_row(),
+            _ => self.title_row() + secondary,
+        }
+    }
 }
 
 /// A card's full height for `width` (including the gap) and `lines` text
-/// rows (1 or 2).
+/// rows (1 or 2), each assumed to be a link.
 pub fn card_height(width: f32, shape: Shape, lines: usize) -> f32 {
-    let image = (width - CARD_GAP) * shape.ratio();
-    CARD_TOP + image + text_rows(lines) + CARD_BOTTOM
+    card_height_for(width, shape, CardText::links(lines))
 }
 
-fn text_rows(lines: usize) -> f32 {
-    match lines {
-        0 => 0.0,
-        1 => TITLE_ROW,
-        _ => TITLE_ROW + SECONDARY_ROW,
-    }
+/// A card's full height for its actual text.
+pub fn card_height_for(width: f32, shape: Shape, text: CardText) -> f32 {
+    let image = (width - CARD_GAP) * shape.ratio();
+    CARD_TOP + image + text.height() + CARD_BOTTOM
 }
 
 /// Draws one card with its top-left corner (gap included) at `origin`.
@@ -212,34 +503,39 @@ pub fn card(
     let hovered = ui.rect_contains_pointer(image) || response.has_focus();
     let painter = ui.painter().clone();
     if ui.is_rect_visible(image) {
+        let text_height = card_height(width, shape, lines) - CARD_TOP - image.height();
+        let card = Rect::from_min_max(
+            pos2(image.left(), origin.y),
+            pos2(origin.x + width, image.bottom() + text_height),
+        );
+        paint_card_padder(&painter, image, card);
         let texture = model
             .art
             .and_then(|art| images.texture(art).zip(images.size(&art.key)));
         match texture {
             Some((texture, size)) => {
-                widgets::image_cover(&painter, texture, size, image, theme::JF_RADIUS)
+                widgets::image_cover(&painter, texture, size, image, CARD_RADIUS)
             }
             // No artwork at all: jellyfin-web's coloured tile with the name.
             None if model.art.is_none_or(|art| images.is_failed(&art.key)) => {
-                painter.rect_filled(image, theme::JF_RADIUS, default_background(model.title));
+                painter.rect_filled(image, CARD_RADIUS, default_background(model.title));
                 if let Some(icon) = model.placeholder_icon {
-                    let size = (image.height() * 0.45).min(image.width() * 0.45);
-                    icons::paint_centered(&painter, icon, image.center(), size, Color32::WHITE);
+                    // `.cardImageIcon { font-size: 5em }`, centred.
+                    icons::paint_centered(&painter, icon, image.center(), 5.0 * EM, theme::JF_TEXT);
                 } else {
-                let name = widgets::wrapped(
-                    ui,
-                    model.title,
-                    theme::bold(theme::JF_FONT * 1.4),
-                    Color32::WHITE,
-                    image.width() - 16.0,
-                    Some(3),
-                );
-                widgets::galley_centered(&painter, image, name);
+                    let name = widgets::wrapped(
+                        ui,
+                        model.title,
+                        theme::bold(theme::JF_FONT * 1.4),
+                        Color32::WHITE,
+                        image.width() - 16.0,
+                        Some(3),
+                    );
+                    widgets::galley_centered(&painter, image, name);
                 }
             }
-            None => {
-                painter.rect_filled(image, theme::JF_RADIUS, theme::JF_CARD_EMPTY);
-            }
+            // Still loading: the padder shows through.
+            None => {}
         }
         if model.progress > 0.0 && model.progress < 1.0 {
             let track = Rect::from_min_max(
@@ -284,7 +580,7 @@ pub fn card(
                 overlay_used = true;
             }
         }
-        if model.actions {
+        if model.actions || model.more {
             let mut right = image.right();
             let mut button = |icon: Icon, color: Color32, label: &str, name: &str| {
                 let rect = Rect::from_min_max(
@@ -303,6 +599,17 @@ pub fn card(
                 widgets::pointer_on_hover(&button);
                 button.on_hover_text(label).clicked()
             };
+            if model.more {
+                // The first button from the right edge.
+                let rect = Rect::from_min_max(
+                    pos2(image.right() - 39.0, image.bottom() - 39.0),
+                    image.right_bottom(),
+                );
+                if button(Icon::MoreVert, icon_color, "More", "more") {
+                    out.more = Some(rect);
+                    overlay_used = true;
+                }
+            }
             let favorite_color = if model.favorite {
                 theme::JF_PLAYED_RED
             } else {
@@ -313,7 +620,7 @@ pub fn card(
             } else {
                 "Add to favorites"
             };
-            if button(Icon::Favorite, favorite_color, favorite_label, "favorite") {
+            if model.actions && button(Icon::Favorite, favorite_color, favorite_label, "favorite") {
                 out.toggle_favorite = true;
                 overlay_used = true;
             }
@@ -327,7 +634,7 @@ pub fn card(
             } else {
                 "Mark played"
             };
-            if button(Icon::Check, played_color, played_label, "played") {
+            if model.actions && button(Icon::Check, played_color, played_label, "played") {
                 out.toggle_played = true;
                 overlay_used = true;
             }
@@ -335,6 +642,10 @@ pub fn card(
     }
     if response.clicked() && !overlay_used {
         out.open = true;
+    }
+    if model.more && response.secondary_clicked() {
+        let at = response.interact_pointer_pos().unwrap_or(image.center());
+        out.more = Some(Rect::from_min_size(at, vec2(1.0, 1.0)));
     }
     widgets::pointer_on_hover(&response);
 
@@ -349,15 +660,28 @@ pub fn card(
             theme::JF_TEXT,
             text_width,
         );
-        let row = Rect::from_min_size(pos2(image.left(), y), vec2(image_width, TITLE_ROW));
-        let text_rect = Rect::from_center_size(row.center(), title.size());
+        let left = image.center().x - title.size().x / 2.0;
+        let baseline = y + TITLE_BASELINE
+            - if model.title_link {
+                0.0
+            } else {
+                PLAIN_TITLE_RAISE
+            };
+        let text_rect = Rect::from_min_size(
+            pos2(left, baseline - widgets::galley_baseline(&title)),
+            title.size(),
+        );
         let title_response = ui.interact(text_rect, id.with("title"), Sense::click());
-        painter.galley(text_rect.min, title, Color32::WHITE);
+        widgets::galley_on_baseline(&painter, left, baseline, title);
         widgets::pointer_on_hover(&title_response);
         if title_response.clicked() {
             out.open = true;
         }
-        y += TITLE_ROW;
+        y += if model.title_link {
+            TITLE_ROW_LINK
+        } else {
+            TITLE_ROW
+        };
     }
     if lines >= 2 && !model.subtitle.is_empty() {
         let subtitle = widgets::elided(
@@ -367,8 +691,15 @@ pub fn card(
             theme::JF_TEXT_SECONDARY,
             text_width,
         );
-        let row = Rect::from_min_size(pos2(image.left(), y), vec2(image_width, SECONDARY_ROW));
-        widgets::galley_centered(&painter, row, subtitle);
+        // Chrome puts the glyphs at the same place whether the line is a
+        // link or not.
+        let left = image.center().x - subtitle.size().x / 2.0;
+        let raise = if model.subtitle_link {
+            0.0
+        } else {
+            PLAIN_SECONDARY_RAISE
+        };
+        widgets::galley_on_baseline(&painter, left, y + SECONDARY_BASELINE - raise, subtitle);
     }
     out
 }
@@ -407,31 +738,39 @@ pub fn section_title(
     paging: Option<(bool, bool)>,
     id: Id,
 ) -> i32 {
+    let baseline = if row.height() >= SECTION_TITLE_LINKED - 0.5 {
+        SECTION_BASELINE_LINKED
+    } else {
+        SECTION_BASELINE
+    };
     let painter = ui.painter().clone();
-    painter.text(
-        pos2(row.left() + padding, row.center().y),
-        Align2::LEFT_CENTER,
-        title,
+    let galley = painter.layout_no_wrap(
+        title.to_owned(),
         theme::regular(theme::JF_FONT_SECTION),
         theme::JF_TEXT,
     );
+    widgets::galley_on_baseline(&painter, row.left() + padding, row.top() + baseline, galley);
     let Some((back, forward)) = paging else {
         return 0;
     };
     let mut clicked = 0;
-    let right = row.right() - 57.0;
+    // `.emby-scrollbuttons`: two 41.36 px buttons 50 px apart, 12.64 px
+    // down, ending 6.32 px inside the page padding.
+    let right = row.right() - padding - 6.32;
+    let top = row.top() + 12.64;
+    let size = vec2(41.36, 41.38);
     for (icon, enabled, rect, direction, label) in [
         (
             Icon::ChevronLeft,
             back,
-            Rect::from_min_size(pos2(right - 82.0, row.center().y - 20.5), vec2(41.0, 41.0)),
+            Rect::from_min_size(pos2(right - 41.36 - 49.99, top), size),
             -1,
             "Previous",
         ),
         (
             Icon::ChevronRight,
             forward,
-            Rect::from_min_size(pos2(right - 41.0, row.center().y - 20.5), vec2(41.0, 41.0)),
+            Rect::from_min_size(pos2(right - 41.36, top), size),
             1,
             "Next",
         ),
@@ -475,24 +814,22 @@ pub fn round_icon_button(
     let response = ui.interact(rect, id, sense);
     widgets::describe_button(&response, enabled, label);
     let painter = ui.painter();
+    // jellyfin-web: an accent circle at 20% under the pointer, and the
+    // icon itself in the accent while hovered or focused.
+    let lit = enabled && (response.hovered() || response.has_focus());
     if enabled && response.hovered() {
         painter.circle_filled(
             rect.center(),
             rect.width().min(rect.height()) / 2.0,
-            Color32::from_white_alpha(20),
+            theme::JF_ACCENT.gamma_multiply(0.2),
         );
     }
-    if response.has_focus() {
-        painter.circle_stroke(
-            rect.center(),
-            rect.width().min(rect.height()) / 2.0,
-            egui::Stroke::new(2.0, theme::JF_ACCENT),
-        );
-    }
-    let color = if enabled {
-        color
-    } else {
+    let color = if !enabled {
         color.gamma_multiply(0.3)
+    } else if lit {
+        theme::JF_ACCENT
+    } else {
+        color
     };
     icons::paint_centered(painter, icon, rect.center(), icon_size, color);
     if enabled {
@@ -515,6 +852,29 @@ mod tests {
     }
 
     #[test]
+    fn card_images_are_the_sizes_jellyfin_web_asks_for() {
+        let window = egui::vec2(2536.0, 1390.0);
+        assert_eq!(
+            card_fill_size(ImageShape::OverflowBackdrop, window, 2536.0, 1.5, None),
+            (704, 396)
+        );
+        assert_eq!(
+            card_fill_size(
+                ImageShape::OverflowPortrait,
+                window,
+                2536.0,
+                1.5,
+                Some(2.0 / 3.0)
+            ),
+            (441, 662)
+        );
+        assert_eq!(
+            card_fill_size(ImageShape::OverflowBackdrop, window, 2536.0, 1.5, Some(1.0)),
+            (704, 704)
+        );
+    }
+
+    #[test]
     fn grid_cards_take_a_share_of_the_grid() {
         // 1251 wide content, 41 + 94 of padding: six per row.
         assert!((grid_width(1261.0, 1116.0) - 186.0).abs() < 0.5);
@@ -524,6 +884,9 @@ mod tests {
     #[test]
     fn card_height_adds_margins_image_and_text() {
         let height = card_height(291.3, Shape::Backdrop, 2);
-        assert!((height - (8.928 + 273.444 * 0.5625 + 46.0 + 26.784)).abs() < 0.1);
+        // Card top margin (in layout units), the 16:9 image, a linked title
+        // row and a linked subtitle row, the bottom margin.
+        let expected = 8.921875 + 273.444 * 0.5625 + TITLE_ROW_LINK + SECONDARY_ROW_LINK + 26.784;
+        assert!((height - expected).abs() < 0.01);
     }
 }

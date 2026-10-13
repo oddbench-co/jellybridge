@@ -192,7 +192,9 @@ async fn refresh_detail(context: &AppContext, generation: u64, api: JellyfinApi,
             return None;
         }
         let claimed = context.claim_generation(generation)?;
-        state.detail.update(DetailMessage::Refreshed(Box::new(page)));
+        state
+            .detail
+            .update(DetailMessage::Refreshed(Box::new(page)));
         Some(claimed)
     });
     if let Some(claimed) = claimed {
@@ -224,13 +226,9 @@ mod tests {
         CatalogItemData {
             id: id.into(),
             title: String::new(),
-            subtitle: String::new(),
             kind: "CollectionFolder".into(),
-            image_item_id: id.into(),
-            image_tag: None,
             watched: false,
             progress: 0.0,
-            is_container: true,
             playable: false,
             ..CatalogItemData::default()
         }
@@ -244,6 +242,7 @@ mod tests {
                 seasons: Vec::new(),
                 episodes: Vec::new(),
                 similar: Vec::new(),
+                sections: Vec::new(),
                 children_error: None,
             })));
     }
@@ -297,7 +296,9 @@ mod tests {
         ));
 
         state.page = crate::features::pages::Page {
-            route: PageRoute::List(crate::features::pages::ListQuery::children("Library", "library")),
+            route: PageRoute::List(crate::features::pages::ListQuery::children(
+                "Library", "library",
+            )),
             content: PageContent::Grid(crate::features::pages::GridPage {
                 items: vec![folder("a")],
                 total: 300,
@@ -346,7 +347,10 @@ mod tests {
             &mut page,
             PageContent::Shelves(vec![shelf(vec![watched, folder("c")])]),
         );
-        let ids = page.items_mut().map(|item| (item.id.clone(), item.watched)).collect::<Vec<_>>();
+        let ids = page
+            .items_mut()
+            .map(|item| (item.id.clone(), item.watched))
+            .collect::<Vec<_>>();
         assert_eq!(ids, [("a".to_owned(), false), ("b".to_owned(), true)]);
     }
 }

@@ -108,7 +108,9 @@ pub enum ListFilter {
     Children,
     Genre(String),
     Studio(String),
-    Person(String),
+    Tag(String),
+    /// The user's Next Up episodes (the Home shelf's "›").
+    NextUp,
     /// Favorites of `ListQuery::item_types`.
     Favorites,
 }
@@ -138,10 +140,21 @@ impl ListQuery {
 /// Where the user is, for every page that is not an item's detail page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PageRoute {
-    Home { favorites: bool },
-    Library { library: LibraryRef, tab: LibraryTab },
+    Home {
+        favorites: bool,
+    },
+    Library {
+        library: LibraryRef,
+        tab: LibraryTab,
+    },
     List(ListQuery),
     Search,
+}
+
+impl Default for PageRoute {
+    fn default() -> Self {
+        Self::home()
+    }
 }
 
 impl PageRoute {
@@ -172,7 +185,10 @@ impl PageRoute {
                 if tabs.len() < 2 {
                     return (Vec::new(), 0);
                 }
-                let active = tabs.iter().position(|candidate| candidate == tab).unwrap_or(0);
+                let active = tabs
+                    .iter()
+                    .position(|candidate| candidate == tab)
+                    .unwrap_or(0);
                 (tabs.iter().map(|tab| tab.label()).collect(), active)
             }
             Self::List(_) | Self::Search => (Vec::new(), 0),
@@ -219,6 +235,22 @@ impl PageRoute {
         }
     }
 
+    /// The display-preferences key jellyfin-web saves this grid's sort
+    /// under, so both clients share it.
+    pub fn server_sort_key(&self) -> Option<String> {
+        let Self::Library { library, tab } = self else {
+            return None;
+        };
+        let key = match tab {
+            LibraryTab::Movies => "movies",
+            LibraryTab::Collections => "moviecollections",
+            LibraryTab::Shows => "series",
+            LibraryTab::Episodes => "episodes",
+            _ => return None,
+        };
+        Some(format!("{}-{key}", library.id))
+    }
+
     /// The key a grid's settings are remembered under: one per library tab,
     /// as jellyfin-web keeps them, and one per kind of list page.
     pub fn settings_key(&self) -> String {
@@ -249,43 +281,58 @@ pub enum GridKind {
 }
 
 impl GridKind {
-    pub fn sorts(self) -> &'static [SortBy] {
-        use SortBy::*;
+    /// jellyfin-web's sort menu for this grid: (label, `SortBy` value).
+    pub fn sorts(self) -> &'static [SortOption] {
+        const fn o(label: &'static str, value: &'static str) -> SortOption {
+            SortOption { label, value }
+        }
+        const MOVIES: [SortOption; 10] = [
+            o("Name", "SortName,ProductionYear"),
+            o("Random", "Random"),
+            o(
+                "Community Rating",
+                "CommunityRating,SortName,ProductionYear",
+            ),
+            o("Critics Rating", "CriticRating,SortName,ProductionYear"),
+            o("Date Added", "DateCreated,SortName,ProductionYear"),
+            o("Date Played", "DatePlayed,SortName,ProductionYear"),
+            o("Parental Rating", "OfficialRating,SortName,ProductionYear"),
+            o("Play Count", "PlayCount,SortName,ProductionYear"),
+            o("Release Date", "PremiereDate,SortName,ProductionYear"),
+            o("Runtime", "Runtime,SortName,ProductionYear"),
+        ];
+        const SHOWS: [SortOption; 8] = [
+            o("Name", "SortName"),
+            o("Random", "Random"),
+            o("Community Rating", "CommunityRating,SortName"),
+            o("Date Show Added", "DateCreated,SortName"),
+            o("Date Episode Added", "DateLastContentAdded,SortName"),
+            o("Date Played", "SeriesDatePlayed,SortName"),
+            o("Parental Rating", "OfficialRating,SortName"),
+            o("Release Date", "PremiereDate,SortName"),
+        ];
+        const EPISODES: [SortOption; 8] = [
+            o("Name", "SeriesSortName,SortName"),
+            o("TheTVDB Rating", "CommunityRating,SeriesSortName,SortName"),
+            o("Date Added", "DateCreated,SeriesSortName,SortName"),
+            o("Premiere Date", "PremiereDate,SeriesSortName,SortName"),
+            o("Date Played", "DatePlayed,SeriesSortName,SortName"),
+            o("Parental Rating", "OfficialRating,SeriesSortName,SortName"),
+            o("Play Count", "PlayCount,SeriesSortName,SortName"),
+            o("Runtime", "Runtime,SeriesSortName,SortName"),
+        ];
+        const COLLECTIONS: [SortOption; 5] = [
+            o("Name", "SortName"),
+            o("Community Rating", "CommunityRating,SortName"),
+            o("Date Added", "DateCreated,SortName"),
+            o("Parental Rating", "OfficialRating,SortName"),
+            o("Release Date", "PremiereDate,SortName"),
+        ];
         match self {
-            Self::Movies | Self::Folder => &[
-                Name,
-                Random,
-                CommunityRating,
-                CriticRating,
-                DateCreated,
-                DatePlayed,
-                OfficialRating,
-                PlayCount,
-                PremiereDate,
-                Runtime,
-            ],
-            Self::Shows => &[
-                Name,
-                Random,
-                CommunityRating,
-                DateCreated,
-                DateLastContentAdded,
-                DatePlayed,
-                OfficialRating,
-                PremiereDate,
-            ],
-            Self::Episodes => &[
-                Name,
-                Random,
-                CommunityRating,
-                DateCreated,
-                DatePlayed,
-                OfficialRating,
-                PlayCount,
-                PremiereDate,
-                Runtime,
-            ],
-            Self::Collections | Self::Playlists => &[Name, Random, DateCreated, PremiereDate],
+            Self::Movies | Self::Folder => &MOVIES,
+            Self::Shows => &SHOWS,
+            Self::Episodes => &EPISODES,
+            Self::Collections | Self::Playlists => &COLLECTIONS,
             Self::Studios => &[],
         }
     }
@@ -297,101 +344,34 @@ impl GridKind {
         }
     }
 
+    /// Toolbar buttons: Play All where the grid holds videos, Shuffle where
+    /// it holds something to play.
+    pub fn plays(self) -> bool {
+        matches!(self, Self::Movies | Self::Folder)
+    }
+
+    pub fn shuffles(self) -> bool {
+        matches!(self, Self::Movies | Self::Shows | Self::Folder)
+    }
+
     pub fn filters(self) -> bool {
         !matches!(self, Self::Studios | Self::Playlists)
     }
 
     pub fn alphabet(self) -> bool {
-        matches!(self, Self::Movies | Self::Shows | Self::Collections | Self::Folder)
+        matches!(
+            self,
+            Self::Movies | Self::Shows | Self::Collections | Self::Folder
+        )
     }
 }
 
-/// jellyfin-web's sort orders.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SortBy {
-    #[default]
-    Name,
-    Random,
-    CommunityRating,
-    CriticRating,
-    DateCreated,
-    DateLastContentAdded,
-    DatePlayed,
-    OfficialRating,
-    PlayCount,
-    PremiereDate,
-    Runtime,
-}
-
-impl SortBy {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Name => "Name",
-            Self::Random => "Random",
-            Self::CommunityRating => "Community Rating",
-            Self::CriticRating => "Critics Rating",
-            Self::DateCreated => "Date Added",
-            Self::DateLastContentAdded => "Date Episode Added",
-            Self::DatePlayed => "Date Played",
-            Self::OfficialRating => "Parental Rating",
-            Self::PlayCount => "Play Count",
-            Self::PremiereDate => "Release Date",
-            Self::Runtime => "Runtime",
-        }
-    }
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Name => "SortName",
-            Self::Random => "Random",
-            Self::CommunityRating => "CommunityRating",
-            Self::CriticRating => "CriticRating",
-            Self::DateCreated => "DateCreated",
-            Self::DateLastContentAdded => "DateLastContentAdded",
-            Self::DatePlayed => "DatePlayed",
-            Self::OfficialRating => "OfficialRating",
-            Self::PlayCount => "PlayCount",
-            Self::PremiereDate => "PremiereDate",
-            Self::Runtime => "Runtime",
-        }
-    }
-
-    pub fn from_key(key: &str) -> Option<Self> {
-        [
-            Self::Name,
-            Self::Random,
-            Self::CommunityRating,
-            Self::CriticRating,
-            Self::DateCreated,
-            Self::DateLastContentAdded,
-            Self::DatePlayed,
-            Self::OfficialRating,
-            Self::PlayCount,
-            Self::PremiereDate,
-            Self::Runtime,
-        ]
-        .into_iter()
-        .find(|sort| sort.key() == key)
-    }
-
-    /// The `SortBy` query value; ties fall back to the name, as jellyfin-web
-    /// asks. Episodes sort by their show first.
-    pub fn query(self, kind: GridKind) -> &'static str {
-        match (self, kind) {
-            (Self::Name, GridKind::Episodes) => "SeriesSortName,ParentIndexNumber,IndexNumber",
-            (Self::Name, _) => "SortName",
-            (Self::Random, _) => "Random",
-            (Self::CommunityRating, _) => "CommunityRating,SortName",
-            (Self::CriticRating, _) => "CriticRating,SortName",
-            (Self::DateCreated, _) => "DateCreated,SortName",
-            (Self::DateLastContentAdded, _) => "DateLastContentAdded,SortName",
-            (Self::DatePlayed, _) => "DatePlayed,SortName",
-            (Self::OfficialRating, _) => "OfficialRating,SortName",
-            (Self::PlayCount, _) => "PlayCount,SortName",
-            (Self::PremiereDate, _) => "PremiereDate,ProductionYear,SortName",
-            (Self::Runtime, _) => "Runtime,SortName",
-        }
-    }
+/// One entry of a sort menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SortOption {
+    pub label: &'static str,
+    /// The `SortBy` query value, also what jellyfin-web stores.
+    pub value: &'static str,
 }
 
 /// jellyfin-web's "Select view" choices.
@@ -452,7 +432,12 @@ pub enum StatusFilter {
 }
 
 impl StatusFilter {
-    pub const ALL: [Self; 4] = [Self::Played, Self::Unplayed, Self::Resumable, Self::Favorites];
+    pub const ALL: [Self; 4] = [
+        Self::Played,
+        Self::Unplayed,
+        Self::Resumable,
+        Self::Favorites,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -669,7 +654,8 @@ impl GridFilters {
 /// How one grid is sorted, filtered and drawn. Remembered per grid.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GridSettings {
-    pub sort: SortBy,
+    /// The `SortBy` value, in jellyfin-web's vocabulary.
+    pub sort: String,
     pub descending: bool,
     pub view: ViewMode,
     pub filters: GridFilters,
@@ -678,7 +664,11 @@ pub struct GridSettings {
 impl GridSettings {
     pub fn default_for(kind: GridKind) -> Self {
         Self {
-            sort: SortBy::Name,
+            sort: kind
+                .sorts()
+                .first()
+                .map_or("SortName", |option| option.value)
+                .to_owned(),
             descending: false,
             view: kind.default_view(),
             filters: GridFilters::default(),
@@ -689,7 +679,7 @@ impl GridSettings {
     /// session only.
     pub fn to_stored(&self) -> StoredGridSettings {
         StoredGridSettings {
-            sort_by: self.sort.key().to_owned(),
+            sort_by: self.sort.clone(),
             descending: self.descending,
             view: self.view.key().to_owned(),
         }
@@ -697,7 +687,7 @@ impl GridSettings {
 
     pub fn from_stored(stored: &StoredGridSettings) -> Option<Self> {
         Some(Self {
-            sort: SortBy::from_key(&stored.sort_by)?,
+            sort: Some(stored.sort_by.clone()).filter(|sort| !sort.is_empty())?,
             descending: stored.descending,
             view: ViewMode::from_key(&stored.view)?,
             filters: GridFilters::default(),
@@ -842,7 +832,13 @@ mod tests {
         let (tabs, active) = route.tabs();
         assert_eq!(
             tabs,
-            ["Movies", "Suggestions", "Favorites", "Collections", "Genres"]
+            [
+                "Movies",
+                "Suggestions",
+                "Favorites",
+                "Collections",
+                "Genres"
+            ]
         );
         assert_eq!(active, 3);
         assert_eq!(
@@ -858,7 +854,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             tv,
-            ["Shows", "Suggestions", "Upcoming", "Genres", "TV Networks", "Episodes"]
+            [
+                "Shows",
+                "Suggestions",
+                "Upcoming",
+                "Genres",
+                "TV Networks",
+                "Episodes"
+            ]
         );
         // A plain folder library has no tab strip.
         let music = PageRoute::Library {
@@ -896,12 +899,19 @@ mod tests {
     }
 
     #[test]
-    fn sort_queries_break_ties_by_name() {
-        assert_eq!(SortBy::DateCreated.query(GridKind::Movies), "DateCreated,SortName");
+    fn sort_menus_use_jellyfin_values() {
         assert_eq!(
-            SortBy::Name.query(GridKind::Episodes),
-            "SeriesSortName,ParentIndexNumber,IndexNumber"
+            GridKind::Movies.sorts()[4].value,
+            "DateCreated,SortName,ProductionYear"
         );
-        assert_eq!(SortBy::from_key("PremiereDate"), Some(SortBy::PremiereDate));
+        assert_eq!(GridKind::Shows.sorts()[3].label, "Date Show Added");
+        assert_eq!(
+            GridKind::Episodes.sorts()[0].value,
+            "SeriesSortName,SortName"
+        );
+        assert_eq!(
+            GridSettings::default_for(GridKind::Movies).sort,
+            "SortName,ProductionYear"
+        );
     }
 }

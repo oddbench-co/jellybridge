@@ -64,11 +64,7 @@ pub fn prune_image_cache(directory: &Path, budget: u64) -> u64 {
             if !metadata.is_file() {
                 return None;
             }
-            Some((
-                metadata.modified().ok()?,
-                metadata.len(),
-                entry.path(),
-            ))
+            Some((metadata.modified().ok()?, metadata.len(), entry.path()))
         })
         .collect();
 

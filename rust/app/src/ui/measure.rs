@@ -30,7 +30,10 @@ pub struct Measure {
 
 impl Measure {
     pub fn from_env() -> Option<Self> {
-        let seconds = std::env::var("JELLYBRIDGE_MEASURE").ok()?.parse::<f64>().ok()?;
+        let seconds = std::env::var("JELLYBRIDGE_MEASURE")
+            .ok()?
+            .parse::<f64>()
+            .ok()?;
         Some(Self {
             seconds,
             started: None,
@@ -47,7 +50,13 @@ impl Measure {
     }
 
     /// Records one frame. `ready` is whether content is on screen yet.
-    pub fn frame(&mut self, ctx: &egui::Context, ready: bool, layout: Duration, frame_cpu: Option<f32>) {
+    pub fn frame(
+        &mut self,
+        ctx: &egui::Context,
+        ready: bool,
+        layout: Duration,
+        frame_cpu: Option<f32>,
+    ) {
         if self.done {
             return;
         }

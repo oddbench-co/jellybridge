@@ -287,13 +287,19 @@ mod tests {
     #[test]
     fn previous_restarts_after_a_few_seconds() {
         let mut now = playing(Vec::new(), false);
-        assert!(matches!(previous_action(&now, 2.0), PreviousAction::Restart));
+        assert!(matches!(
+            previous_action(&now, 2.0),
+            PreviousAction::Restart
+        ));
         now.previous = Some(episode("previous", 1, 1));
         assert!(matches!(
             previous_action(&now, 2.0),
             PreviousAction::Play(item) if item.id == "previous"
         ));
-        assert!(matches!(previous_action(&now, 60.0), PreviousAction::Restart));
+        assert!(matches!(
+            previous_action(&now, 60.0),
+            PreviousAction::Restart
+        ));
     }
 
     #[test]
@@ -314,7 +320,9 @@ mod tests {
         assert!(next.is_none());
 
         assert_eq!(
-            split_adjacent(vec![episode("a", 1, 1)], "missing").0.map(|item| item.id),
+            split_adjacent(vec![episode("a", 1, 1)], "missing")
+                .0
+                .map(|item| item.id),
             None
         );
     }

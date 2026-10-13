@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use app::{AppContext, AppState, PlayerTrackState};
 use features::progress::PlaybackReporter;
-use services::player::{PlayerEvent, create_player};
 use services::playback::PreparedPlayback;
+use services::player::{PlayerEvent, create_player};
 use services::render::{NativeDisplay, RenderHost, native_display};
 use services::session::{SessionStore, SettingsStore, StoredSettings, cache_directory};
 use ui::UiHandle;
@@ -25,12 +25,14 @@ use ui::app::{JellyBridgeApp, UiAction};
 const APP_ID: &str = "dev.nk.jellybridge";
 
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
+/// jellyfin-web's header logo (CC BY-SA 4.0, see assets/LICENSE-jellyfin-logo.txt).
+const LOGO_PNG: &[u8] = include_bytes!("../assets/jellyfin-banner-light.png");
 
 /// The window icon and the brand mark drawn in the UI, decoded once.
 struct DecodedIcon {
     window: egui::IconData,
-    /// Downscaled for the 38–62 px brand marks: drawing the 512 px original
-    /// that small would alias.
+    /// The header logo, downscaled to twice its drawn size: drawing the
+    /// 1302 px original at ~100 px would alias.
     brand: egui::ColorImage,
 }
 
@@ -41,8 +43,14 @@ fn decode_icon() -> Option<DecodedIcon> {
         height: image.height(),
         rgba: image.as_raw().clone(),
     };
-    let small = image::imageops::resize(&image, 128, 128, image::imageops::FilterType::Triangle);
-    let brand = egui::ColorImage::from_rgba_unmultiplied([128, 128], small.as_raw());
+    let logo = image::load_from_memory(LOGO_PNG).ok()?.to_rgba8();
+    // Drawn 29.6 points tall at up to 2x: 90 px covers it.
+    let height = 90;
+    let width = logo.width() * height / logo.height();
+    let small =
+        image::imageops::resize(&logo, width, height, image::imageops::FilterType::Triangle);
+    let brand =
+        egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], small.as_raw());
     Some(DecodedIcon { window, brand })
 }
 
@@ -108,7 +116,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The icon is needed when the window is created; decoding it meanwhile
     // keeps it off the critical path.
     let icon = runtime.spawn_blocking(decode_icon);
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "prefetch_spawned", "startup_stage");
+    tracing::debug!(
+        ms = process_start.elapsed().as_secs_f64() * 1000.0,
+        stage = "prefetch_spawned",
+        "startup_stage"
+    );
     let store = SessionStore::for_current_user()?;
     let settings_store = SettingsStore::for_current_user()?;
     let stored_settings = settings_store.load().unwrap_or_else(|error| {
@@ -120,7 +132,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .grid_settings
             .iter()
             .filter_map(|(key, stored)| {
-                Some((key.clone(), features::pages::GridSettings::from_stored(stored)?))
+                Some((
+                    key.clone(),
+                    features::pages::GridSettings::from_stored(stored)?,
+                ))
             })
             .collect(),
         ..AppState::default()
@@ -170,11 +185,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Skip Intro and Up Next follow the playhead; the now-playing context
         // is small, so this is cheap at mpv's 4 Hz position rate.
         let overlay = match &event {
-            PlayerEvent::Position { seconds, duration } => event_state.lock().ok().and_then(|state| {
-                state.now_playing.as_ref().map(|now| {
-                    features::now_playing::overlay_at(now, *seconds, *duration)
+            PlayerEvent::Position { seconds, duration } => {
+                event_state.lock().ok().and_then(|state| {
+                    state
+                        .now_playing
+                        .as_ref()
+                        .map(|now| features::now_playing::overlay_at(now, *seconds, *duration))
                 })
-            }),
+            }
             _ => None,
         };
         let autoplay = ended
@@ -216,7 +234,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     })?;
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "player_created", "startup_stage");
+    tracing::debug!(
+        ms = process_start.elapsed().as_secs_f64() * 1000.0,
+        stage = "player_created",
+        "startup_stage"
+    );
     let player_sender = player_worker.command_sender();
     let render_player = player_sender.clone();
     let (render_ready, render_ready_rx) = tokio::sync::watch::channel(false);
@@ -272,7 +294,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let app_context = context.clone();
     tracing::info!("Rust JellyBridge application ready");
-    tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "event_loop_start", "startup_stage");
+    tracing::debug!(
+        ms = process_start.elapsed().as_secs_f64() * 1000.0,
+        stage = "event_loop_start",
+        "startup_stage"
+    );
     eframe::run_native(
         "JellyBridge",
         options,
@@ -292,7 +318,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::new(move || wake.request_repaint()),
                 render_ready,
             );
-            tracing::debug!(ms = process_start.elapsed().as_secs_f64() * 1000.0, stage = "window_built", "startup_stage");
+            tracing::debug!(
+                ms = process_start.elapsed().as_secs_f64() * 1000.0,
+                stage = "window_built",
+                "startup_stage"
+            );
             Ok(Box::new(JellyBridgeApp::new(
                 &creation.egui_ctx,
                 ui_queue,

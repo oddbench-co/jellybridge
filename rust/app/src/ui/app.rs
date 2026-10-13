@@ -52,6 +52,29 @@ pub enum UiAction {
     GridDialog(Option<catalog::GridDialog>),
     /// The filter dialog wants its options.
     LoadFilterOptions,
+    /// A "⋮" or right-click on an item.
+    OpenMenu(Box<super::menu::MenuRequest>),
+    /// An entry of the item menu.
+    MenuCommand(super::menu::MenuCommand, Box<super::menu::MenuRequest>),
+    /// The Add to Playlist / Collection dialog's Add or Create.
+    SubmitAddTo {
+        collection: bool,
+        target: Option<String>,
+        name: String,
+        public: bool,
+        item_ids: Vec<String>,
+    },
+    /// "New Playlist" / "New Collection".
+    NewContainer {
+        collection: bool,
+    },
+    /// A genre, studio, tag or person link.
+    OpenLink(crate::features::items::LinkTarget),
+    /// Play All or Shuffle.
+    PlayQueue {
+        source: crate::api::QueueSource,
+        shuffle: bool,
+    },
     /// The header's search button.
     OpenSearch,
     /// A card's play button: plays the item, or a series' next episode.
@@ -152,7 +175,7 @@ impl JellyBridgeApp {
                 error_reported: false,
             })),
             player_worker: Some(player_worker),
-                    input_script: super::input_script::InputScript::from_env(),
+            input_script: super::input_script::InputScript::from_env(),
             measure: super::measure::Measure::from_env(),
             last_input: Instant::now(),
             back_pending: false,
@@ -193,7 +216,11 @@ impl JellyBridgeApp {
 
     /// A paint callback that only runs mpv's render-thread work, for frames
     /// that show no video. Needs a real (1×1) rect: egui skips empty ones.
-    fn pump_callback(&self, ctx: &egui::Context, origin: egui::Pos2) -> Option<egui::PaintCallback> {
+    fn pump_callback(
+        &self,
+        ctx: &egui::Context,
+        origin: egui::Pos2,
+    ) -> Option<egui::PaintCallback> {
         let (active, release_pending) = self
             .video
             .lock()
@@ -260,6 +287,34 @@ impl JellyBridgeApp {
             }
             UiAction::GridDialog(dialog) => self.state.catalog.dialog = dialog,
             UiAction::LoadFilterOptions => features::catalog::load_filter_options(context),
+            UiAction::OpenMenu(request) => {
+                let commands = super::menu::menu_commands(&request);
+                if !commands.is_empty() {
+                    self.state.menu = Some(super::menu::OpenMenu {
+                        request: *request,
+                        commands,
+                    });
+                }
+            }
+            UiAction::MenuCommand(command, request) => {
+                features::items::run_command(context, command, *request);
+            }
+            UiAction::SubmitAddTo {
+                collection,
+                target,
+                name,
+                public,
+                item_ids,
+            } => {
+                features::items::submit_add_to(context, collection, target, name, public, item_ids)
+            }
+            UiAction::NewContainer { collection } => {
+                features::items::open_add_to(context, collection, Vec::new());
+            }
+            UiAction::OpenLink(target) => features::items::open_link(context, target),
+            UiAction::PlayQueue { source, shuffle } => {
+                features::playback::play_queue(context, source, shuffle);
+            }
             UiAction::OpenSearch => features::catalog::open_search(context),
             UiAction::PlayItem(id) => features::playback::play_item_by_id(context, id),
             UiAction::ToggleCard { id, toggle } => {
@@ -384,13 +439,22 @@ impl eframe::App for JellyBridgeApp {
         let mut actions = std::mem::take(&mut self.state.deferred);
         if let Some(script) = self.input_script.as_mut() {
             actions.extend(script.take_plays().into_iter().map(UiAction::PlayItem));
+            for path in script.take_shots() {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                        path,
+                    )));
+            }
         }
+        save_screenshots(ui.ctx());
         self.report_render_error();
 
         let screen = ui.max_rect();
         if std::mem::take(&mut self.back_pending)
             && matches!(self.state.screen, Screen::Catalog | Screen::Detail)
             && !self.state.drawer_open
+            && self.state.menu.is_none()
+            && self.state.item_dialog.is_none()
         {
             actions.push(UiAction::GoBack);
         }
@@ -407,6 +471,11 @@ impl eframe::App for JellyBridgeApp {
                 player::draw(ui, &mut self.state, Some(video), &mut actions);
             }
         }
+        if self.state.screen != Screen::Player {
+            super::menu::draw_menu(ui, &mut self.state.menu, &mut actions);
+            super::menu::draw_dialog(ui, &mut self.state.item_dialog, &mut actions);
+        }
+        super::menu::draw_toast(ui, &mut self.state.toast);
         if self.state.screen != Screen::Player
             && let Some(pump) = self.pump_callback(ui.ctx(), pos2(screen.left(), screen.top()))
         {
@@ -422,7 +491,7 @@ impl eframe::App for JellyBridgeApp {
             }
             ui.ctx().request_repaint();
         }
-            if let Some(script) = &self.input_script {
+        if let Some(script) = &self.input_script {
             script.schedule(ui.ctx());
         }
         startup::note_frame_rendered();
@@ -463,6 +532,46 @@ impl eframe::App for JellyBridgeApp {
         if let Ok(mut video) = self.video.lock() {
             video.host.teardown(gl);
         }
+    }
+}
+
+/// Writes frames the input script asked for (see `input_script`), off the
+/// UI thread.
+fn save_screenshots(ctx: &egui::Context) {
+    let shots = ctx.input(|input| {
+        input
+            .raw
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Screenshot {
+                    image, user_data, ..
+                } => user_data
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.downcast_ref::<String>())
+                    .map(|path| (path.clone(), image.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    });
+    for (path, image) in shots {
+        std::thread::spawn(move || {
+            let [width, height] = image.size;
+            let bytes = image
+                .pixels
+                .iter()
+                .flat_map(|pixel| pixel.to_array())
+                .collect::<Vec<u8>>();
+            match image::RgbaImage::from_raw(width as u32, height as u32, bytes) {
+                Some(frame) => {
+                    if let Err(error) = frame.save(&path) {
+                        tracing::warn!(%error, path, "screenshot not saved");
+                    }
+                }
+                None => tracing::warn!(path, "screenshot had the wrong size"),
+            }
+        });
     }
 }
 

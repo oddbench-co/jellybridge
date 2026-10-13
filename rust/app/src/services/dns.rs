@@ -69,8 +69,12 @@ impl CachingResolver {
         }
         let Some(path) = &self.disk else { return };
         // A few hundred bytes; reading it is cheaper than any lookup.
-        let Ok(text) = std::fs::read_to_string(path) else { return };
-        let Ok(stored) = serde_json::from_str::<Stored>(&text) else { return };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(stored) = serde_json::from_str::<Stored>(&text) else {
+            return;
+        };
         let now = now_secs();
         for (host, (addrs, saved)) in stored {
             if now.saturating_sub(saved) < DISK_MAX_AGE.as_secs() && !addrs.is_empty() {
@@ -84,13 +88,17 @@ impl CachingResolver {
     }
 
     fn save_disk(&self, entries: &HashMap<String, Entry>) {
-        let Some(path) = self.disk.clone() else { return };
+        let Some(path) = self.disk.clone() else {
+            return;
+        };
         let now = now_secs();
         let stored: Stored = entries
             .iter()
             .map(|(host, entry)| (host.clone(), (entry.addrs.clone(), now)))
             .collect();
-        let Ok(text) = serde_json::to_string(&stored) else { return };
+        let Ok(text) = serde_json::to_string(&stored) else {
+            return;
+        };
         tokio::task::spawn_blocking(move || {
             let temporary = path.with_extension("tmp");
             if std::fs::write(&temporary, text).is_ok() {
@@ -177,9 +185,9 @@ pub fn shared() -> Arc<CachingResolver> {
                     None
                 } else {
                     // Beside the artwork cache, not in it: that one is pruned.
-                    crate::services::session::cache_directory().ok().and_then(|images| {
-                        images.parent().map(|cache| cache.join("dns.json"))
-                    })
+                    crate::services::session::cache_directory()
+                        .ok()
+                        .and_then(|images| images.parent().map(|cache| cache.join("dns.json")))
                 },
                 ..CachingResolver::default()
             })
@@ -228,7 +236,9 @@ mod tests {
     async fn a_stale_address_is_served_at_once_and_refreshed_behind_it() {
         let resolver = Arc::new(CachingResolver::default());
         let stale: SocketAddr = "192.0.2.7:0".parse().unwrap();
-        resolver.loaded.store(true, std::sync::atomic::Ordering::Release);
+        resolver
+            .loaded
+            .store(true, std::sync::atomic::Ordering::Release);
         resolver.entries.lock().await.insert(
             "localhost".into(),
             Entry {

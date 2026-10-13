@@ -51,7 +51,8 @@ pub fn text_width(ui: &Ui, text: &str, font: FontId) -> f32 {
 
 /// Paints a galley with its left edge at `x`, vertically centered on `center_y`.
 pub fn galley_v_centered(painter: &Painter, x: f32, center_y: f32, galley: Arc<Galley>) -> Rect {
-    let rect = Rect::from_min_size(pos2(x, center_y - galley.size().y / 2.0), galley.size());
+    let top = snap_text_y(painter, center_y - galley.size().y / 2.0);
+    let rect = Rect::from_min_size(pos2(x, top), galley.size());
     painter.galley(rect.min, galley, Color32::WHITE);
     rect
 }
@@ -59,14 +60,48 @@ pub fn galley_v_centered(painter: &Painter, x: f32, center_y: f32, galley: Arc<G
 /// Paints a galley centered in `rect`.
 pub fn galley_centered(painter: &Painter, rect: Rect, galley: Arc<Galley>) {
     let min = rect.center() - galley.size() / 2.0;
-    painter.galley(min, galley, Color32::WHITE);
+    painter.galley(
+        pos2(min.x, snap_text_y(painter, min.y)),
+        galley,
+        Color32::WHITE,
+    );
 }
 
 /// Paints a galley at `rect.min` (top-left aligned).
 pub fn galley_at(painter: &Painter, min: Pos2, galley: Arc<Galley>) -> Rect {
+    let min = pos2(min.x, snap_text_y(painter, min.y));
     let rect = Rect::from_min_size(min, galley.size());
     painter.galley(min, galley, Color32::WHITE);
     rect
+}
+
+/// Distance from a galley's top to its first line's baseline.
+pub fn galley_baseline(galley: &Galley) -> f32 {
+    galley
+        .rows
+        .first()
+        .and_then(|row| row.row.glyphs.first().map(|glyph| row.pos.y + glyph.pos.y))
+        .unwrap_or(galley.size().y * 0.75)
+}
+
+/// Paints `galley` with its first baseline at `baseline`, snapped down
+/// onto the device-pixel grid as Chrome places text (measured: rounding
+/// put one line in three a pixel off). `x` is its left edge.
+pub fn galley_on_baseline(painter: &Painter, x: f32, baseline: f32, galley: Arc<Galley>) -> Rect {
+    let pixels = painter.pixels_per_point();
+    let baseline = (baseline * pixels).floor() / pixels;
+    let min = pos2(x, baseline - galley_baseline(&galley));
+    let rect = Rect::from_min_size(min, galley.size());
+    painter.galley(min, galley, Color32::WHITE);
+    rect
+}
+
+/// Snaps a line of text down onto the device-pixel grid, as Chrome lays
+/// text out (egui would round to the nearest pixel, which puts some lines
+/// a pixel lower than jellyfin-web's).
+pub fn snap_text_y(painter: &Painter, y: f32) -> f32 {
+    let pixels = painter.pixels_per_point();
+    (y * pixels).floor() / pixels
 }
 
 /// Paints `texture` scaled to cover `rect`, cropping the overflow evenly --
@@ -78,28 +113,42 @@ pub fn image_cover(
     rect: Rect,
     radius: impl Into<CornerRadius>,
 ) {
-    let uv = cover_uv(texture_size, rect.size());
+    // Chrome sizes and centres a `cover` image on the element's exact box,
+    // then paints it into that box snapped onto device pixels. Sizing it
+    // on the snapped box instead can flip which side is cropped and slide
+    // the whole picture a device pixel.
+    let pixels = painter.pixels_per_point();
+    let exact = Rect::from_min_max(rect.min * pixels, rect.max * pixels);
+    let snapped = Rect::from_min_max(exact.min.round(), exact.max.round());
+    let uv = cover_uv_snapped(texture_size, exact, snapped);
+    let rect = Rect::from_min_max(snapped.min / pixels, snapped.max / pixels);
     painter.add(RectShape::filled(rect, radius, Color32::WHITE).with_texture(texture, uv));
 }
 
-/// The texture region that covers `target` without distortion.
-pub fn cover_uv(texture_size: [usize; 2], target: Vec2) -> Rect {
+/// `cover_uv` as Chrome draws `background-size: cover; background-position:
+/// center`: the image is scaled to cover the `exact` box, centred with an
+/// offset rounded to whole device pixels, and anchored at the `snapped`
+/// box it is painted into. Both are in device pixels.
+pub fn cover_uv_snapped(texture_size: [usize; 2], exact: Rect, snapped: Rect) -> Rect {
     let [width, height] = texture_size;
-    if width == 0 || height == 0 || target.x <= 0.0 || target.y <= 0.0 {
+    if width == 0 || height == 0 || exact.width() <= 0.0 || exact.height() <= 0.0 {
         return Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
     }
-    let texture_aspect = width as f32 / height as f32;
-    let target_aspect = target.x / target.y;
-    if texture_aspect > target_aspect {
-        // Wider than the slot: crop the sides.
-        let visible = target_aspect / texture_aspect;
-        let margin = (1.0 - visible) / 2.0;
-        Rect::from_min_max(pos2(margin, 0.0), pos2(1.0 - margin, 1.0))
-    } else {
-        let visible = texture_aspect / target_aspect;
-        let margin = (1.0 - visible) / 2.0;
-        Rect::from_min_max(pos2(0.0, margin), pos2(1.0, 1.0 - margin))
-    }
+    let (width, height) = (width as f32, height as f32);
+    let scale = (exact.width() / width).max(exact.height() / height);
+    let offset = vec2(
+        ((exact.width() - width * scale) / 2.0).round(),
+        ((exact.height() - height * scale) / 2.0).round(),
+    );
+    let tile = vec2(width * scale, height * scale);
+    let start = -offset;
+    Rect::from_min_max(
+        pos2(start.x / tile.x, start.y / tile.y),
+        pos2(
+            (start.x + snapped.width()) / tile.x,
+            (start.y + snapped.height()) / tile.y,
+        ),
+    )
 }
 
 /// Paints `texture` scaled to fit inside `rect` (`object-fit: contain`).
@@ -292,15 +341,28 @@ mod tests {
 
     #[test]
     fn cover_crops_the_long_side_evenly() {
+        let slot = |w: f32, h: f32| Rect::from_min_size(Pos2::ZERO, vec2(w, h));
         // A 2:3 poster in a square slot loses a sixth top and bottom.
-        let uv = cover_uv([200, 300], vec2(100.0, 100.0));
+        let uv = cover_uv_snapped([200, 300], slot(100.0, 100.0), slot(100.0, 100.0));
         assert!((uv.min.y - 1.0 / 6.0).abs() < 1e-4);
         assert!((uv.max.y - 5.0 / 6.0).abs() < 1e-4);
         assert_eq!((uv.min.x, uv.max.x), (0.0, 1.0));
 
         // A 16:9 banner in a 2:3 slot is cropped at the sides.
-        let uv = cover_uv([1600, 900], vec2(200.0, 300.0));
+        let uv = cover_uv_snapped([1600, 900], slot(200.0, 300.0), slot(200.0, 300.0));
         assert_eq!((uv.min.y, uv.max.y), (0.0, 1.0));
         assert!(uv.min.x > 0.3 && uv.max.x < 0.7);
+    }
+
+    #[test]
+    fn cover_is_sized_on_the_exact_box_not_the_snapped_one() {
+        // jellyfin-web's 16:9 card at 1.5x: sized on the exact box, a
+        // 695x391 image is scaled by the width and nothing is cropped off
+        // the left. Sized on the snapped 566x319 box it would be scaled by
+        // the height and slide a device pixel left.
+        let exact = Rect::from_min_size(pos2(125.531, 231.492), vec2(566.648, 318.727));
+        let snapped = Rect::from_min_max(exact.min.round(), exact.max.round());
+        let uv = cover_uv_snapped([695, 391], exact, snapped);
+        assert_eq!(uv.min.x, 0.0);
     }
 }

@@ -65,10 +65,7 @@ pub struct PlaybackConfig {
 }
 
 impl PlaybackConfig {
-    pub fn from_session(
-        session: &StoredSession,
-        item_id: String,
-    ) -> Result<Self, PlaybackError> {
+    pub fn from_session(session: &StoredSession, item_id: String) -> Result<Self, PlaybackError> {
         let server = api::normalize_server_url(&session.server_url)
             .map_err(|_| PlaybackError::InvalidServerUrl)?;
         let token = session.token.trim().to_owned();
@@ -271,10 +268,7 @@ fn select_raw_source(response: &PlaybackInfoResponse) -> Result<&MediaSource, Pl
         .ok_or(PlaybackError::NoMediaSource)
 }
 
-fn raw_stream_url(
-    config: &PlaybackConfig,
-    media_source_id: &str,
-) -> Result<Url, PlaybackError> {
+fn raw_stream_url(config: &PlaybackConfig, media_source_id: &str) -> Result<Url, PlaybackError> {
     let mut url = config
         .server
         .join(&format!(
@@ -556,8 +550,7 @@ impl TemporarySubtitles {
                 let _ = fs::remove_file(&path);
                 return Err(PlaybackError::SubtitleTooLarge);
             }
-            file.write_all(&chunk)
-                .map_err(PlaybackError::SubtitleIo)?;
+            file.write_all(&chunk).map_err(PlaybackError::SubtitleIo)?;
         }
         file.sync_all().map_err(PlaybackError::SubtitleIo)?;
         Ok(path)
@@ -752,7 +745,9 @@ mod tests {
                                 }
                                 "/Videos/item/stream" => {
                                     let requested_range = request.headers().get(RANGE)
-                                        == Some(&hyper::header::HeaderValue::from_static("bytes=2-5"));
+                                        == Some(&hyper::header::HeaderValue::from_static(
+                                            "bytes=2-5",
+                                        ));
                                     let (status, body) = if requested_range {
                                         (StatusCode::PARTIAL_CONTENT, Bytes::from_static(b"2345"))
                                     } else {

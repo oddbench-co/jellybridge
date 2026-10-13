@@ -10,9 +10,7 @@ use std::collections::HashMap;
 use crate::api::JellyfinApi;
 use crate::features::detail::{DetailModel, DetailPageData, DetailTarget};
 use crate::features::now_playing::NowPlaying;
-use crate::features::pages::{
-    FilterOptions, GridSettings, LibraryRef, Page, PageRoute, Shelf,
-};
+use crate::features::pages::{FilterOptions, GridSettings, LibraryRef, Page, PageRoute, Shelf};
 use crate::features::progress::PlaybackReporter;
 use crate::services::playback::PreparedPlayback;
 use crate::services::player::{PlayerSender, PlayerTrack};
@@ -55,6 +53,10 @@ pub struct AppState {
     pub retry: RetryAction,
     /// The item in the player and its neighbours/segments, while playing.
     pub now_playing: Option<NowPlaying>,
+    /// What Play all / Shuffle queued, in play order.
+    pub queue: Option<Vec<String>>,
+    /// The user's jellyfin-web settings, from the server.
+    pub prefs: crate::features::prefs::UserPrefs,
 }
 
 #[derive(Clone, Default)]
@@ -87,18 +89,31 @@ impl Default for AppState {
             detail_tracks: DetailTrackSelection::default(),
             retry: RetryAction::Page,
             now_playing: None,
+            queue: None,
+            prefs: Default::default(),
         }
     }
 }
 
 impl AppState {
     /// The grid settings for `route`, or the defaults for its kind.
+    /// The grid settings for `route`: its view and filters from this
+    /// app, its sort from the server where jellyfin-web keeps it.
     pub fn grid_settings_for(&self, route: &PageRoute) -> GridSettings {
-        self.grid_settings
+        let mut settings = self
+            .grid_settings
             .get(&route.settings_key())
             .cloned()
             .or_else(|| route.grid().map(GridSettings::default_for))
-            .unwrap_or_else(|| GridSettings::default_for(crate::features::pages::GridKind::Folder))
+            .unwrap_or_else(|| GridSettings::default_for(crate::features::pages::GridKind::Folder));
+        if let Some((sort, descending)) = route
+            .server_sort_key()
+            .and_then(|key| self.prefs.grid_sort(&key))
+        {
+            settings.sort = sort;
+            settings.descending = descending;
+        }
+        settings
     }
 }
 

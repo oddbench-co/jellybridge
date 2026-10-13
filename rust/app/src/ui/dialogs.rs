@@ -64,7 +64,9 @@ pub fn modal<R>(
                 .id_salt(id.with("scroll"))
                 .max_height(fixed.unwrap_or(max_height));
             if let Some(fixed) = fixed {
-                scroll = scroll.min_scrolled_height(fixed).auto_shrink([false, false]);
+                scroll = scroll
+                    .min_scrolled_height(fixed)
+                    .auto_shrink([false, false]);
             }
             scroll.show(ui, content).inner
         });
@@ -108,7 +110,10 @@ pub fn action_sheet(
     let width = (text_left + widest + 24.0).max(168.0);
     let height = items.len() as f32 * SHEET_ROW + 12.0;
     let top = anchor.center().y - 6.0 - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
-    let top = top.clamp(screen.top() + 8.0, (screen.bottom() - height - 8.0).max(8.0));
+    let top = top.clamp(
+        screen.top() + 8.0,
+        (screen.bottom() - height - 8.0).max(8.0),
+    );
     let left = anchor
         .left()
         .clamp(screen.left() + 8.0, (screen.right() - width - 8.0).max(8.0));
@@ -180,8 +185,7 @@ pub fn heading(ui: &mut Ui, text: &str) {
 
 /// A radio row: a 16 px ring, filled with the accent when selected.
 pub fn radio(ui: &mut Ui, label: &str, selected: bool, id: Id) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(ui.available_width(), 31.5), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 31.5), Sense::click());
     let response = ui.interact(rect, id, Sense::click()).union(response);
     widgets::describe_button(&response, true, label);
     let center = pos2(rect.left() + 8.0, rect.center().y);
@@ -214,7 +218,13 @@ pub fn checkbox(ui: &mut Ui, label: &str, checked: bool, id: Id) -> bool {
     let boxed = Rect::from_center_size(pos2(rect.left() + 9.0, rect.center().y), vec2(18.0, 18.0));
     if checked {
         ui.painter().rect_filled(boxed, 2.0, theme::JF_ACCENT);
-        icons::paint_centered(ui.painter(), Icon::Check, boxed.center(), 16.0, Color32::WHITE);
+        icons::paint_centered(
+            ui.painter(),
+            Icon::Check,
+            boxed.center(),
+            16.0,
+            Color32::WHITE,
+        );
     } else {
         let color = if response.hovered() {
             theme::JF_ACCENT
@@ -253,7 +263,11 @@ pub fn collapsible(ui: &mut Ui, title: &str, open: bool, id: Id) -> bool {
         theme::JF_TEXT,
     );
     let chevron_center = pos2(rect.right() - 10.0, rect.center().y);
-    let icon = if open { Icon::ExpandLess } else { Icon::ExpandMore };
+    let icon = if open {
+        Icon::ExpandLess
+    } else {
+        Icon::ExpandMore
+    };
     icons::paint_centered(ui.painter(), icon, chevron_center, 20.0, theme::JF_TEXT);
     ui.painter().hline(
         rect.x_range(),

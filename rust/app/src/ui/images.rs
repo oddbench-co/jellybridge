@@ -23,6 +23,16 @@ use crate::services::artwork::{existing_cached_image, image_cache_path, write_ca
 /// what keeps scrolling back from re-decoding.
 pub const IMAGE_CACHE_BUDGET: usize = 96 * 1024 * 1024;
 
+/// Artwork is drawn smaller than it was fetched (cards ask for the size
+/// jellyfin-web asks for), so minification samples a mipmap like a browser's
+/// image scaler instead of skipping texels and shimmering.
+const ARTWORK_TEXTURE: TextureOptions = TextureOptions {
+    magnification: egui::TextureFilter::Linear,
+    minification: egui::TextureFilter::Linear,
+    wrap_mode: egui::TextureWrapMode::ClampToEdge,
+    mipmap_mode: Some(egui::TextureFilter::Linear),
+};
+
 /// Artwork a row shows: its cache identity and where to fetch it from.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Art {
@@ -32,14 +42,14 @@ pub struct Art {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArtSource {
-    /// A catalog tile's primary image at the tile's pixel width.
-    Catalog {
-        image_item_id: String,
-        tag: String,
-        width: u32,
-    },
     /// Detail-page artwork: hero images, shelves, cast photos.
     Detail { image: ImageRef, max_width: u32 },
+    /// A card image filled to the exact size jellyfin-web asks for.
+    Card {
+        image: ImageRef,
+        fill_width: u32,
+        fill_height: u32,
+    },
 }
 
 /// Decoded artwork as GPU textures, bounded by the bytes it holds.
@@ -114,8 +124,9 @@ impl ImageCache {
             self.failed.insert(key);
             return;
         };
-        let bytes = image.width() * image.height() * 4;
-        let texture = ctx.load_texture(&key, image, TextureOptions::LINEAR);
+        // A mipmap chain adds a third on top of the base level.
+        let bytes = image.width() * image.height() * 4 * 4 / 3;
+        let texture = ctx.load_texture(&key, image, ARTWORK_TEXTURE);
         self.insert(key, texture, bytes);
     }
 
@@ -202,11 +213,6 @@ pub fn fetch(context: &AppContext, art: Art) {
     context.runtime.spawn(async move {
         let server = api.session().server_url.as_str().to_owned();
         let (cache_id, tag, width) = match &art.source {
-            ArtSource::Catalog {
-                image_item_id,
-                tag,
-                width,
-            } => (image_item_id.clone(), tag.clone(), *width),
             // Keyed on type and index too: an item's backdrop, logo and
             // poster share its id and must not share a disk entry.
             ArtSource::Detail { image, max_width } => (
@@ -218,6 +224,22 @@ pub fn fetch(context: &AppContext, art: Art) {
                 ),
                 image.tag.clone(),
                 *max_width,
+            ),
+            ArtSource::Card {
+                image,
+                fill_width,
+                fill_height,
+            } => (
+                format!(
+                    "{}-{}-{}-fill{}x{}",
+                    image.item_id,
+                    image.image_type.jellyfin_name(),
+                    image.index.unwrap_or(0),
+                    fill_width,
+                    fill_height
+                ),
+                image.tag.clone(),
+                *fill_width,
             ),
         };
         let path = image_cache_path(&ctx.image_cache, &server, &cache_id, &tag, width);
@@ -240,14 +262,14 @@ pub fn fetch(context: &AppContext, art: Art) {
                 return;
             };
             let bytes = match &art.source {
-                ArtSource::Catalog {
-                    image_item_id,
-                    width,
-                    ..
-                } => api.fetch_primary_image(image_item_id, *width).await,
                 ArtSource::Detail { image, max_width } => {
                     api.fetch_detail_image(image, *max_width).await
                 }
+                ArtSource::Card {
+                    image,
+                    fill_width,
+                    fill_height,
+                } => api.fetch_card_image(image, *fill_width, *fill_height).await,
             };
             match bytes {
                 Ok(bytes) if bytes.len() <= 20 * 1024 * 1024 => {
@@ -365,10 +387,15 @@ mod tests {
         let mut cache = ImageCache::default();
         let art = Art {
             key: "poster".to_owned(),
-            source: ArtSource::Catalog {
-                image_item_id: "item".to_owned(),
-                tag: "tag".to_owned(),
-                width: 320,
+            source: ArtSource::Card {
+                image: crate::features::detail::ImageRef {
+                    item_id: "item".to_owned(),
+                    image_type: crate::features::detail::ImageType::Primary,
+                    index: None,
+                    tag: "tag".to_owned(),
+                },
+                fill_width: 320,
+                fill_height: 480,
             },
         };
         assert!(cache.texture(&art).is_none());

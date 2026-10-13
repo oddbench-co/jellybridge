@@ -13,28 +13,33 @@ use super::widgets;
 use super::{Screen, UiState};
 use crate::features::pages::LibraryRef;
 
-/// Header height: the 41 px button row with 8 px above and below.
-pub const HEIGHT: f32 = 57.0;
-/// The tab strip under the header.
-pub const TABS_HEIGHT: f32 = 53.0;
+/// The header row's height on a narrow window, for screens that place
+/// content under it without asking for the window's metrics.
+pub const HEIGHT: f32 = 57.58;
 const DRAWER_WIDTH: f32 = 320.0;
 const DRAWER_ROW: f32 = 47.0;
 /// The drawer's slide, as jellyfin-web's `transform 0.24s ease-out`.
 const DRAWER_SECONDS: f32 = 0.24;
 
-/// The header's full height on the current screen, tabs included.
-pub fn height(state: &UiState) -> f32 {
-    if state.screen == Screen::Catalog && !state.catalog.tabs.is_empty() {
-        HEIGHT + TABS_HEIGHT
+/// The header's full height on the current screen at `width`, the tab
+/// strip included when it sits under the row.
+pub fn height(state: &UiState, width: f32) -> f32 {
+    let metrics = jf::header_metrics(width);
+    if state.screen == Screen::Catalog && !state.catalog.tabs.is_empty() && !metrics.wide {
+        metrics.height + metrics.tab_height
     } else {
-        HEIGHT
+        metrics.height
     }
 }
 
 pub fn draw(ui: &mut Ui, state: &mut UiState, rect: Rect, actions: &mut Vec<UiAction>) {
     let on_detail = state.screen == Screen::Detail;
     let home = state.screen == Screen::Catalog && state.catalog.home;
-    let full = Rect::from_min_size(rect.min, vec2(rect.width(), height(state)));
+    // Media queries see the whole window; the header itself stops at the
+    // page scrollbar.
+    let window = jf::window_width(ui);
+    let metrics = jf::header_metrics(window);
+    let full = Rect::from_min_size(rect.min, vec2(rect.width(), height(state, window)));
     let painter = ui.painter().clone();
     painter.rect_filled(
         full,
@@ -46,67 +51,97 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, rect: Rect, actions: &mut Vec<UiAc
         },
     );
 
-    let button =
-        |x: f32| Rect::from_min_size(pos2(rect.left() + x, rect.top() + 8.0), vec2(41.0, 41.0));
-    let white = Color32::WHITE;
-    let menu_x = if home {
-        4.0
+    let left = rect.left() + metrics.inset + jf::HEADER_MARGIN;
+    let button = |index: f32| {
+        Rect::from_min_size(
+            pos2(
+                left + index * jf::HEADER_STEP,
+                rect.top() + metrics.button_top,
+            ),
+            vec2(jf::HEADER_BUTTON, jf::HEADER_BUTTON),
+        )
+    };
+    let buttons_before_title = if home {
+        0.0
     } else {
-        if header_button(ui, button(4.0), Icon::ArrowBack, "Back", "header-back") {
+        if header_button(ui, button(0.0), Icon::ArrowBack, "Back", "header-back") {
             actions.push(UiAction::GoBack);
         }
-        if header_button(ui, button(54.0), Icon::Home, "Home", "header-home") {
+        if header_button(ui, button(1.0), Icon::Home, "Home", "header-home") {
             actions.push(UiAction::GoHome);
         }
-        104.0
+        2.0
     };
-    if header_button(ui, button(menu_x), Icon::Menu, "Menu", "header-menu") {
+    if header_button(
+        ui,
+        button(buttons_before_title),
+        Icon::Menu,
+        "Menu",
+        "header-menu",
+    ) {
         state.drawer_open = true;
     }
+    // The title (or logo) box: 0.5em of its 17.4 px font after the last
+    // button's margin.
+    let title_left = button(buttons_before_title).right() + jf::HEADER_MARGIN + 0.5 * 17.41;
+    let center_y = rect.top() + metrics.height / 2.0;
     if home {
-        // The brand mark where jellyfin-web has its logo.
-        let logo = Rect::from_min_size(
-            pos2(rect.left() + 59.0, rect.top() + 13.5),
-            vec2(30.0, 30.0),
-        );
-        if let Some(icon) = &state.brand_icon {
-            widgets::image_contain(&painter, icon.id(), icon.size(), logo);
+        // jellyfin-web's logo: `background-size: contain` in a 13.2em by
+        // 1.7em box, against its left edge.
+        if let Some(logo) = &state.brand_icon {
+            let height = 1.7 * 17.41;
+            let [w, h] = logo.size();
+            let width = height * w as f32 / h as f32;
+            let rect = Rect::from_min_size(
+                pos2(title_left, center_y - height / 2.0),
+                vec2(width, height),
+            );
+            painter.image(
+                logo.id(),
+                rect,
+                Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
         }
-        painter.text(
-            pos2(logo.right() + 6.0, logo.center().y),
-            Align2::LEFT_CENTER,
-            "JellyBridge",
-            theme::bold(19.5),
-            white,
-        );
     } else if !on_detail {
         let galley = widgets::elided(
             ui,
             &state.page_title,
             theme::regular(theme::JF_FONT_SUBTITLE),
             theme::JF_TEXT,
-            rect.width() - 280.0,
+            rect.width() * 0.4,
         );
-        widgets::galley_v_centered(&painter, rect.left() + 159.0, rect.top() + 28.5, galley);
+        widgets::galley_v_centered(&painter, title_left, center_y, galley);
     }
 
-    if header_button(
-        ui,
-        button(rect.width() - 95.0),
-        Icon::Search,
-        "Search",
-        "header-search",
-    ) {
+    // Right side: search and the account button, from the right edge.
+    let right = rect.right() - metrics.inset - jf::HEADER_MARGIN;
+    let from_right = |index: f32| {
+        Rect::from_min_size(
+            pos2(
+                right - jf::HEADER_BUTTON - index * jf::HEADER_STEP,
+                rect.top() + metrics.button_top,
+            ),
+            vec2(jf::HEADER_BUTTON, jf::HEADER_BUTTON),
+        )
+    };
+    if header_button(ui, from_right(1.0), Icon::Search, "Search", "header-search") {
         actions.push(UiAction::OpenSearch);
     }
-    account_menu(ui, state, button(rect.width() - 45.0), actions);
+    account_menu(ui, state, from_right(0.0), actions);
 
     if state.screen == Screen::Catalog && !state.catalog.tabs.is_empty() {
         let strip = Rect::from_min_size(
-            pos2(rect.left(), rect.top() + HEIGHT),
-            vec2(rect.width(), TABS_HEIGHT),
+            pos2(rect.left(), rect.top() + metrics.tabs_top),
+            vec2(rect.width(), metrics.tab_height),
         );
-        if let Some(index) = tabs(ui, strip, &state.catalog.tabs, state.catalog.active_tab) {
+        if let Some(index) = tabs(
+            ui,
+            strip,
+            &state.catalog.tabs,
+            state.catalog.active_tab,
+            metrics.tab_font,
+        ) {
             actions.push(UiAction::SwitchTab(index));
         }
     }
@@ -114,16 +149,33 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, rect: Rect, actions: &mut Vec<UiAc
 }
 
 fn header_button(ui: &mut Ui, rect: Rect, icon: Icon, label: &str, id: &str) -> bool {
-    jf::round_icon_button(ui, rect, icon, Color32::WHITE, 24.8, label, true, Id::new(id)).clicked()
+    jf::round_icon_button(
+        ui,
+        rect,
+        icon,
+        theme::JF_TEXT,
+        24.84,
+        label,
+        true,
+        Id::new(id),
+    )
+    .clicked()
 }
 
 /// The tab strip: centred labels, the active one white, hovered ones in the
 /// accent. Returns a clicked inactive tab.
-fn tabs(ui: &mut Ui, strip: Rect, labels: &[&'static str], active: usize) -> Option<usize> {
-    let font = theme::bold(12.42);
+fn tabs(
+    ui: &mut Ui,
+    strip: Rect,
+    labels: &[&'static str],
+    active: usize,
+    size: f32,
+) -> Option<usize> {
+    let font = theme::bold(size);
+    // `.emby-tab-button`: 1.5em of padding either side of the label.
     let widths = labels
         .iter()
-        .map(|label| widgets::text_width(ui, label, font.clone()) + 36.0)
+        .map(|label| widgets::text_width(ui, label, font.clone()) + 3.0 * size)
         .collect::<Vec<_>>();
     let total: f32 = widths.iter().sum();
     let mut x = strip.center().x - total / 2.0;
@@ -140,8 +192,16 @@ fn tabs(ui: &mut Ui, strip: Rect, labels: &[&'static str], active: usize) -> Opt
         } else {
             Color32::from_gray(0x99)
         };
-        ui.painter()
-            .text(rect.center(), Align2::CENTER_CENTER, *label, font.clone(), color);
+        // `.emby-tab-button`: 1.5em of padding over a 1.25 line; Chrome puts
+        // the baseline half the leading plus the ascent (1.069em) below.
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*label).to_owned(), font.clone(), color);
+        // (+0.09em: egui's glyphs sit that much higher on the same baseline.)
+        let baseline =
+            rect.top() + 1.5 * size + (1.25 - 1.362) / 2.0 * size + (1.069 + 0.09) * size;
+        let left = rect.center().x - galley.size().x / 2.0;
+        widgets::galley_on_baseline(ui.painter(), left, baseline, galley);
         widgets::pointer_on_hover(&response);
         if response.clicked() && index != active {
             clicked = Some(index);
@@ -156,8 +216,8 @@ fn account_menu(ui: &mut Ui, state: &UiState, account: Rect, actions: &mut Vec<U
         ui,
         account,
         Icon::Person,
-        Color32::WHITE,
-        24.8,
+        theme::JF_TEXT,
+        24.84,
         &state.account_name,
         true,
         Id::new("header-account"),
@@ -250,7 +310,8 @@ fn drawer(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             let mut y = panel.top() + 7.0;
             let mut picked = None;
             let mut row = |ui: &mut Ui, y: &mut f32, icon: Icon, label: &str, action: UiAction| {
-                let rect = Rect::from_min_size(pos2(panel.left(), *y), vec2(DRAWER_WIDTH, DRAWER_ROW));
+                let rect =
+                    Rect::from_min_size(pos2(panel.left(), *y), vec2(DRAWER_WIDTH, DRAWER_ROW));
                 *y += DRAWER_ROW;
                 let response = ui.interact(rect, Id::new(("drawer-row", label)), Sense::click());
                 widgets::describe_button(&response, true, label);

@@ -2,8 +2,10 @@
 
 use tokio::task::JoinHandle;
 
-use crate::api::{ApiError, CatalogSectionData, JellyfinApi};
-use crate::app::{AppContext, AppState, RetryAction, cancel_catalog_request, replace_catalog_request};
+use crate::api::{ApiError, HomeData, JellyfinApi};
+use crate::app::{
+    AppContext, AppState, RetryAction, cancel_catalog_request, replace_catalog_request,
+};
 use crate::features::{catalog, playback};
 use crate::services::player::PlayerCommand;
 use crate::services::session::SessionStore;
@@ -17,7 +19,7 @@ pub enum PrefetchedHome {
     /// The saved session could not be read or used at all.
     Unusable(String),
     /// A usable session, and whatever its dashboard request returned.
-    Fetched(JellyfinApi, Box<Result<Vec<CatalogSectionData>, ApiError>>),
+    Fetched(JellyfinApi, Box<Result<HomeData, ApiError>>),
 }
 
 /// Starts the saved session's dashboard request before the window exists.
@@ -47,7 +49,11 @@ pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> JoinHandle<PrefetchedH
         match JellyfinApi::from_session(session) {
             Ok(api) => {
                 let home = api.home().await;
-                tracing::debug!(ms = crate::ui::startup::elapsed_ms(), stage = "home_arrived", "startup_stage");
+                tracing::debug!(
+                    ms = crate::ui::startup::elapsed_ms(),
+                    stage = "home_arrived",
+                    "startup_stage"
+                );
                 PrefetchedHome::Fetched(api, Box::new(home))
             }
             Err(error) => PrefetchedHome::Unusable(error.to_string()),

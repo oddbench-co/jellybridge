@@ -17,8 +17,10 @@ pub mod input_script;
 pub mod jf;
 pub mod login;
 pub mod measure;
+pub mod menu;
 pub mod player;
 pub mod player_hotkeys;
+pub mod scrollbar;
 pub mod startup;
 pub mod theme;
 pub mod top_bar;
@@ -56,6 +58,10 @@ pub struct UiState {
     pub login: login::LoginForm,
     /// Whether the side drawer is open.
     pub drawer_open: bool,
+    /// The open item menu ("⋮"), its dialog, and the confirmation toast.
+    pub menu: Option<menu::OpenMenu>,
+    pub item_dialog: Option<menu::ItemDialog>,
+    pub toast: Option<menu::Toast>,
     /// The user's libraries, listed in the drawer.
     pub libraries: Vec<crate::features::pages::LibraryRef>,
     /// The app icon, drawn in the brand marks.
@@ -80,6 +86,9 @@ impl UiState {
             images: images::ImageCache::default(),
             login: login::LoginForm::default(),
             drawer_open: false,
+            menu: None,
+            item_dialog: None,
+            toast: None,
             libraries: Vec::new(),
             brand_icon: None,
             deferred: Vec::new(),
@@ -152,6 +161,16 @@ pub fn set_screen_busy(context: &AppContext, screen: Screen, busy: bool, message
     });
 }
 
+/// Shows a short confirmation at the bottom of the window.
+pub fn show_toast(state: &mut UiState, text: &str) {
+    let now = state.ctx.input(|input| input.time);
+    state.toast = Some(menu::Toast {
+        text: text.to_owned(),
+        until: now + menu::TOAST_SECONDS,
+    });
+    state.ctx.request_repaint();
+}
+
 pub fn set_message(context: &AppContext, message: &str) {
     let message = message.to_owned();
     context.ui.update(move |state| state.message = message);
@@ -175,13 +194,6 @@ fn image_key(image: &ImageRef) -> String {
         image.index.unwrap_or(0),
         image.tag
     )
-}
-
-/// The width is part of the key: changing density changes the size we ask the
-/// server for, and without it the cache would keep serving the image decoded
-/// for the old size.
-fn catalog_image_key(image_item_id: &str, tag: &str, max_width: u32) -> String {
-    format!("{image_item_id}:Primary:0:{tag}@{max_width}")
 }
 
 /// The image shown on a card (and the detail hero): episodes prefer their

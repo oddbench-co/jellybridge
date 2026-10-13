@@ -12,13 +12,15 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, SendError, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::libmpv::{self, END_FILE_REASON_EOF, END_FILE_REASON_ERROR, Event, Mpv, Value, mpv_handle};
+use super::libmpv::{
+    self, END_FILE_REASON_EOF, END_FILE_REASON_ERROR, Event, Mpv, Value, mpv_handle,
+};
 
 const PROGRESS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -429,7 +431,10 @@ fn build_mpv() -> Result<(Mpv, NonNull<mpv_handle>), PlayerCreateError> {
     let render_client = core
         .create_client(c"jellybridge_render")
         .ok_or(PlayerCreateError::RenderClientUnavailable)?;
-    tracing::info!(ms = started.elapsed().as_secs_f64() * 1000.0, "libmpv player built");
+    tracing::info!(
+        ms = started.elapsed().as_secs_f64() * 1000.0,
+        "libmpv player built"
+    );
     Ok((core, render_client))
 }
 
@@ -469,7 +474,9 @@ fn worker_main(
             Err(error) => {
                 tracing::error!(%error, "could not start libmpv");
                 slot.publish(ClientState::Failed(error.to_string()));
-                event_sink(PlayerEvent::Error(format!("The player could not start: {error}")));
+                event_sink(PlayerEvent::Error(format!(
+                    "The player could not start: {error}"
+                )));
             }
         }
     }
@@ -505,7 +512,9 @@ fn worker_loop(
         slot.set_idle(false);
     }
     if let Err(error) = apply_command(&mpv, first, &mut pending_load, event_sink) {
-        event_sink(PlayerEvent::Error(format!("player command failed: {error}")));
+        event_sink(PlayerEvent::Error(format!(
+            "player command failed: {error}"
+        )));
     }
     // The position only moves while a file is loaded and not paused; only
     // then is it polled. Otherwise the thread sleeps in `mpv_wait_event` until
@@ -528,8 +537,7 @@ fn worker_loop(
                     if matches!(command, PlayerCommand::Load { .. }) {
                         slot.set_idle(false);
                     }
-                    if let Err(error) =
-                        apply_command(&mpv, command, &mut pending_load, event_sink)
+                    if let Err(error) = apply_command(&mpv, command, &mut pending_load, event_sink)
                     {
                         event_sink(PlayerEvent::Error(format!(
                             "player command failed: {error}"
@@ -652,10 +660,8 @@ fn worker_loop(
         if poll_now || (loaded && !paused && Instant::now() >= next_progress_poll) {
             poll_now = false;
             next_progress_poll = Instant::now() + PROGRESS_POLL_INTERVAL;
-            if let (Ok(seconds), Ok(duration)) = (
-                mpv.get_f64("time-pos"),
-                mpv.get_f64("duration"),
-            ) && seconds.is_finite()
+            if let (Ok(seconds), Ok(duration)) = (mpv.get_f64("time-pos"), mpv.get_f64("duration"))
+                && seconds.is_finite()
                 && duration.is_finite()
                 && duration > 0.0
             {
@@ -730,11 +736,11 @@ fn apply_command(
                 return Ok(());
             };
             mpv.command(&[
-                    "sub-add",
-                    path,
-                    sub_add_flag(preferred_source_index, &subtitle),
-                    subtitle.title.as_deref().unwrap_or(""),
-                    subtitle.language.as_deref().unwrap_or(""),
+                "sub-add",
+                path,
+                sub_add_flag(preferred_source_index, &subtitle),
+                subtitle.title.as_deref().unwrap_or(""),
+                subtitle.language.as_deref().unwrap_or(""),
             ])?;
             // The track list is the only thing the subtitle menu is built
             // from, so it has to be re-read for the new entry to appear.
@@ -779,7 +785,10 @@ pub fn trim_heap() {
         let started = Instant::now();
         // SAFETY: malloc_trim only releases memory the allocator holds free.
         unsafe { libc::malloc_trim(0) };
-        tracing::debug!(ms = started.elapsed().as_secs_f64() * 1000.0, "heap trimmed");
+        tracing::debug!(
+            ms = started.elapsed().as_secs_f64() * 1000.0,
+            "heap trimmed"
+        );
     }
 }
 
@@ -807,9 +816,7 @@ fn read_chapters(mpv: &Mpv) -> PlayerEvent {
         if !time.is_finite() || time < 0.0 {
             continue;
         }
-        let title = mpv
-            .get_string(&format!("chapter-list/{index}/title"))
-            .ok();
+        let title = mpv.get_string(&format!("chapter-list/{index}/title")).ok();
         chapters.push(PlayerChapter { time, title });
     }
     chapters.sort_by(|a, b| a.time.total_cmp(&b.time));
@@ -831,9 +838,7 @@ fn read_tracks(mpv: &Mpv) -> PlayerEvent {
         let language = mpv.get_string(&format!("{prefix}/lang")).ok();
         let title = mpv.get_string(&format!("{prefix}/title")).ok();
         let source_index = mpv.get_i64(&format!("{prefix}/ff-index")).ok();
-        let external_filename = mpv
-            .get_string(&format!("{prefix}/external-filename"))
-            .ok();
+        let external_filename = mpv.get_string(&format!("{prefix}/external-filename")).ok();
         let label = track_label(id, language.as_deref(), title.as_deref());
         let track = PlayerTrack {
             id,

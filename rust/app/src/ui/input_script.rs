@@ -15,6 +15,7 @@
 //! 3.6  key    shift+N        with modifiers (shift, ctrl, alt)
 //! 4.0  text   hello          type text
 //! 5.0  play   <item id>      play that item, as a card's play button does
+//! 6.0  shot   <file.png>     save the window's next frame, pixel exact
 //! ```
 //!
 //! `play` names the item instead of pointing at a card, so a scenario cannot
@@ -29,6 +30,7 @@ pub struct InputScript {
     start: Option<f64>,
     last_now: f64,
     plays: Vec<String>,
+    shots: Vec<String>,
 }
 
 enum Step {
@@ -38,6 +40,7 @@ enum Step {
     Key(Key, Modifiers),
     Text(String),
     Play(String),
+    Shot(String),
 }
 
 impl InputScript {
@@ -54,6 +57,7 @@ impl InputScript {
             start: None,
             last_now: 0.0,
             plays: Vec::new(),
+            shots: Vec::new(),
         })
     }
 
@@ -69,10 +73,16 @@ impl InputScript {
             tracing::info!(at, "input script step");
             match step {
                 Step::Play(id) => self.plays.push(id),
+                Step::Shot(path) => self.shots.push(path),
                 step => push(input, step),
             }
         }
         self.last_now = now;
+    }
+
+    /// Screenshots due, taken once by the frame that requests them.
+    pub fn take_shots(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.shots)
     }
 
     /// Items due to be played, taken once by the frame that dispatches them.
@@ -124,7 +134,7 @@ fn push(input: &mut RawInput, step: Step) {
             }
         }
         Step::Text(text) => input.events.push(Event::Text(text)),
-        Step::Play(_) => {}
+        Step::Play(_) | Step::Shot(_) => {}
     }
 }
 
@@ -145,6 +155,7 @@ fn parse_line(line: &str) -> Option<(f64, Step)> {
         "scroll" => numbers().map(|(x, y)| Step::Scroll(vec2(x, y)))?,
         "text" => Step::Text(rest.to_owned()),
         "play" => Step::Play(rest.trim().to_owned()),
+        "shot" => Step::Shot(rest.trim().to_owned()),
         "key" => {
             let mut modifiers = Modifiers::NONE;
             let mut name = rest;

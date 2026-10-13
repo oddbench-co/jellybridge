@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::api::JellyfinApi;
 use crate::app::{AppContext, AppState};
-use crate::features::detail::{DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData};
+use crate::features::detail::{
+    DetailEffect, DetailItemData, DetailKind, DetailMessage, StreamData,
+};
 use crate::features::now_playing::{NowPlaying, PlayerOverlay, PreviousAction, previous_action};
 use crate::features::progress::{PlaybackReporter, ProgressReport, ReportTarget};
 use crate::services::playback::{PlaybackConfig, SubtitleFetcher, prepare_playback};
@@ -77,6 +79,66 @@ enum Origin {
     Player,
     /// A card, which opens the player straight away.
     Card,
+    /// The first item of a play queue; like a card, but keeps the queue.
+    Queue,
+}
+
+/// Plays a queue built on the server from `source` (Play All, Shuffle).
+pub fn play_queue(context: &AppContext, source: crate::api::QueueSource, shuffle: bool) {
+    let Some(api) = context.api() else { return };
+    prepare_player(context);
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        match api.queue_ids(&source, shuffle).await {
+            Ok(ids) if !ids.is_empty() => start_queue(&ctx, &api, ids, 0).await,
+            Ok(_) => ui::set_message(&ctx, "Nothing to play"),
+            Err(error) => ui::set_message(&ctx, &error.to_string()),
+        }
+    });
+}
+
+/// Plays `ids` in order from `start` ("Play all from here").
+pub fn play_ids(context: &AppContext, ids: Vec<String>, start: usize) {
+    let Some(api) = context.api() else { return };
+    if start >= ids.len() {
+        return;
+    }
+    prepare_player(context);
+    let ctx = context.clone();
+    context
+        .runtime
+        .spawn(async move { start_queue(&ctx, &api, ids, start).await });
+}
+
+async fn start_queue(context: &AppContext, api: &JellyfinApi, ids: Vec<String>, start: usize) {
+    let first = ids[start].clone();
+    match api.detail_items(std::slice::from_ref(&first)).await {
+        Ok(items) => match items.into_iter().next() {
+            Some(item) => {
+                if let Ok(mut state) = context.state.lock() {
+                    state.queue = Some(ids);
+                }
+                begin_playback(context, item, false, Origin::Queue);
+            }
+            None => ui::set_message(context, "Nothing to play"),
+        },
+        Err(error) => ui::set_message(context, &error.to_string()),
+    }
+}
+
+/// The queue's neighbours of `id`, if it is playing from a queue.
+fn queue_neighbours(
+    queue: Option<&Vec<String>>,
+    id: &str,
+) -> Option<(Option<String>, Option<String>)> {
+    let queue = queue?;
+    let index = queue.iter().position(|queued| queued == id)?;
+    Some((
+        index
+            .checked_sub(1)
+            .and_then(|previous| queue.get(previous).cloned()),
+        queue.get(index + 1).cloned(),
+    ))
 }
 
 /// Moves to the next (or previous) episode from inside the player.
@@ -97,11 +159,12 @@ pub fn play_adjacent(context: &AppContext, forward: bool) {
 /// Jellyfin's previous button: restart once a few seconds in, otherwise go
 /// back an episode.
 pub fn play_previous(context: &AppContext, position: f64) {
-    let action = context
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| state.now_playing.as_ref().map(|now| previous_action(now, position)));
+    let action = context.state.lock().ok().and_then(|state| {
+        state
+            .now_playing
+            .as_ref()
+            .map(|now| previous_action(now, position))
+    });
     match action {
         Some(PreviousAction::Play(item)) => begin_playback(context, *item, false, Origin::Player),
         Some(PreviousAction::Restart) | None => {
@@ -154,13 +217,19 @@ fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool
         }
     };
     // A card's play button prepared the player before looking the item up.
-    if origin != Origin::Card {
+    if !matches!(origin, Origin::Card | Origin::Queue) {
         prepare_player(context);
+    }
+    // Playing one item ends any queue; next/previous move within it.
+    if matches!(origin, Origin::Card | Origin::Detail)
+        && let Ok(mut state) = context.state.lock()
+    {
+        state.queue = None;
     }
     let generation = context.next_generation();
     match origin {
         Origin::Player => ui::player::present_player_loading(context),
-        Origin::Card => ui::player::present_playback_started(
+        Origin::Card | Origin::Queue => ui::player::present_playback_started(
             context,
             player_title(&detail),
             initial_position,
@@ -276,9 +345,27 @@ fn load_now_playing_context(context: &AppContext, detail: &DetailItemData) {
     let series_id = (detail.kind == DetailKind::Episode)
         .then(|| detail.series_id.clone())
         .flatten();
+    let queued = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| queue_neighbours(state.queue.as_ref(), &item_id));
     let ctx = context.clone();
     context.runtime.spawn(async move {
         let adjacent = async {
+            if let Some((previous, next)) = queued {
+                let ids = previous
+                    .iter()
+                    .chain(next.iter())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let items = api.detail_items(&ids).await?;
+                let find = |id: &Option<String>| {
+                    id.as_ref()
+                        .and_then(|id| items.iter().find(|item| item.id == *id).cloned())
+                };
+                return Ok((find(&previous), find(&next)));
+            }
             match &series_id {
                 Some(series_id) => api.adjacent_episodes(series_id, &item_id).await,
                 None => Ok((None, None)),
@@ -553,6 +640,9 @@ pub fn resolved_playback_sources(
 
 pub fn stop_remote_playback(context: &AppContext) {
     if let Ok(mut state) = context.state.lock() {
+        state.queue = None;
+    }
+    if let Ok(mut state) = context.state.lock() {
         state.now_playing = None;
     }
     finish_report(
@@ -673,10 +763,7 @@ pub struct PlayerTitle {
 
 pub fn player_title(item: &DetailItemData) -> PlayerTitle {
     if item.kind == DetailKind::Episode {
-        let series = item
-            .series_name
-            .clone()
-            .filter(|name| !name.is_empty());
+        let series = item.series_name.clone().filter(|name| !name.is_empty());
         let number = match (item.parent_index_number, item.index_number) {
             (Some(season), Some(episode)) => format!("S{season}:E{episode} - "),
             (None, Some(episode)) => format!("E{episode} - "),
@@ -709,6 +796,21 @@ pub fn clean_preference(value: &Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queue_gives_the_player_its_neighbours() {
+        let queue = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+        assert_eq!(
+            queue_neighbours(Some(&queue), "b"),
+            Some((Some("a".to_owned()), Some("c".to_owned())))
+        );
+        assert_eq!(
+            queue_neighbours(Some(&queue), "a"),
+            Some((None, Some("b".to_owned())))
+        );
+        assert_eq!(queue_neighbours(Some(&queue), "z"), None);
+        assert_eq!(queue_neighbours(None, "a"), None);
+    }
     use crate::services::session::StoredPlaybackPreference;
 
     #[test]

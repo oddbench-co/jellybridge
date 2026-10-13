@@ -13,8 +13,8 @@ use super::{
     LibraryItem, encode_path_segment, parse_iso_date,
 };
 use crate::features::pages::{
-    CardShape, FilterOptions, GridKind, GridPage, GridSettings, LibraryRef, LibraryTab,
-    ListFilter, ListQuery, PAGE_SIZE, PageContent, PageRoute, Shelf,
+    CardShape, FilterOptions, GridKind, GridPage, GridSettings, LibraryRef, LibraryTab, ListFilter,
+    ListQuery, PAGE_SIZE, PageContent, PageRoute, Shelf,
 };
 
 /// Cards per Genres-tab section, as jellyfin-web shows them.
@@ -42,7 +42,7 @@ impl JellyfinApi {
         }
         match route {
             PageRoute::Home { favorites: false } => {
-                let mut shelves = home_shelves(self.home().await?);
+                let mut shelves = home_shelves(self.home().await?.sections);
                 let libraries = home_libraries(&shelves);
                 let deferred = self.deferred_home_sections(&libraries).await;
                 merge_home_shelves(&mut shelves, deferred);
@@ -70,7 +70,7 @@ impl JellyfinApi {
     async fn grid_page(
         &self,
         route: &PageRoute,
-        kind: GridKind,
+        _kind: GridKind,
         settings: &GridSettings,
         start: usize,
     ) -> Result<GridPage, ApiError> {
@@ -82,7 +82,7 @@ impl JellyfinApi {
             "Ascending"
         };
         let mut query: Vec<(&str, String)> = vec![
-            ("SortBy", settings.sort.query(kind).to_owned()),
+            ("SortBy", settings.sort.clone()),
             ("SortOrder", order.to_owned()),
             ("StartIndex", start_text),
             ("Limit", limit),
@@ -124,6 +124,33 @@ impl JellyfinApi {
                 }
                 format!("Users/{}/Items", encode_path_segment(&self.session.user_id))
             }
+            PageRoute::List(list) if list.filter == ListFilter::NextUp => {
+                let start_text = start.to_string();
+                let limit = PAGE_SIZE.to_string();
+                let cutoff = super::iso_days_ago(365);
+                let response = self
+                    .grid_request(
+                        "Shows/NextUp",
+                        &[
+                            ("UserId", self.session.user_id.as_str()),
+                            ("StartIndex", start_text.as_str()),
+                            ("Limit", limit.as_str()),
+                            ("EnableTotalRecordCount", "true"),
+                            ("DisableFirstEpisode", "false"),
+                            ("NextUpDateCutoff", cutoff.as_str()),
+                            ("EnableResumable", "false"),
+                        ],
+                        "loading next up",
+                    )
+                    .await?;
+                return Ok(GridPage {
+                    total: response
+                        .total_record_count
+                        .unwrap_or(start + response.items.len()),
+                    items: response.items.into_iter().map(Into::into).collect(),
+                    start,
+                });
+            }
             PageRoute::List(list) => {
                 list_query(list, &mut query);
                 format!("Users/{}/Items", encode_path_segment(&self.session.user_id))
@@ -141,7 +168,9 @@ impl JellyfinApi {
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
             .collect::<Vec<_>>();
-        let response = self.grid_request(&path, &query, "loading a library page").await?;
+        let response = self
+            .grid_request(&path, &query, "loading a library page")
+            .await?;
         Ok(GridPage {
             total: response
                 .total_record_count
@@ -299,26 +328,35 @@ impl JellyfinApi {
                     "loading favorite people",
                 )
                 .await;
-            shelf_from(response, "favorites-people", "People", CardShape::Portrait, None)
+            shelf_from(
+                response,
+                "favorites-people",
+                "People",
+                CardShape::Portrait,
+                None,
+            )
         };
         let (mut shelves, people) = tokio::join!(shelves, people);
         shelves.push(people);
-        Ok(PageContent::Shelves(shelves.into_iter().flatten().collect()))
+        Ok(PageContent::Shelves(
+            shelves.into_iter().flatten().collect(),
+        ))
     }
 
     async fn movie_suggestions(&self, library: &LibraryRef) -> Result<PageContent, ApiError> {
         let resume = self.resume_in(&library.id, "Movie");
         let latest = self.latest_of(&library.id, "Movie");
         let recommendations = self.send_json::<Vec<Recommendation>>(
-            self.request(Method::GET, "Movies/Recommendations")?.query(&[
-                ("UserId", self.session.user_id.as_str()),
-                ("ParentId", library.id.as_str()),
-                ("categoryLimit", "6"),
-                ("ItemLimit", "8"),
-                ("Fields", LIST_FIELDS),
-                ("EnableImageTypes", "Primary,Backdrop,Thumb"),
-                ("ImageTypeLimit", "1"),
-            ]),
+            self.request(Method::GET, "Movies/Recommendations")?
+                .query(&[
+                    ("UserId", self.session.user_id.as_str()),
+                    ("ParentId", library.id.as_str()),
+                    ("categoryLimit", "6"),
+                    ("ItemLimit", "8"),
+                    ("Fields", LIST_FIELDS),
+                    ("EnableImageTypes", "Primary,Backdrop,Thumb"),
+                    ("ImageTypeLimit", "1"),
+                ]),
             "loading recommendations",
         );
         let (resume, latest, recommendations) = tokio::join!(resume, latest, recommendations);
@@ -476,18 +514,25 @@ impl JellyfinApi {
                     filter: ListFilter::Genre(genre.id.clone()),
                     item_types: item_type.to_owned(),
                 });
-                shelf_from_items(items, &format!("genre-{}", genre.id), &genre.name, CardShape::Portrait)
-                    .map(|shelf| Shelf {
-                        link: Some(link),
-                        wrap: true,
-                        ..shelf
-                    })
+                shelf_from_items(
+                    items,
+                    &format!("genre-{}", genre.id),
+                    &genre.name,
+                    CardShape::Portrait,
+                )
+                .map(|shelf| Shelf {
+                    link: Some(link),
+                    wrap: true,
+                    ..shelf
+                })
             }
         }))
         .buffered(SECTION_CONCURRENCY)
         .collect::<Vec<_>>()
         .await;
-        Ok(PageContent::Shelves(shelves.into_iter().flatten().collect()))
+        Ok(PageContent::Shelves(
+            shelves.into_iter().flatten().collect(),
+        ))
     }
 
     /// The Upcoming tab: episodes not yet aired, one section per day.
@@ -617,15 +662,34 @@ pub fn home_shelves(sections: Vec<CatalogSectionData>) -> Vec<Shelf> {
         .map(|section| {
             let (shape, lines) = match section.id.as_str() {
                 "libraries" => (CardShape::Backdrop, 1),
-                "continue" | "next-up" => (CardShape::Backdrop, 2),
+                id if id.starts_with("continue") || id == "next-up" => (CardShape::Backdrop, 2),
                 _ => (CardShape::Auto, 2),
             };
-            let link = section.id.strip_prefix("latest-").and_then(|library_id| {
-                libraries
-                    .iter()
-                    .find(|library| library.id == library_id)
-                    .map(library_route)
-            });
+            let link = if section.id == "next-up" {
+                Some(PageRoute::List(ListQuery {
+                    title: "Next Up".to_owned(),
+                    parent_id: None,
+                    filter: ListFilter::NextUp,
+                    item_types: "Episode".to_owned(),
+                }))
+            } else {
+                section.id.strip_prefix("latest-").and_then(|library_id| {
+                    libraries
+                        .iter()
+                        .find(|library| library.id == library_id)
+                        .map(library_route)
+                })
+            };
+            let mut items = section.items;
+            if section.id.starts_with("latest-") {
+                // jellyfin-web's Recently Added: a show's badge counts the
+                // new episodes grouped into it, not its unplayed ones.
+                for item in &mut items {
+                    if item.kind == "Series" {
+                        item.unplayed_count = item.child_count;
+                    }
+                }
+            }
             Shelf {
                 id: section.id,
                 title: section.title,
@@ -633,7 +697,7 @@ pub fn home_shelves(sections: Vec<CatalogSectionData>) -> Vec<Shelf> {
                 shape,
                 lines,
                 wrap: false,
-                items: section.items,
+                items,
             }
         })
         .collect()
@@ -703,7 +767,8 @@ fn list_query(list: &ListQuery, query: &mut Vec<(&'static str, String)>) {
         ListFilter::Children => {}
         ListFilter::Genre(id) => query.push(("GenreIds", id.clone())),
         ListFilter::Studio(id) => query.push(("StudioIds", id.clone())),
-        ListFilter::Person(id) => query.push(("PersonIds", id.clone())),
+        ListFilter::Tag(tag) => query.push(("Tags", tag.clone())),
+        ListFilter::NextUp => {}
         ListFilter::Favorites => push_status_filter(query, "IsFavorite"),
     }
 }
@@ -860,10 +925,19 @@ mod tests {
             section("latest-shows"),
         ]);
         merge_home_shelves(&mut home, vec![section("latest-music")]);
-        let ids = home.iter().map(|shelf| shelf.id.as_str()).collect::<Vec<_>>();
+        let ids = home
+            .iter()
+            .map(|shelf| shelf.id.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(
             ids,
-            ["libraries", "next-up", "latest-books", "latest-music", "latest-shows"]
+            [
+                "libraries",
+                "next-up",
+                "latest-books",
+                "latest-music",
+                "latest-shows"
+            ]
         );
         assert!(home[3].link.is_some());
     }

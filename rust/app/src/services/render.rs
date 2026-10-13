@@ -15,12 +15,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 
+use crate::services::libmpv::{self as sys, Api};
 use eframe::glow::{self, HasContext};
 use libloading::Library;
-use crate::services::libmpv::{self as sys, Api};
+use raw_window_handle::HasDisplayHandle;
 #[cfg(target_os = "linux")]
 use raw_window_handle::RawDisplayHandle;
-use raw_window_handle::HasDisplayHandle;
 
 use crate::services::player::{
     PlayerCommand, PlayerSender, RenderClient, RenderClientSlot, RenderClientState,
@@ -377,7 +377,8 @@ impl RenderHost {
                     let wait = target - mpv.time_ns();
                     if wait > 1_500_000 {
                         mpv.redraw_at(
-                            std::time::Instant::now() + std::time::Duration::from_nanos(wait as u64),
+                            std::time::Instant::now()
+                                + std::time::Duration::from_nanos(wait as u64),
                         );
                         false
                     } else {
@@ -642,7 +643,9 @@ impl RawRenderContext {
                 loop {
                     let message = match deadline {
                         Some(at) => {
-                            match receiver.recv_timeout(at.saturating_duration_since(std::time::Instant::now())) {
+                            match receiver.recv_timeout(
+                                at.saturating_duration_since(std::time::Instant::now()),
+                            ) {
                                 Ok(message) => message,
                                 Err(mpsc::RecvTimeoutError::Timeout) => {
                                     deadline = None;

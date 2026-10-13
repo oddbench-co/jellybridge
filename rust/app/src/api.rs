@@ -6,15 +6,18 @@ use std::future::Future;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-
+mod items;
 mod pages;
-pub use pages::{home_shelves, library_route, merge_home_shelves};
 use crate::features::detail::{
-    DetailItemData, DetailKind, DetailPageData, ImageRef, ImageType, PersonData, StreamData,
+    DetailItemData, DetailKind, DetailPageData, DetailSection, ImageRef, ImageType, NamedId,
+    PersonData, StreamData,
 };
 use crate::features::now_playing::{MediaSegment, SegmentKind, split_adjacent};
+use crate::features::prefs::UserPrefs;
 use crate::features::progress::{ReportTarget, position_ticks};
 use crate::services::session::StoredSession;
+pub use items::{Container, InfoBlock, QueueSource};
+pub use pages::{home_shelves, library_route, merge_home_shelves};
 
 const CLIENT_NAME: &str = "JellyBridge";
 const CLIENT_VERSION: &str = "0.1.0-rust";
@@ -31,10 +34,7 @@ const DEVICE_ID: &str = "jellybridge-rust-desktop";
 // separately. Carrying them made the six home requests ~900 KiB instead of
 // ~75 KiB and roughly doubled the slowest one.
 const LIST_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,RunTimeTicks,ChildCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
-/// Rows fetched for "Recently Added" before episodes are collapsed into their
-/// show, and rows kept afterwards.
-const HOME_SHELF_LIMIT: usize = 16;
-const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
+const DETAIL_FIELDS: &str = "GenreItems,ProductionLocations,ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -66,6 +66,38 @@ pub struct JellyfinApi {
     authorization: HeaderValue,
 }
 
+/// Home's sections and the user's settings they were built from.
+#[derive(Clone, Debug)]
+pub struct HomeData {
+    pub sections: Vec<CatalogSectionData>,
+    pub prefs: UserPrefs,
+}
+
+/// `days` ago as an ISO 8601 UTC timestamp, for `NextUpDateCutoff`.
+fn iso_days_ago(days: u32) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    let then = now - i64::from(days) * 86_400;
+    let (day_count, seconds) = (then.div_euclid(86_400), then.rem_euclid(86_400));
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = day_count + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.000Z",
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct CatalogSectionData {
     pub id: String,
@@ -77,13 +109,9 @@ pub struct CatalogSectionData {
 pub struct CatalogItemData {
     pub id: String,
     pub title: String,
-    pub subtitle: String,
     pub kind: String,
-    pub image_item_id: String,
-    pub image_tag: Option<String>,
     pub watched: bool,
     pub progress: f32,
-    pub is_container: bool,
     pub playable: bool,
     /// The card's first text line, as Jellyfin writes it: an episode is
     /// named by its series, everything else by itself.
@@ -91,16 +119,19 @@ pub struct CatalogItemData {
     /// The card's second line: "S1:E16 - Name" for an episode, the year
     /// for a movie or series, nothing for folders.
     pub card_subtitle: String,
+    /// Whether each line is a link in jellyfin-web, which sets its height.
+    pub title_link: bool,
+    pub subtitle_link: bool,
     pub favorite: bool,
     /// Unwatched episodes in a series or season, for the corner badge.
     pub unplayed_count: u32,
-    /// Artwork for a 16:9 card, chosen like Jellyfin's `preferThumb`: the
-    /// item's Thumb, the series' Thumb, a backdrop, then an episode still.
-    pub thumb: Option<ImageRef>,
-    /// The wide banner for the grid's Banner view.
-    pub banner: Option<ImageRef>,
-    /// An episode's own still, which the Episodes tab shows.
-    pub still: Option<ImageRef>,
+    /// Every image a card could show, for jellyfin-web's choice.
+    pub images: CardImages,
+    pub series_id: Option<String>,
+    pub season_id: Option<String>,
+    /// Children, or for a show on a Recently Added shelf the new episodes
+    /// grouped into it.
+    pub child_count: u32,
     /// A library's kind ("movies", "tvshows", …); empty for anything else.
     pub collection_type: String,
 }
@@ -144,10 +175,7 @@ impl JellyfinApi {
     /// Builds an API for a session over an existing client, so sign-in does not
     /// throw away the connection it just opened (and warmed the DNS cache with)
     /// before the dashboard fetch starts on an empty pool.
-    fn from_session_with(
-        session: StoredSession,
-        http: reqwest::Client,
-    ) -> Result<Self, ApiError> {
+    fn from_session_with(session: StoredSession, http: reqwest::Client) -> Result<Self, ApiError> {
         let server = normalize_server_url(&session.server_url)?;
         let authorization = authorization_value(&session.token)?;
         Ok(Self {
@@ -194,57 +222,204 @@ impl JellyfinApi {
         &self.session
     }
 
-    /// The home screen, laid out as jellyfin-web's default home: My Media,
-    /// Continue Watching, Next Up, then "Recently Added in <library>" for
-    /// each library.
+    /// The home screen as jellyfin-web builds it: the user's settings, then
+    /// the sections in their Home order with the requests jellyfin-web
+    /// makes.
     ///
-    /// Music libraries' shelves are left out: they sit below the first
-    /// screen, and their query competes on the server with Next Up, the
-    /// slowest request, which held launch back by ~50 ms. They follow
-    /// through [`Self::deferred_home_sections`].
-    pub async fn home(&self) -> Result<Vec<CatalogSectionData>, ApiError> {
-        // The per-library shelves need the library list, so they start the
-        // moment it lands, while Continue Watching and Next Up are still in
-        // flight, rather than after everything else.
+    /// Everything starts at once. Next Up assumes jellyfin-web's default
+    /// cutoff and is only asked again if the user changed it, so launch does
+    /// not wait for the settings. Music libraries' shelves are left out:
+    /// they sit below the first screen, and their query competes on the
+    /// server with Next Up, the slowest request, which held launch back by
+    /// ~50 ms. They follow through [`Self::deferred_home_sections`].
+    pub async fn home(&self) -> Result<HomeData, ApiError> {
+        use crate::features::prefs::HomeSection;
+        let default_prefs = UserPrefs::default();
         let libraries_and_latest = async {
             let libraries = timed("libraries", self.libraries()).await?;
             let latest = futures_util::future::join_all(
                 libraries
                     .iter()
                     .filter(|library| has_latest_shelf(library) && !defers_latest_shelf(library))
-                    .map(|library| timed("latest", self.latest_in(&library.id))),
+                    .map(|library| async move {
+                        (
+                            library.id.clone(),
+                            timed("latest", self.latest_in(&library.id, 16)).await,
+                        )
+                    }),
             )
             .await;
             Ok::<_, ApiError>((libraries, latest))
         };
-        let (libraries_and_latest, resume, next_up) = tokio::join!(
+        let (libraries_and_latest, prefs, resume, resume_audio, resume_book, next_up) = tokio::join!(
             libraries_and_latest,
-            timed("resume", self.resume_items()),
-            timed("next_up", self.next_up()),
+            timed("prefs", self.user_prefs()),
+            timed("resume", self.resume_items("Video")),
+            timed("resume_audio", self.resume_items("Audio")),
+            timed("resume_book", self.resume_items("Book")),
+            timed("next_up", self.next_up(&default_prefs)),
         );
         let (libraries, latest) = libraries_and_latest?;
-        let latest_titles = libraries
+        let prefs = prefs.unwrap_or_else(|error| {
+            tracing::warn!(%error, "user settings could not be loaded");
+            default_prefs.clone()
+        });
+        let next_up = if prefs.next_up_days() != default_prefs.next_up_days()
+            || prefs.rewatching_in_next_up() != default_prefs.rewatching_in_next_up()
+        {
+            self.next_up(&prefs).await
+        } else {
+            next_up
+        };
+        let mut resume = Some(resume);
+        let mut resume_audio = Some(resume_audio);
+        let mut resume_book = Some(resume_book);
+        let mut next_up = Some(next_up);
+        let mut latest = Some(latest);
+        let names: HashMap<String, String> = libraries
             .iter()
-            .filter(|library| has_latest_shelf(library) && !defers_latest_shelf(library))
-            .map(|library| (library.id.clone(), format!("Recently Added in {}", library.name)))
-            .collect::<Vec<_>>();
-        let mut sections = vec![CatalogSectionData {
-            id: "libraries".into(),
-            title: "My Media".into(),
-            items: libraries.into_iter().map(Into::into).collect(),
-        }];
-        append_optional_section(&mut sections, "continue", "Continue Watching", resume);
-        append_optional_section(&mut sections, "next-up", "Next Up", next_up);
-        for ((library_id, title), items) in latest_titles.into_iter().zip(latest) {
-            append_series_grouped_section(
-                &mut sections,
-                &format!("latest-{library_id}"),
-                &title,
-                HOME_SHELF_LIMIT,
-                items,
-            );
+            .map(|library| (library.id.clone(), library.name.clone()))
+            .collect();
+        let mut library_rows = Some(
+            libraries
+                .into_iter()
+                .filter(|library| !prefs.my_media_excludes.contains(&library.id))
+                .map(CatalogItemData::from)
+                .collect::<Vec<_>>(),
+        );
+        let mut sections = Vec::new();
+        for section in prefs.home_sections() {
+            match section {
+                HomeSection::LibraryTiles | HomeSection::LibraryButtons => {
+                    if let Some(items) = library_rows.take() {
+                        sections.push(CatalogSectionData {
+                            id: "libraries".into(),
+                            title: "My Media".into(),
+                            items,
+                        });
+                    }
+                }
+                HomeSection::Resume => {
+                    if let Some(items) = resume.take() {
+                        append_optional_section(
+                            &mut sections,
+                            "continue",
+                            "Continue Watching",
+                            items,
+                        );
+                    }
+                }
+                HomeSection::ResumeAudio => {
+                    if let Some(items) = resume_audio.take() {
+                        append_optional_section(
+                            &mut sections,
+                            "continue-audio",
+                            "Continue Listening",
+                            items,
+                        );
+                    }
+                }
+                HomeSection::ResumeBook => {
+                    if let Some(items) = resume_book.take() {
+                        append_optional_section(
+                            &mut sections,
+                            "continue-book",
+                            "Continue Reading",
+                            items,
+                        );
+                    }
+                }
+                HomeSection::NextUp => {
+                    if let Some(items) = next_up.take() {
+                        append_optional_section(&mut sections, "next-up", "Next Up", items);
+                    }
+                }
+                HomeSection::LatestMedia => {
+                    for (library_id, items) in latest.take().into_iter().flatten() {
+                        if prefs.latest_excludes.contains(&library_id) {
+                            continue;
+                        }
+                        let name = names.get(&library_id).cloned().unwrap_or_default();
+                        append_optional_section(
+                            &mut sections,
+                            &format!("latest-{library_id}"),
+                            &format!("Recently Added in {name}"),
+                            items,
+                        );
+                    }
+                }
+                HomeSection::ActiveRecordings | HomeSection::LiveTv | HomeSection::None => {}
+            }
         }
-        Ok(sections)
+        Ok(HomeData { sections, prefs })
+    }
+
+    /// The user's server-side settings (display preferences and user
+    /// configuration), read together.
+    pub async fn user_prefs(&self) -> Result<UserPrefs, ApiError> {
+        let display = self.send_json::<serde_json::Value>(
+            self.request(Method::GET, "DisplayPreferences/usersettings")?
+                .query(&[
+                    ("userId", self.session.user_id.as_str()),
+                    ("client", "emby"),
+                ]),
+            "loading display preferences",
+        );
+        let user = self.send_json::<serde_json::Value>(
+            self.request(
+                Method::GET,
+                &format!("Users/{}", encode_path_segment(&self.session.user_id)),
+            )?,
+            "loading user settings",
+        );
+        let (display, user) = tokio::join!(display, user);
+        let display = display?;
+        let user = user?;
+        let strings = |value: &serde_json::Value| -> Vec<String> {
+            value
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|id| id.as_str().map(str::to_owned))
+                .collect()
+        };
+        let config = &user["Configuration"];
+        Ok(UserPrefs {
+            custom: display["CustomPrefs"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
+                .collect(),
+            hide_played_in_latest: config["HidePlayedInLatest"].as_bool().unwrap_or(true),
+            my_media_excludes: strings(&config["MyMediaExcludes"]),
+            latest_excludes: strings(&config["LatestItemsExcludes"]),
+        })
+    }
+
+    /// Saves one of jellyfin-web's display preferences (a library sort, a
+    /// player option), keeping all the others.
+    pub async fn save_custom_pref(&self, key: &str, value: &str) -> Result<(), ApiError> {
+        let query = [
+            ("userId", self.session.user_id.as_str()),
+            ("client", "emby"),
+        ];
+        let mut display: serde_json::Value = self
+            .send_json(
+                self.request(Method::GET, "DisplayPreferences/usersettings")?
+                    .query(&query),
+                "loading display preferences",
+            )
+            .await?;
+        display["CustomPrefs"][key] = serde_json::Value::String(value.to_owned());
+        let response = self
+            .request(Method::POST, "DisplayPreferences/usersettings")?
+            .query(&query)
+            .json(&display)
+            .send()
+            .await?;
+        check_status(response, "saving display preferences")?;
+        Ok(())
     }
 
     /// The home shelves [`Self::home`] leaves for later: "Recently Added in"
@@ -257,16 +432,18 @@ impl JellyfinApi {
             .iter()
             .filter(|library| library.collection_type == "music")
             .collect::<Vec<_>>();
-        let latest =
-            futures_util::future::join_all(deferred.iter().map(|library| self.latest_in(&library.id)))
-                .await;
+        let latest = futures_util::future::join_all(
+            deferred
+                .iter()
+                .map(|library| self.latest_in(&library.id, 30)),
+        )
+        .await;
         let mut sections = Vec::new();
         for (library, items) in deferred.into_iter().zip(latest) {
-            append_series_grouped_section(
+            append_optional_section(
                 &mut sections,
                 &format!("latest-{}", library.id),
                 &format!("Recently Added in {}", library.title),
-                HOME_SHELF_LIMIT,
                 items,
             );
         }
@@ -327,24 +504,127 @@ impl JellyfinApi {
                 _ => (Vec::new(), Vec::new(), None),
             }
         };
-        let ((seasons, episodes, children_error), similar) = tokio::join!(children, similar);
+        let sections = async {
+            match kind {
+                DetailKind::Person => self.person_sections(item_id).await,
+                DetailKind::BoxSet => self.collection_sections(item_id).await,
+                DetailKind::Playlist => self.playlist_sections(item_id).await,
+                _ => Ok(Vec::new()),
+            }
+        };
+        let (((seasons, episodes, children_error), similar), sections) =
+            tokio::join!(async { tokio::join!(children, similar) }, sections);
+        let (sections, sections_error) = match sections {
+            Ok(sections) => (sections, None),
+            Err(error) => (Vec::new(), Some(error.to_string())),
+        };
         Ok(DetailPageData {
             item: item.into(),
             seasons: seasons.into_iter().map(Into::into).collect(),
             episodes: episodes.into_iter().map(Into::into).collect(),
             similar: similar.into_iter().map(Into::into).collect(),
-            children_error,
+            sections,
+            children_error: children_error.or(sections_error),
         })
+    }
+
+    /// A person's filmography: movies, shows and episodes, newest first.
+    async fn person_sections(&self, person_id: &str) -> Result<Vec<DetailSection>, ApiError> {
+        const KINDS: [(&str, &str, bool); 3] = [
+            ("Movie", "Movies", false),
+            ("Series", "Shows", false),
+            ("Episode", "Episodes", true),
+        ];
+        let path = format!("Users/{}/Items", encode_path_segment(&self.session.user_id));
+        let path = &path;
+        let results = futures_util::future::join_all(KINDS.iter().map(|(kind, _, _)| async move {
+            let query = [
+                ("PersonIds", person_id),
+                ("IncludeItemTypes", kind),
+                ("Recursive", "true"),
+                ("SortBy", "PremiereDate,ProductionYear,SortName"),
+                ("SortOrder", "Descending"),
+                ("Limit", "100"),
+                ("EnableTotalRecordCount", "false"),
+            ];
+            self.items_request(path, &query, "loading a filmography")
+                .await
+        }))
+        .await;
+        let mut sections = Vec::new();
+        for ((_, title, wide), items) in KINDS.iter().zip(results) {
+            let items = items?;
+            if !items.is_empty() {
+                sections.push(DetailSection {
+                    title: (*title).to_owned(),
+                    wide: *wide,
+                    list: false,
+                    items: items.into_iter().map(Into::into).collect(),
+                });
+            }
+        }
+        Ok(sections)
+    }
+
+    /// A collection's items, one section per kind as jellyfin-web groups
+    /// them.
+    async fn collection_sections(&self, id: &str) -> Result<Vec<DetailSection>, ApiError> {
+        let items = self
+            .items_request(
+                &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
+                &[
+                    ("ParentId", id),
+                    ("SortBy", "PremiereDate,ProductionYear,SortName"),
+                    ("SortOrder", "Ascending"),
+                ],
+                "loading a collection",
+            )
+            .await?;
+        let mut sections: Vec<DetailSection> = Vec::new();
+        for item in items {
+            let title = match item.kind.as_str() {
+                "Movie" => "Movies",
+                "Series" => "Shows",
+                "Episode" => "Episodes",
+                "Season" => "Seasons",
+                _ => "Items",
+            };
+            let wide = item.kind == "Episode";
+            match sections.iter_mut().find(|section| section.title == title) {
+                Some(section) => section.items.push(item.into()),
+                None => sections.push(DetailSection {
+                    title: title.to_owned(),
+                    wide,
+                    list: false,
+                    items: vec![item.into()],
+                }),
+            }
+        }
+        Ok(sections)
+    }
+
+    /// A playlist's entries, in playlist order, as one list.
+    async fn playlist_sections(&self, id: &str) -> Result<Vec<DetailSection>, ApiError> {
+        let items = self
+            .items_request(
+                &format!("Playlists/{}/Items", encode_path_segment(id)),
+                &[("UserId", self.session.user_id.as_str())],
+                "loading a playlist",
+            )
+            .await?;
+        Ok(vec![DetailSection {
+            title: String::new(),
+            wide: true,
+            list: true,
+            items: items.into_iter().map(Into::into).collect(),
+        }])
     }
 
     /// The server's "More Like This" for an item.
     async fn similar_items(&self, item_id: &str) -> Result<Vec<LibraryItem>, ApiError> {
         self.items_request(
             &format!("Items/{}/Similar", encode_path_segment(item_id)),
-            &[
-                ("UserId", self.session.user_id.as_str()),
-                ("Limit", "12"),
-            ],
+            &[("UserId", self.session.user_id.as_str()), ("Limit", "12")],
             "loading similar items",
         )
         .await
@@ -537,6 +817,46 @@ impl JellyfinApi {
         Ok(response.bytes().await?.to_vec())
     }
 
+    /// A card image as jellyfin-web asks for it: filled to an exact size at
+    /// quality 96, in whatever format the server prefers for a browser
+    /// (WebP), so the pixels are the ones jellyfin-web shows.
+    pub async fn fetch_card_image(
+        &self,
+        image: &ImageRef,
+        fill_width: u32,
+        fill_height: u32,
+    ) -> Result<Vec<u8>, ApiError> {
+        let suffix = image
+            .index
+            .filter(|index| *index > 0)
+            .map(|index| format!("/{index}"))
+            .unwrap_or_default();
+        let response = self
+            .request(
+                Method::GET,
+                &format!(
+                    "Items/{}/Images/{}{}",
+                    encode_path_segment(&image.item_id),
+                    image.image_type.jellyfin_name(),
+                    suffix
+                ),
+            )?
+            .header(
+                reqwest::header::ACCEPT,
+                "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            )
+            .query(&[
+                ("fillHeight", fill_height.to_string()),
+                ("fillWidth", fill_width.to_string()),
+                ("quality", "96".to_owned()),
+                ("tag", image.tag.clone()),
+            ])
+            .send()
+            .await?;
+        let response = check_status(response, "loading artwork")?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
     async fn detail_item(&self, item_id: &str) -> Result<LibraryItem, ApiError> {
         self.send_json(
             self.request(
@@ -556,27 +876,6 @@ impl JellyfinApi {
             "loading item details",
         )
         .await
-    }
-
-    pub async fn fetch_primary_image(
-        &self,
-        item_id: &str,
-        max_width: u32,
-    ) -> Result<Vec<u8>, ApiError> {
-        let response = self
-            .request(
-                Method::GET,
-                &format!("Items/{}/Images/Primary", encode_path_segment(item_id)),
-            )?
-            .query(&[
-                ("maxWidth", max_width.to_string().as_str()),
-                ("quality", "90"),
-                ("format", "Jpg"),
-            ])
-            .send()
-            .await?;
-        let response = check_status(response, "loading artwork")?;
-        Ok(response.bytes().await?.to_vec())
     }
 
     /// The user's libraries ("views") in their configured order, as My Media
@@ -644,31 +943,43 @@ impl JellyfinApi {
         Ok(response.items)
     }
 
-    async fn resume_items(&self) -> Result<Vec<LibraryItem>, ApiError> {
+    /// Continue Watching / Listening / Reading, as jellyfin-web asks.
+    async fn resume_items(&self, media_type: &str) -> Result<Vec<LibraryItem>, ApiError> {
         self.items_request(
             &format!(
                 "Users/{}/Items/Resume",
                 encode_path_segment(&self.session.user_id)
             ),
             &[
-                ("StartIndex", "0"),
-                ("Limit", "20"),
-                ("MediaTypes", "Video"),
-                ("IncludeItemTypes", "Movie,Episode"),
+                ("Limit", "12"),
+                ("Recursive", "true"),
+                ("EnableTotalRecordCount", "false"),
+                ("MediaTypes", media_type),
             ],
             "loading continue watching",
         )
         .await
     }
 
-    async fn next_up(&self) -> Result<Vec<LibraryItem>, ApiError> {
+    /// Next Up with jellyfin-web's parameters: shows watched in the last
+    /// `maxDaysForNextUp` days, no resumable episodes, rewatching as set.
+    async fn next_up(&self, prefs: &UserPrefs) -> Result<Vec<LibraryItem>, ApiError> {
+        let cutoff = iso_days_ago(prefs.next_up_days());
+        let rewatching = if prefs.rewatching_in_next_up() {
+            "true"
+        } else {
+            "false"
+        };
         self.items_request(
             "Shows/NextUp",
             &[
                 ("UserId", self.session.user_id.as_str()),
-                ("StartIndex", "0"),
-                ("Limit", "20"),
+                ("Limit", "24"),
                 ("EnableTotalRecordCount", "false"),
+                ("DisableFirstEpisode", "false"),
+                ("NextUpDateCutoff", cutoff.as_str()),
+                ("EnableResumable", "false"),
+                ("EnableRewatching", rewatching),
             ],
             "loading next up",
         )
@@ -676,8 +987,9 @@ impl JellyfinApi {
     }
 
     /// The newest items in one library, as jellyfin-web's home asks for
-    /// them: grouped, so a batch of new episodes arrives as its show.
-    async fn latest_in(&self, library_id: &str) -> Result<Vec<LibraryItem>, ApiError> {
+    /// them (the server groups a batch of new episodes into their show).
+    async fn latest_in(&self, library_id: &str, limit: u32) -> Result<Vec<LibraryItem>, ApiError> {
+        let limit = limit.to_string();
         self.send_json(
             self.request(
                 Method::GET,
@@ -693,10 +1005,7 @@ impl JellyfinApi {
                 ("EnableImages", "true"),
                 ("ImageTypeLimit", "1"),
                 ("EnableImageTypes", "Primary,Backdrop,Thumb"),
-                ("Limit", "16"),
-                // Collapses a batch of new episodes into their series and puts
-                // the number of them in `ChildCount`.
-                ("GroupItems", "true"),
+                ("Limit", limit.as_str()),
             ]),
             "loading latest media",
         )
@@ -876,159 +1185,6 @@ fn sort_detail_items(items: &mut [LibraryItem]) {
     });
 }
 
-/// Appends a shelf, collapsing the episodes of one show into a single row.
-///
-/// Downloading a season otherwise fills the shelf with one card per episode:
-/// nine of the first fourteen "Recently Added" rows were episodes of the same
-/// show, plus a tenth for the show itself, which arrived at the same time.
-///
-/// Used for the two "what is new" shelves only. Continue Watching and Next Up
-/// are meant to name a specific episode, and favourites are chosen one at a
-/// time.
-fn append_series_grouped_section(
-    sections: &mut Vec<CatalogSectionData>,
-    id: &str,
-    title: &str,
-    limit: usize,
-    result: Result<Vec<LibraryItem>, ApiError>,
-) {
-    match result {
-        Ok(items) if !items.is_empty() => {
-            let mut items = group_episodes_by_series(items);
-            // Grouping shrinks the shelf, so the queries behind it fetch more
-            // than they show; trim back to the shelf's real size.
-            items.truncate(limit);
-            sections.push(CatalogSectionData {
-                id: id.to_owned(),
-                title: title.to_owned(),
-                items,
-            });
-        }
-        Ok(_) => {}
-        Err(error) => tracing::warn!(%error, section = title, "dashboard section failed"),
-    }
-}
-
-/// One row per show, counting how many of its episodes are in `items`.
-///
-/// Keyed on the series: an episode by its `SeriesId`, a series by its own id.
-/// That single key is what merges the two ways a show turns up twice -- the
-/// Latest endpoint returns a series both bare and grouped when the show and
-/// its episodes are new together, and the Recently Added query returns the
-/// series alongside every one of its episodes. Both share an id, so the larger
-/// count wins and one row survives.
-///
-/// Movies and folders pass through untouched, and first-appearance order is
-/// preserved so the server's newest-first ordering survives.
-///
-/// The count only sees the rows it was given: a show with thirty new episodes
-/// reports twenty when twenty were fetched. The server's own grouped
-/// `ChildCount` truncates the same way, so the shelves stay consistent with
-/// each other and with Jellyfin.
-fn group_episodes_by_series(items: Vec<LibraryItem>) -> Vec<CatalogItemData> {
-    let mut rows: Vec<CatalogItemData> = Vec::with_capacity(items.len());
-    // Series id -> (index into `rows`, episodes counted so far).
-    let mut groups: HashMap<String, (usize, u32)> = HashMap::new();
-
-    for item in items {
-        let Some((key, contribution)) = group_key(&item) else {
-            rows.push(item.into());
-            continue;
-        };
-        if let Some((index, count)) = groups.get_mut(&key) {
-            *count = contribution.merged_into(*count);
-            rows[*index].subtitle = new_episode_subtitle(*count);
-            continue;
-        }
-        let count = contribution.merged_into(0);
-        groups.insert(key.clone(), (rows.len(), count));
-        rows.push(series_row(item, key, count));
-    }
-    rows
-}
-
-/// What one row adds to its group's episode count.
-#[derive(Clone, Copy)]
-enum GroupContribution {
-    /// A single episode. Occurrences add up.
-    Episode,
-    /// A series row that already carries the whole count, so occurrences do
-    /// not add: the larger figure is the right one.
-    Total(u32),
-}
-
-impl GroupContribution {
-    fn merged_into(self, count: u32) -> u32 {
-        match self {
-            Self::Episode => count.saturating_add(1),
-            Self::Total(total) => count.max(total),
-        }
-    }
-}
-
-/// The series a row belongs to and what it contributes to the count. `None` for
-/// rows that are not part of a show.
-fn group_key(item: &LibraryItem) -> Option<(String, GroupContribution)> {
-    match item.kind.as_str() {
-        // Without a series id there is nothing to group an episode under, so
-        // it stays a row of its own rather than disappearing.
-        "Episode" => item
-            .series_id
-            .clone()
-            .map(|id| (id, GroupContribution::Episode)),
-        // `ChildCount` on a row from the Latest endpoint with `GroupItems=true`
-        // is the number of newly added episodes -- not its usual meaning, which
-        // for the same series on an ordinary query is the season count.
-        "Series" => Some((
-            item.id.clone(),
-            GroupContribution::Total(item.child_count.unwrap_or(0).max(0) as u32),
-        )),
-        _ => None,
-    }
-}
-
-/// Rewrites one row of a group as the show it belongs to.
-///
-/// The artwork needs no special handling: `artwork_identity` already makes an
-/// episode borrow its series poster, so this resolves to the same image, and
-/// the same cache key, that was going to be drawn anyway.
-fn series_row(item: LibraryItem, series_id: String, count: u32) -> CatalogItemData {
-    let series_name = item.series_name.clone();
-    let mut row = CatalogItemData::from(item);
-    if count == 0 {
-        // A show that is itself new, with no episodes grouped under it. Leave
-        // it exactly as the server described it.
-        return row;
-    }
-    row.id = series_id;
-    row.title = series_name.unwrap_or(row.title);
-    row.kind = "Series".to_owned();
-    row.subtitle = new_episode_subtitle(count);
-    // Jellyfin shows a grouped show as the show, with the number of new
-    // episodes in the corner badge.
-    row.card_title = row.title.clone();
-    row.card_subtitle = String::new();
-    row.unplayed_count = count;
-    row.favorite = false;
-    // `playable` and `is_container` follow the kind, and a Series opens its
-    // detail page, where `play_target` picks the right episode.
-    row.playable = false;
-    row.is_container = true;
-    // Progress taken from whichever episode happened to come first would be
-    // meaningless for a group.
-    row.watched = false;
-    row.progress = 0.0;
-    row
-}
-
-fn new_episode_subtitle(count: u32) -> String {
-    if count == 1 {
-        "1 new episode".to_owned()
-    } else {
-        format!("{count} new episodes")
-    }
-}
-
 fn append_optional_section(
     sections: &mut Vec<CatalogSectionData>,
     id: &str,
@@ -1101,15 +1257,9 @@ impl From<LibraryItem> for CatalogItemData {
         // Match the Kotlin browser's behavior: every non-playable Jellyfin item is
         // navigable. This also covers server-provided container types such as
         // ManualPlaylistsFolder and future container variants.
-        let is_container = !playable;
-        let subtitle = item_subtitle(&item);
-        let (image_item_id, image_tag) = artwork_identity(&item);
         let (card_title, card_subtitle) = card_lines(&item);
-        let thumb = thumb_image(&item);
-        let banner = own_image(&item, "Banner", ImageType::Banner);
-        let still = (item.kind == "Episode")
-            .then(|| own_image(&item, "Primary", ImageType::Primary))
-            .flatten();
+        let (title_link, subtitle_link) = card_links(&item);
+        let images = card_images(&item);
         let user = item.user_data.as_ref();
         Self {
             watched: user.is_some_and(|data| data.played),
@@ -1120,18 +1270,20 @@ impl From<LibraryItem> for CatalogItemData {
                 .map_or(0, |count| count as u32),
             id: item.id,
             title: item.name,
-            subtitle,
             kind: item.kind,
-            image_item_id,
-            image_tag,
             progress,
-            is_container,
             playable,
             card_title,
             card_subtitle,
-            thumb,
-            banner,
-            still,
+            title_link,
+            subtitle_link,
+            images,
+            series_id: item.series_id.clone(),
+            season_id: item.season_id.clone(),
+            child_count: item
+                .child_count
+                .filter(|count| *count > 0)
+                .map_or(0, |count| count as u32),
             collection_type: item.collection_type.unwrap_or_default(),
         }
     }
@@ -1216,6 +1368,7 @@ impl From<LibraryItem> for DetailItemData {
                 format!("as {}", person.role.trim())
             };
             PersonData {
+                id: person.id,
                 name: person.name,
                 role,
                 image,
@@ -1247,7 +1400,19 @@ impl From<LibraryItem> for DetailItemData {
             runtime_seconds: item
                 .run_time_ticks
                 .map(|ticks| ticks.max(0) as f64 / 10_000_000.0),
-            genres: item.genres,
+            // `GenreItems` carries the ids the links need; older servers
+            // only send the names.
+            genres: if item.genre_items.is_empty() {
+                item.genres
+                    .into_iter()
+                    .map(|name| NamedId { name, id: None })
+                    .collect()
+            } else {
+                item.genre_items.into_iter().map(Into::into).collect()
+            },
+            birth_place: item.production_locations.into_iter().next(),
+            end_date: item.end_date.as_deref().and_then(parse_iso_date),
+            playlist_item_id: item.playlist_item_id,
             tags: item.tags,
             external_urls: item
                 .external_urls
@@ -1260,8 +1425,8 @@ impl From<LibraryItem> for DetailItemData {
             studios: item
                 .studios
                 .into_iter()
-                .map(|studio| studio.name)
-                .filter(|name| !name.is_empty())
+                .filter(|studio| !studio.name.is_empty())
+                .map(Into::into)
                 .collect(),
             people,
             guest_stars,
@@ -1303,17 +1468,28 @@ impl From<LibraryItem> for DetailItemData {
 fn parse_iso_date(value: &str) -> Option<(i32, u32, u32)> {
     let mut parts = value.get(..10)?.split('-');
     let year = parts.next()?.parse().ok()?;
-    let month = parts.next()?.parse().ok().filter(|month| (1..=12).contains(month))?;
-    let day = parts.next()?.parse().ok().filter(|day| (1..=31).contains(day))?;
+    let month = parts
+        .next()?
+        .parse()
+        .ok()
+        .filter(|month| (1..=12).contains(month))?;
+    let day = parts
+        .next()?
+        .parse()
+        .ok()
+        .filter(|day| (1..=31).contains(day))?;
     Some((year, month, day))
 }
 
-fn person_names(people: &[BaseItemPerson], kind: &str) -> Vec<String> {
+fn person_names(people: &[BaseItemPerson], kind: &str) -> Vec<NamedId> {
     people
         .iter()
         .filter(|person| person.kind.eq_ignore_ascii_case(kind))
-        .map(|person| person.name.clone())
-        .filter(|name| !name.is_empty())
+        .filter(|person| !person.name.is_empty())
+        .map(|person| NamedId {
+            name: person.name.clone(),
+            id: person.id.clone(),
+        })
         .collect()
 }
 
@@ -1449,25 +1625,151 @@ fn media_summary(streams: &[ItemMediaStream]) -> String {
     .join(" • ")
 }
 
-fn artwork_identity(item: &LibraryItem) -> (String, Option<String>) {
-    if item.kind == "Episode"
-        && let (Some(series_id), Some(series_tag)) =
-            (&item.series_id, &item.series_primary_image_tag)
-    {
-        return (series_id.clone(), Some(series_tag.clone()));
-    }
+/// The images a card can pick from, as jellyfin-web's card builder sees an
+/// item.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardImages {
+    pub primary: Option<ImageRef>,
+    /// `PrimaryImageAspectRatio`: width over height.
+    pub primary_aspect: Option<f32>,
+    pub series_primary: Option<ImageRef>,
+    pub album_primary: Option<ImageRef>,
+    pub thumb: Option<ImageRef>,
+    pub series_thumb: Option<ImageRef>,
+    pub parent_thumb: Option<ImageRef>,
+    pub backdrop: Option<ImageRef>,
+    /// An episode's show backdrop.
+    pub parent_backdrop: Option<ImageRef>,
+    pub banner: Option<ImageRef>,
+}
 
-    let image_item_id = if item.image_tags.contains_key("Primary") {
-        item.id.clone()
-    } else {
-        item.parent_primary_image_item_id
-            .clone()
-            .unwrap_or_else(|| item.id.clone())
+/// The image a card shows, and whether the card writes the item's name
+/// over it (jellyfin-web does when a wide card falls back to a plain
+/// backdrop, which has no logo).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardImage {
+    pub image: ImageRef,
+    pub force_name: bool,
+    /// Width over height of a primary image, when the server knows it.
+    pub aspect: Option<f32>,
+}
+
+impl CardImages {
+    /// jellyfin-web's `getCardImageUrl` choice: wide cards prefer a thumb,
+    /// banners a banner, everything else the primary image.
+    pub fn pick(&self, prefer_thumb: bool, prefer_banner: bool) -> Option<CardImage> {
+        let plain = |image: &Option<ImageRef>| {
+            image.clone().map(|image| CardImage {
+                image,
+                force_name: false,
+                aspect: None,
+            })
+        };
+        if prefer_thumb && let Some(thumb) = plain(&self.thumb) {
+            return Some(thumb);
+        }
+        if prefer_banner && let Some(banner) = plain(&self.banner) {
+            return Some(banner);
+        }
+        if prefer_thumb {
+            if let Some(thumb) = plain(&self.series_thumb).or_else(|| plain(&self.parent_thumb)) {
+                return Some(thumb);
+            }
+            if let Some(backdrop) = self.backdrop.clone() {
+                return Some(CardImage {
+                    image: backdrop,
+                    force_name: true,
+                    aspect: None,
+                });
+            }
+            if let Some(backdrop) = plain(&self.parent_backdrop) {
+                return Some(backdrop);
+            }
+        }
+        if let Some(primary) = self.primary.clone() {
+            return Some(CardImage {
+                image: primary,
+                force_name: prefer_thumb,
+                aspect: self.primary_aspect,
+            });
+        }
+        plain(&self.series_primary).or_else(|| plain(&self.album_primary))
+    }
+}
+
+fn card_images(item: &LibraryItem) -> CardImages {
+    let image = |item_id: &str, image_type: ImageType, tag: &str| ImageRef {
+        item_id: item_id.to_owned(),
+        image_type,
+        index: (image_type == ImageType::Backdrop).then_some(0),
+        tag: tag.to_owned(),
     };
-    (image_item_id, item.image_tags.get("Primary").cloned())
+    CardImages {
+        primary: item
+            .image_tags
+            .get("Primary")
+            .map(|tag| image(&item.id, ImageType::Primary, tag)),
+        primary_aspect: item
+            .primary_image_aspect_ratio
+            .filter(|ratio| *ratio > 0.0)
+            .map(|ratio| ratio as f32),
+        series_primary: item
+            .series_id
+            .as_deref()
+            .zip(item.series_primary_image_tag.as_deref())
+            .map(|(id, tag)| image(id, ImageType::Primary, tag)),
+        album_primary: item
+            .album_id
+            .as_deref()
+            .zip(item.album_primary_image_tag.as_deref())
+            .map(|(id, tag)| image(id, ImageType::Primary, tag)),
+        thumb: item
+            .image_tags
+            .get("Thumb")
+            .map(|tag| image(&item.id, ImageType::Thumb, tag)),
+        series_thumb: item
+            .series_id
+            .as_deref()
+            .zip(item.series_thumb_image_tag.as_deref())
+            .map(|(id, tag)| image(id, ImageType::Thumb, tag)),
+        parent_thumb: item
+            .parent_thumb_item_id
+            .as_deref()
+            .zip(item.parent_thumb_image_tag.as_deref())
+            .map(|(id, tag)| image(id, ImageType::Thumb, tag)),
+        backdrop: item
+            .backdrop_image_tags
+            .first()
+            .map(|tag| image(&item.id, ImageType::Backdrop, tag)),
+        parent_backdrop: (item.kind == "Episode")
+            .then(|| {
+                item.parent_backdrop_item_id
+                    .as_deref()
+                    .zip(item.parent_backdrop_image_tags.first().map(String::as_str))
+                    .map(|(id, tag)| image(id, ImageType::Backdrop, tag))
+            })
+            .flatten(),
+        banner: item
+            .image_tags
+            .get("Banner")
+            .map(|tag| image(&item.id, ImageType::Banner, tag)),
+    }
 }
 
 /// A card's two text lines, as jellyfin-web's card builder writes them.
+/// Whether each card line links somewhere, which changes its height in
+/// jellyfin-web (a link's line box is taller than plain text's).
+fn card_links(item: &LibraryItem) -> (bool, bool) {
+    match item.kind.as_str() {
+        // The show's name links to the show, the episode title to itself.
+        "Episode" => (true, true),
+        // The album is plain text; the track links to itself.
+        "Audio" | "AudioBook" => (item.album.as_deref().is_none_or(str::is_empty), true),
+        // The title links to the item; a year is plain.
+        _ => (true, false),
+    }
+}
+
 fn card_lines(item: &LibraryItem) -> (String, String) {
     match item.kind.as_str() {
         "Episode" => {
@@ -1486,6 +1788,12 @@ fn card_lines(item: &LibraryItem) -> (String, String) {
                 None => (item.name.clone(), number),
             }
         }
+        // Audio cards name the album, then the track, as jellyfin-web's
+        // Continue Listening does.
+        "Audio" | "AudioBook" => match item.album.clone().filter(|album| !album.is_empty()) {
+            Some(album) => (album, item.name.clone()),
+            None => (item.name.clone(), String::new()),
+        },
         "Movie" | "Series" | "Video" | "MusicVideo" => (
             item.name.clone(),
             item.production_year
@@ -1493,63 +1801,6 @@ fn card_lines(item: &LibraryItem) -> (String, String) {
                 .unwrap_or_default(),
         ),
         _ => (item.name.clone(), String::new()),
-    }
-}
-
-/// Artwork for a 16:9 card, in jellyfin-web's `preferThumb` order.
-fn thumb_image(item: &LibraryItem) -> Option<ImageRef> {
-    let image = |item_id: &str, image_type: ImageType, tag: &str| ImageRef {
-        item_id: item_id.to_owned(),
-        image_type,
-        index: (image_type == ImageType::Backdrop).then_some(0),
-        tag: tag.to_owned(),
-    };
-    if let Some(tag) = item.image_tags.get("Thumb") {
-        return Some(image(&item.id, ImageType::Thumb, tag));
-    }
-    if let (Some(id), Some(tag)) = (&item.parent_thumb_item_id, &item.parent_thumb_image_tag) {
-        return Some(image(id, ImageType::Thumb, tag));
-    }
-    if let Some(tag) = item.backdrop_image_tags.first() {
-        return Some(image(&item.id, ImageType::Backdrop, tag));
-    }
-    if let (Some(id), Some(tag)) = (&item.parent_backdrop_item_id, item.parent_backdrop_image_tags.first()) {
-        return Some(image(id, ImageType::Backdrop, tag));
-    }
-    // Libraries and episodes have 16:9 primary images of their own.
-    item.image_tags
-        .get("Primary")
-        .filter(|_| matches!(item.kind.as_str(), "Episode" | "CollectionFolder" | "UserView"))
-        .map(|tag| image(&item.id, ImageType::Primary, tag))
-}
-
-fn item_subtitle(item: &LibraryItem) -> String {
-    if item.kind == "Episode" {
-        let index = match (item.parent_index_number, item.index_number) {
-            (Some(season), Some(episode)) => format!("S{season:02}E{episode:02}"),
-            (_, Some(episode)) => format!("Episode {episode}"),
-            _ => String::new(),
-        };
-        return [item.series_name.as_deref().unwrap_or_default(), &index]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" • ");
-    }
-    if item.kind == "CollectionFolder" {
-        return item
-            .recursive_item_count
-            .map(|count| format!("Library • {count} items"))
-            .unwrap_or_else(|| "Library".to_owned());
-    }
-    // A zero count is not information: the Latest endpoint reports
-    // `ChildCount = 0` on every row it did not group, which read as
-    // "Spider-Man - 2003 • 0 items".
-    match (item.production_year, item.child_count.filter(|count| *count > 0)) {
-        (Some(year), Some(count)) => format!("{year} • {count} items"),
-        (Some(year), None) => year.to_string(),
-        (None, Some(count)) => format!("{count} items"),
-        (None, None) => String::new(),
     }
 }
 
@@ -1615,7 +1866,6 @@ struct ItemsResponse {
     total_record_count: Option<usize>,
 }
 
-
 #[derive(Deserialize)]
 struct LibraryItem {
     #[serde(rename = "Id")]
@@ -1651,6 +1901,14 @@ struct LibraryItem {
     parent_thumb_item_id: Option<String>,
     #[serde(rename = "ParentThumbImageTag")]
     parent_thumb_image_tag: Option<String>,
+    #[serde(rename = "SeriesThumbImageTag")]
+    series_thumb_image_tag: Option<String>,
+    #[serde(rename = "PrimaryImageAspectRatio")]
+    primary_image_aspect_ratio: Option<f64>,
+    #[serde(rename = "AlbumId")]
+    album_id: Option<String>,
+    #[serde(rename = "AlbumPrimaryImageTag")]
+    album_primary_image_tag: Option<String>,
     #[serde(rename = "ParentLogoItemId")]
     parent_logo_item_id: Option<String>,
     #[serde(rename = "ParentLogoImageTag")]
@@ -1675,6 +1933,12 @@ struct LibraryItem {
     taglines: Vec<String>,
     #[serde(rename = "Genres", default)]
     genres: Vec<String>,
+    #[serde(rename = "GenreItems", default)]
+    genre_items: Vec<NameGuidPair>,
+    #[serde(rename = "ProductionLocations", default)]
+    production_locations: Vec<String>,
+    #[serde(rename = "PlaylistItemId")]
+    playlist_item_id: Option<String>,
     #[serde(rename = "Tags", default)]
     tags: Vec<String>,
     #[serde(rename = "ExternalUrls", default)]
@@ -1683,6 +1947,8 @@ struct LibraryItem {
     studios: Vec<NameGuidPair>,
     #[serde(rename = "People", default)]
     people: Vec<BaseItemPerson>,
+    #[serde(rename = "Album")]
+    album: Option<String>,
     #[serde(rename = "SeriesName")]
     series_name: Option<String>,
     #[serde(rename = "IndexNumber")]
@@ -1691,8 +1957,6 @@ struct LibraryItem {
     parent_index_number: Option<i32>,
     #[serde(rename = "ChildCount")]
     child_count: Option<i32>,
-    #[serde(rename = "RecursiveItemCount")]
-    recursive_item_count: Option<i32>,
     #[serde(rename = "Overview")]
     overview: Option<String>,
     #[serde(rename = "RunTimeTicks")]
@@ -1712,7 +1976,10 @@ fn has_latest_shelf(item: &LibraryItem) -> bool {
     !matches!(
         item.collection_type.as_deref(),
         Some("playlists" | "boxsets" | "livetv")
-    ) && !matches!(item.kind.as_str(), "ManualPlaylistsFolder" | "PlaylistsFolder")
+    ) && !matches!(
+        item.kind.as_str(),
+        "ManualPlaylistsFolder" | "PlaylistsFolder"
+    )
 }
 
 #[derive(Deserialize)]
@@ -1741,6 +2008,17 @@ struct ExternalUrl {
 struct NameGuidPair {
     #[serde(rename = "Name", default)]
     name: String,
+    #[serde(rename = "Id")]
+    id: Option<String>,
+}
+
+impl From<NameGuidPair> for NamedId {
+    fn from(pair: NameGuidPair) -> Self {
+        Self {
+            name: pair.name,
+            id: pair.id,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1785,130 +2063,6 @@ struct ItemMediaStream {
 mod tests {
     /// Builds a row the way the server sends one, so the grouping tests
     /// exercise the real deserialization as well.
-    fn row(json: serde_json::Value) -> LibraryItem {
-        serde_json::from_value(json).expect("library item")
-    }
-
-    fn episode(series_id: &str, series_name: &str, number: i64) -> LibraryItem {
-        row(serde_json::json!({
-            "Id": format!("ep-{series_id}-{number}"),
-            "Name": format!("Episode {number}"),
-            "Type": "Episode",
-            "SeriesId": series_id,
-            "SeriesName": series_name,
-            "SeriesPrimaryImageTag": "poster-tag",
-            "ParentIndexNumber": 1,
-            "IndexNumber": number,
-        }))
-    }
-
-    #[test]
-    fn a_zero_child_count_is_not_shown_as_zero_items() {
-        // The Latest endpoint sets ChildCount = 0 on every row it did not
-        // group, which turned a movie's subtitle into "2003 • 0 items".
-        let rows = group_episodes_by_series(vec![row(serde_json::json!({
-            "Id": "m1", "Name": "Spider-Man", "Type": "Movie",
-            "ProductionYear": 2003, "ChildCount": 0
-        }))]);
-        assert_eq!(rows[0].subtitle, "2003");
-    }
-
-    #[test]
-    fn a_season_of_new_episodes_becomes_one_row_for_the_show() {
-        let rows = group_episodes_by_series(vec![
-            episode("s1670", "1670", 8),
-            episode("s1670", "1670", 7),
-            episode("s1670", "1670", 6),
-        ]);
-
-        assert_eq!(rows.len(), 1, "the shelf still shows one card per episode");
-        let show = &rows[0];
-        assert_eq!(show.id, "s1670", "the row must open the series, not an episode");
-        assert_eq!(show.kind, "Series");
-        assert_eq!(show.title, "1670");
-        assert_eq!(show.subtitle, "3 new episodes");
-        assert!(show.is_container && !show.playable);
-    }
-
-    #[test]
-    fn a_show_added_with_its_episodes_appears_once() {
-        // What "Recently Added" returns when a whole season lands: the series
-        // itself, then every episode of it.
-        let rows = group_episodes_by_series(vec![
-            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series"})),
-            episode("s1670", "1670", 2),
-            episode("s1670", "1670", 1),
-        ]);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "s1670");
-        assert_eq!(rows[0].subtitle, "2 new episodes");
-    }
-
-    #[test]
-    fn the_latest_endpoints_bare_and_grouped_rows_collapse_to_the_larger_count() {
-        // `Users/{id}/Items/Latest` with GroupItems=true returns a series twice
-        // when the show and its episodes are both new: once bare, once grouped.
-        let rows = group_episodes_by_series(vec![
-            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series", "ChildCount": 0})),
-            row(serde_json::json!({"Id": "s1670", "Name": "1670", "Type": "Series", "ChildCount": 8})),
-        ]);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].subtitle, "8 new episodes");
-    }
-
-    #[test]
-    fn one_new_episode_reads_as_one() {
-        let rows = group_episodes_by_series(vec![episode("s9", "Say Nothing", 5)]);
-        assert_eq!(rows[0].subtitle, "1 new episode");
-    }
-
-    #[test]
-    fn movies_are_left_alone_and_order_is_preserved() {
-        let rows = group_episodes_by_series(vec![
-            episode("s1670", "1670", 8),
-            row(serde_json::json!({
-                "Id": "m1", "Name": "Spider-Man", "Type": "Movie", "ProductionYear": 2024
-            })),
-            episode("s1670", "1670", 7),
-            row(serde_json::json!({"Id": "m2", "Name": "Smoke", "Type": "Movie"})),
-        ]);
-
-        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            ["s1670", "m1", "m2"],
-            "grouping must not reorder the server's newest-first list"
-        );
-        let movie = &rows[1];
-        assert_eq!(movie.title, "Spider-Man");
-        assert_eq!(movie.subtitle, "2024", "a movie's own subtitle was rewritten");
-        assert!(movie.playable);
-    }
-
-    #[test]
-    fn an_episode_with_no_series_stays_a_row_of_its_own() {
-        // Nothing to group it under; dropping it would lose the row entirely.
-        let orphan = row(serde_json::json!({
-            "Id": "ep-orphan", "Name": "Loose Episode", "Type": "Episode"
-        }));
-        let rows = group_episodes_by_series(vec![orphan]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "ep-orphan");
-        assert_eq!(rows[0].kind, "Episode");
-    }
-
-    #[test]
-    fn a_newly_added_show_with_no_new_episodes_keeps_its_own_description() {
-        let rows = group_episodes_by_series(vec![row(serde_json::json!({
-            "Id": "s5", "Name": "Smoke", "Type": "Series", "ProductionYear": 2025
-        }))]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].title, "Smoke");
-        assert_eq!(rows[0].subtitle, "2025");
-    }
-
     use super::*;
 
     #[test]
@@ -2000,11 +2154,12 @@ mod tests {
         let item: CatalogItemData = response.items.into_iter().next().unwrap().into();
         assert_eq!(item.title, "Movie");
         assert!(item.playable);
-        assert!(!item.is_container);
     }
 
     #[test]
-    fn episode_tiles_use_the_series_primary_image() {
+    fn episode_posters_use_their_own_primary_then_the_series_one() {
+        // jellyfin-web's cardBuilder: the item's own Primary first, the
+        // series poster only when the episode has none.
         let response: ItemsResponse = serde_json::from_str(
             r#"{
                 "Items": [{
@@ -2014,14 +2169,40 @@ mod tests {
                     "SeriesId": "series-1",
                     "SeriesPrimaryImageTag": "series-poster-tag",
                     "ImageTags": {"Primary": "episode-image-tag"}
+                }, {
+                    "Id": "episode-2",
+                    "Name": "Second",
+                    "Type": "Episode",
+                    "SeriesId": "series-1",
+                    "SeriesPrimaryImageTag": "series-poster-tag",
+                    "ImageTags": {}
                 }]
             }"#,
         )
         .unwrap();
-        let item: CatalogItemData = response.items.into_iter().next().unwrap().into();
-
-        assert_eq!(item.image_item_id, "series-1");
-        assert_eq!(item.image_tag.as_deref(), Some("series-poster-tag"));
+        let mut items = response.items.into_iter().map(CatalogItemData::from);
+        let own = items
+            .next()
+            .unwrap()
+            .images
+            .pick(false, false)
+            .unwrap()
+            .image;
+        assert_eq!(
+            (own.item_id.as_str(), own.tag.as_str()),
+            ("episode-1", "episode-image-tag")
+        );
+        let series = items
+            .next()
+            .unwrap()
+            .images
+            .pick(false, false)
+            .unwrap()
+            .image;
+        assert_eq!(
+            (series.item_id.as_str(), series.tag.as_str()),
+            ("series-1", "series-poster-tag")
+        );
     }
 
     #[test]
@@ -2063,11 +2244,21 @@ mod tests {
 
         assert_eq!(detail.premiere_date, Some((2025, 1, 31)));
         let names = |people: &[PersonData]| {
-            people.iter().map(|person| person.name.clone()).collect::<Vec<_>>()
+            people
+                .iter()
+                .map(|person| person.name.clone())
+                .collect::<Vec<_>>()
         };
         assert_eq!(names(&detail.people), ["Regular"]);
         assert_eq!(names(&detail.guest_stars), ["Visitor"]);
-        assert_eq!(detail.directors, ["Helmer"]);
+        assert_eq!(
+            detail
+                .directors
+                .iter()
+                .map(|named| named.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Helmer"]
+        );
 
         assert_eq!(parse_iso_date("not a date"), None);
         assert_eq!(parse_iso_date("2025-13-01T00:00:00Z"), None);
@@ -2147,8 +2338,13 @@ mod tests {
 
         assert_eq!(detail.kind, DetailKind::Series);
         assert_eq!(detail.tagline, "The example begins");
-        assert_eq!(detail.genres, ["Drama", "Mystery"]);
-        assert_eq!(detail.studios, ["Example Studio"]);
+        let names = |list: &[NamedId]| {
+            list.iter()
+                .map(|named| named.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&detail.genres), ["Drama", "Mystery"]);
+        assert_eq!(names(&detail.studios), ["Example Studio"]);
         assert_eq!(detail.people.len(), 1);
         // jellyfin-web credits a role as "as <role>".
         assert_eq!(detail.people[0].role, "as Lead");
@@ -2218,8 +2414,8 @@ mod tests {
 
         // The stop body carries only what the endpoint uses; the playing-only
         // fields are omitted rather than sent as misleading defaults.
-        let stopped =
-            serde_json::to_value(PlaybackReportBody::stopped(&target, 61.5)).expect("serialize stop");
+        let stopped = serde_json::to_value(PlaybackReportBody::stopped(&target, 61.5))
+            .expect("serialize stop");
         assert_eq!(stopped["PositionTicks"], 615_000_000i64);
         for absent in ["IsPaused", "CanSeek", "PlayMethod", "EventName"] {
             assert!(
@@ -2240,5 +2436,4 @@ mod tests {
             .expect("serialize");
         assert!(body.get("PlaySessionId").is_none());
     }
-
 }

@@ -98,7 +98,7 @@ pub fn with_alpha(color: Color32, alpha: f32) -> Color32 {
 
 const BOLD_FAMILY: &str = "jellybridge-semibold";
 const REGULAR_FONT: &[u8] = include_bytes!("../../assets/fonts/NotoSans-Regular.ttf");
-const BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/NotoSans-SemiBold.ttf");
+const BOLD_FONT: &[u8] = include_bytes!("../../assets/fonts/NotoSans-Bold.ttf");
 
 /// Regular weight text.
 pub fn regular(size: f32) -> FontId {

@@ -5,8 +5,11 @@
 //! pops it, and Home clears it. A page is kept with what it showed, so Back
 //! is instant; the background refresh then re-reads it.
 
-use crate::api::{ApiError, CatalogItemData, CatalogSectionData, JellyfinApi, library_route};
-use crate::app::{AppContext, AppState, HistoryEntry, RetryAction, cancel_catalog_request, replace_catalog_request};
+use crate::api::{ApiError, CatalogItemData, HomeData, JellyfinApi, library_route};
+use crate::app::{
+    AppContext, AppState, HistoryEntry, RetryAction, cancel_catalog_request,
+    replace_catalog_request,
+};
 use crate::features::detail::{DetailKind, DetailMessage, DetailTarget};
 use crate::features::pages::{
     GridSettings, LibraryRef, ListFilter, ListQuery, Page, PageContent, PageRoute, Shelf,
@@ -22,7 +25,7 @@ use crate::ui;
 pub fn apply_home_result(
     context: &AppContext,
     api: JellyfinApi,
-    result: Result<Vec<CatalogSectionData>, ApiError>,
+    result: Result<HomeData, ApiError>,
 ) {
     match result {
         Ok(home) => {
@@ -57,14 +60,10 @@ pub fn apply_home_result(
 }
 
 /// Shows a freshly signed-in or restored session's home page.
-pub fn install_home(
-    context: &AppContext,
-    api: JellyfinApi,
-    account_name: String,
-    home: Vec<CatalogSectionData>,
-) {
-    let shelves = crate::api::home_shelves(home);
+pub fn install_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
+    let shelves = crate::api::home_shelves(home.sections);
     if let Ok(mut state) = context.state.lock() {
+        state.prefs = home.prefs;
         state.api = Some(api);
         state.account_name = account_name;
         state.libraries = libraries_of(&shelves);
@@ -96,7 +95,10 @@ fn load_deferred_home(context: &AppContext) {
                 .map(|shelf| shelf.items.clone())
         })
         .unwrap_or_default();
-    if !libraries.iter().any(|library| library.collection_type == "music") {
+    if !libraries
+        .iter()
+        .any(|library| library.collection_type == "music")
+    {
         return;
     }
     let ctx = context.clone();
@@ -189,7 +191,9 @@ fn load_route(context: &AppContext, route: PageRoute, start: usize) {
     let generation = context.next_generation();
     cancel_catalog_request(context);
     let settings = {
-        let Ok(mut state) = context.state.lock() else { return };
+        let Ok(mut state) = context.state.lock() else {
+            return;
+        };
         state.detail.update(DetailMessage::Reset);
         state.retry = RetryAction::Page;
         if route == PageRoute::home() && !state.home.is_empty() {
@@ -203,7 +207,8 @@ fn load_route(context: &AppContext, route: PageRoute, start: usize) {
             return;
         }
         // A grid turning its page keeps its rows until the next arrive.
-        let same_grid = state.page.route == route && matches!(state.page.content, PageContent::Grid(_));
+        let same_grid =
+            state.page.route == route && matches!(state.page.content, PageContent::Grid(_));
         if !same_grid {
             state.page = Page::loading(route.clone());
         }
@@ -258,10 +263,8 @@ pub fn go_back(context: &AppContext) {
         }
         Some(HistoryEntry::Detail(page)) => {
             if let Ok(mut state) = context.state.lock() {
-                state.retry = RetryAction::Detail(DetailTarget::new(
-                    page.item.id.clone(),
-                    page.item.kind,
-                ));
+                state.retry =
+                    RetryAction::Detail(DetailTarget::new(page.item.id.clone(), page.item.kind));
                 state.detail.update(DetailMessage::Restore(page));
             }
             let generation = context.current_generation();
@@ -294,7 +297,11 @@ pub fn go_home(context: &AppContext) {
 
 /// Shows another page of the grid on screen.
 pub fn show_grid_page(context: &AppContext, start: usize) {
-    let route = context.state.lock().ok().map(|state| state.page.route.clone());
+    let route = context
+        .state
+        .lock()
+        .ok()
+        .map(|state| state.page.route.clone());
     if let Some(route) = route {
         load_route(context, route, start);
     }
@@ -303,19 +310,42 @@ pub fn show_grid_page(context: &AppContext, start: usize) {
 /// Applies new sort, filter or view settings to the grid on screen,
 /// remembering them for that grid.
 pub fn update_grid_settings(context: &AppContext, settings: GridSettings) {
-    let Some((route, reload)) = context.state.lock().ok().map(|mut state| {
-        let route = state.page.route.clone();
-        let previous = state.grid_settings_for(&route);
-        // The view only changes how rows are drawn; everything else changes
-        // which rows there are.
-        let reload = previous.sort != settings.sort
-            || previous.descending != settings.descending
-            || previous.filters != settings.filters;
-        state.grid_settings.insert(route.settings_key(), settings);
-        (route, reload)
-    }) else {
+    let Some((route, reload)) = context.state.lock().ok().map(
+        |mut state| -> (PageRoute, (bool, Option<(String, String)>)) {
+            let route = state.page.route.clone();
+            let previous = state.grid_settings_for(&route);
+            // The view only changes how rows are drawn; everything else changes
+            // which rows there are.
+            let sort_changed =
+                previous.sort != settings.sort || previous.descending != settings.descending;
+            let reload = sort_changed || previous.filters != settings.filters;
+            // A library tab's sort is shared with jellyfin-web through the
+            // server; save it there (and locally for the next read).
+            let server_sort = sort_changed
+                .then(|| route.server_sort_key())
+                .flatten()
+                .map(|key| {
+                    let value = crate::features::prefs::UserPrefs::grid_sort_value(
+                        &settings.sort,
+                        settings.descending,
+                    );
+                    state.prefs.custom.insert(key.clone(), value.clone());
+                    (key, value)
+                });
+            state.grid_settings.insert(route.settings_key(), settings);
+            (route, (reload, server_sort))
+        },
+    ) else {
         return;
     };
+    let (route, reload, server_sort) = (route, reload.0, reload.1);
+    if let (Some((key, value)), Some(api)) = (server_sort, context.api()) {
+        context.runtime.spawn(async move {
+            if let Err(error) = api.save_custom_pref(&key, &value).await {
+                tracing::warn!(%error, "sort could not be saved to the server");
+            }
+        });
+    }
     persist_grid_settings(context);
     if reload {
         load_route(context, route, 0);
@@ -327,7 +357,12 @@ pub fn update_grid_settings(context: &AppContext, settings: GridSettings) {
 /// Fetches what the filter dialog can offer for the grid on screen.
 pub fn load_filter_options(context: &AppContext) {
     let Some(api) = context.api() else { return };
-    let Some(route) = context.state.lock().ok().map(|state| state.page.route.clone()) else {
+    let Some(route) = context
+        .state
+        .lock()
+        .ok()
+        .map(|state| state.page.route.clone())
+    else {
         return;
     };
     let key = route.settings_key();
@@ -489,7 +524,8 @@ pub fn toggle_card(context: &AppContext, id: &str, toggle: CardToggle) {
 pub fn destination(item: &CatalogItemData) -> Destination {
     match item.kind.as_str() {
         "CollectionFolder" | "UserView" => Destination::Page(library_route(item)),
-        "Movie" | "Series" | "Season" | "Episode" => Destination::Detail(DetailTarget::new(
+        "Movie" | "Series" | "Season" | "Episode" | "Person" | "BoxSet" | "Playlist" | "Video"
+        | "MusicVideo" => Destination::Detail(DetailTarget::new(
             item.id.clone(),
             DetailKind::from_jellyfin(&item.kind),
         )),
@@ -504,12 +540,6 @@ pub fn destination(item: &CatalogItemData) -> Destination {
             parent_id: None,
             filter: ListFilter::Studio(item.id.clone()),
             item_types: "Series".to_owned(),
-        })),
-        "Person" => Destination::Page(PageRoute::List(ListQuery {
-            title: item.title.clone(),
-            parent_id: None,
-            filter: ListFilter::Person(item.id.clone()),
-            item_types: "Movie,Series".to_owned(),
         })),
         _ => Destination::Page(PageRoute::List(ListQuery::children(
             item.title.clone(),
@@ -539,13 +569,20 @@ pub fn open_item(context: &AppContext, id: &str) {
 
 /// Opens the page a section title's "›" leads to.
 pub fn open_shelf_link(context: &AppContext, shelf_id: &str) {
-    let link = context.state.lock().ok().and_then(|state| match &state.page.content {
-        PageContent::Shelves(shelves) | PageContent::Search { results: shelves, .. } => shelves
-            .iter()
-            .find(|shelf| shelf.id == shelf_id)
-            .and_then(|shelf| shelf.link.clone()),
-        _ => None,
-    });
+    let link = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| match &state.page.content {
+            PageContent::Shelves(shelves)
+            | PageContent::Search {
+                results: shelves, ..
+            } => shelves
+                .iter()
+                .find(|shelf| shelf.id == shelf_id)
+                .and_then(|shelf| shelf.link.clone()),
+            _ => None,
+        });
     if let Some(route) = link {
         navigate(context, route);
     }
@@ -621,7 +658,18 @@ mod tests {
                 tab: LibraryTab::Shows,
             })
         );
-        assert!(matches!(destination(&item("Episode")), Destination::Detail(_)));
+        assert!(matches!(
+            destination(&item("Episode")),
+            Destination::Detail(_)
+        ));
+        assert!(matches!(
+            destination(&item("Person")),
+            Destination::Detail(_)
+        ));
+        assert!(matches!(
+            destination(&item("Playlist")),
+            Destination::Detail(_)
+        ));
         assert!(matches!(
             destination(&item("Studio")),
             Destination::Page(PageRoute::List(ListQuery {
