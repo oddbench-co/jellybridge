@@ -32,18 +32,26 @@ server on the LAN. Playback numbers use one 4K HEVC 10-bit episode
 
 | | before | now |
 |---|---|---|
-| Launch to content (`total_ms`, median) | 302 ms | 240–254 ms (server-bound) |
+| Launch to content (`total_ms`, median) | 302 ms | 102 ms (the last Home from disk); the server's Home lands at ~285 ms |
 | Before `main` (dynamic linking) | 70–80 ms | 0 ms |
-| Memory while browsing (RSS) | 166–171 MB | 119 MB |
+| Memory while browsing (RSS) | 166–171 MB | 117–118 MB |
+| Frames drawn while idle on Home | 588 per 10 s | ~20 per 10 s (launch only) |
 | Wake-ups while idle, whole app | 624 per 10 s | 44 per 10 s |
-| Playback, UI thread per frame (p95) | 41 ms | 0.6 ms |
-| Play → first video frame | 448–471 ms | 205–217 ms |
+| Scrolling at 240 Hz: frames over budget | 0 | 0 (UI 0.33 ms per frame, p95) |
+| Playback, UI thread per frame (p95) | 41 ms | 0.5 ms |
+| Play → first video frame | 448–471 ms | 205–215 ms |
 | UI freeze while the player starts | ~335 ms | ~100 ms |
-| Memory during 4K playback | ~711 MB | 635–694 MB |
-| CPU during 4K playback | ~8.5 % | ~7.1 % |
-| Memory after leaving the player | 542 MB | 255 MB |
+| Memory during 4K playback | ~711 MB | 635 MB |
+| CPU during 4K playback | ~8.5 % | ~8.7 % |
+| Memory after leaving the player | 542 MB | 194 MB |
 | Second playback: building the player | — | 2.6 ms |
-| Scrolling at 240 Hz: frames over budget | 0 | 0 |
+
+The jellyfin-web parity work (October 2026) was measured against the build
+before it (`aefed8f`), interleaved run for run: launch 262 → 102 ms, scrolling
+UI per frame 0.23 → 0.33 ms p95 (jellyfin's layout draws more, still a tenth
+of the 240 Hz budget), browsing memory 115 → 118 MB (jellyfin's larger cards
+and its Continue Listening/Reading shelves hold more artwork), playback and
+after-player memory unchanged.
 
 ## What changed, and why it works
 
@@ -158,6 +166,51 @@ new "Recently Added in Music" query ran beside it.
 *Fix.* Music libraries' Latest shelves are fetched after the home is shown
 and slotted into their place; they sit below the first screen.
 
+### The last Home is painted at launch (`services/home_snapshot.rs`)
+
+*Symptom.* Launch waited on the server: content appeared when the slowest
+dashboard request (Next Up) ended, 250–300 ms after start. jellyfin-web's
+Home adds Continue Listening, Continue Reading and the user's display
+preferences, three more requests that made every one of them slower
+(median 252 → 302 ms against the build before).
+*Measurement.* `startup_stage` lines: the window was ready at ~92 ms and then
+waited ~200 ms for `home_arrived`. The requests already ran in parallel, so
+the cost was the server's, not the client's.
+*Fix.* Every Home the server returns is saved beside the artwork cache
+(`home.json`, ~64 KB, per server and user, trusted for a week, removed at
+sign-out). At launch it is read while the window is built and painted as soon
+as the window exists; the request still runs, and its Home replaces the saved
+one in place, without moving the page or pulling a user back who already left
+Home. When nothing changed, the usual case, the two compare equal and nothing
+is redrawn or saved. A failed refresh leaves the saved Home showing, so a
+server that is down still shows the library. The library tiles' item counts
+are dropped: the server's value changes from one request to the next and no
+tile shows it, and it made every saved Home look stale.
+*Result.* Launch to content 262 → 102 ms (median of six interleaved launches);
+the fresh Home is confirmed ~180 ms later with no visible change.
+
+### Artwork reaches the GPU a megabyte a frame (`ImageCache::upload_ready`)
+
+*Symptom.* With the larger Home, frames over the 240 Hz budget (4.2 ms)
+appeared: 5–8 ms when a shelf scrolled into view or the music shelf arrived,
+20 ms at launch.
+*Measurement.* The slow frames lined up with decoded images arriving in
+bursts; an upload with its mipmap chain costs about 2 ms per megabyte, and
+egui uploads everything registered in a frame at the end of it.
+*Fix.* Decoded images wait in a queue, still marked pending so they are not
+requested twice; each frame uploads up to 1 MB of them (always at least
+one), and asks for another frame while any wait. A shelf's artwork appears
+over a few frames instead of in one long one.
+*Result.* No frame over budget while scrolling or when shelves arrive; the
+launch's worst frame 20 → 10 ms (the first frame's font atlas and layout).
+
+### Idle redraws
+
+The build before the parity work redrew ~60 times a second while idle (588
+frames in 10 s, egui's scroll-area animation asking for repaints). The page
+scrollbar is now drawn by the app (`ui/scrollbar.rs`, Chrome's look), and an
+idle Home draws nothing after launch.
+
 ## Measured and rejected
 
 Each was measured and lost; the reason is kept so it is not tried again
@@ -182,14 +235,14 @@ blindly.
 
 ## Still open
 
-- Launch is bounded by the server: the dashboard's slowest request (`Next
-  Up`) ends right before content appears. Showing the last home from a cache
-  while it refreshes would make launch instant, at the cost of briefly stale
-  progress bars, which is a UX decision.
 - The render context's ~100 ms creation still runs on the UI thread at the
   start of playback, while a spinner shows.
-- After playback ~135 MB more than a fresh launch stays mapped: mpv's and
+- After playback ~75 MB more than a fresh launch stays mapped: mpv's and
   CUDA's libraries, which are not unloaded once loaded.
+- The first two frames after launch take 9–10 ms (font atlas and the first
+  layout), before anything can be clicked.
+- Shelves load one page of artwork beyond each edge so paging shows images
+  at once; on Home that is ~40 MiB of textures, most of it GPU memory.
 
 ## Tooling
 
@@ -198,7 +251,7 @@ All of this works in release builds.
 | Variable | What it does |
 |---|---|
 | `JELLYBRIDGE_MEASURE=<seconds>` | Measures from the first frame with content for that long, prints a JSON report and closes: frame intervals, UI-thread CPU per frame and frames over a 240/120 Hz refresh (with their times), layout time, repaint causes, video fps, process CPU, busiest threads, RSS and peak. |
-| `JELLYBRIDGE_INPUT_SCRIPT=<file>` | Replays timed input (`move`, `click`, `scroll`, `key`, `text`) and `play <item id>`, so a scenario plays exactly the item it names. |
+| `JELLYBRIDGE_INPUT_SCRIPT=<file>` | Replays timed input (`move`, `click`, `scroll`, `key`, `text`), `play <item id>` and page steps (`open`, `detail`, `settings`, `search`, `tab`, `back`), and `shot <file>` saves the frame, so a scenario plays exactly the item it names. |
 | `JELLYBRIDGE_MUTE=1` | mpv outputs no audio (`ao=null`). |
 | `JELLYBRIDGE_NO_PLAYBACK_REPORTS=1` | Never reports playback to the server, so test runs cannot move anyone's resume points. |
 | `JELLYBRIDGE_MPV_OPTIONS=a=b,c=d` | Any extra mpv option, applied last (cache sizes, `log-file=…`, `msg-level=all=debug`). |
@@ -206,7 +259,7 @@ All of this works in release builds.
 
 Log lines (`RUST_LOG=jellybridge=debug`): `time_to_interactive` (launch, with
 `exec_to_main_ms` for the time before `main`), `startup_stage`,
-`dashboard_request`, `dns lookup`, `libmpv loaded`, `libmpv player built`,
+`dashboard_request`, `home_snapshot_shown`, `home_unchanged` / `home_refreshed`, `dns lookup`, `libmpv loaded`, `libmpv player built`,
 `mpv render context created`, `time_to_first_frame`, `libmpv dropped frames`
 (at every stop), `mpv render context released`, `libmpv player unloaded`.
 
@@ -216,3 +269,8 @@ Hyprland headless output:
 
     hyprctl output create headless JBTEST
     hyprctl eval 'hl.monitor({output="JBTEST", mode="3840x2160@240", position="10000x0", scale=1.5})'
+
+`scripts/parity/app-shot.sh` does all of this for one run (headless output
+on workspace 19, muted, no reports, the parity test session); pass
+`EXTRA="JELLYBRIDGE_MEASURE=10"` for a report and `BIN=` for another build,
+so two builds can be measured interleaved.

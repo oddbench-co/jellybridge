@@ -151,3 +151,29 @@ the accent. No underline.
   Oct 13"), thumb cards. TV Networks: studio thumbs; a studio without one is
   a coloured tile with its name (`#00a4dc`, `#44bae1`, `#00455c`,
   `#1c4c5c`, `#007ea8`, picked from the name).
+
+## Dialogs
+
+| Element | Value |
+|---|---|
+| Backdrop | black 50%; a click on the box itself never closes it |
+| Box | `#101010`, radius 0.2em, shadow `0 16px 24px 2px rgba(0,0,0,.14), 0 6px 30px 5px rgba(0,0,0,.12), 0 8px 10px -5px rgba(0,0,0,.4)` |
+| Centring | in the page less the 10 px scrollbar; text baselines round to device pixels (dialogs are their own layer), half-leading truncated to 1/64 px |
+| Alert | title 1.8em at 60.99 px in; text centred; one focused submit button (`#0cb0e8`) |
+| Sort | 199 px; `h2` 1.5em, radios 24 px on a 31.44 px pitch, first radio focused (accent ring and 1.75× halo at 26%) |
+| Filter | 300 px, 65% tall, 10% from the top; sections 51.27 px with a 13.3% white rule; open bodies `#202020` with 1.25em padding; checkboxes 27.22 px |
+| Fixed dialogs (Add to Playlist, Media Info) | 60% × 80%, square, `#202020` header 71.13 px with back arrow; form column 57em; footer button 12em |
+| Action sheet | rows 40.14 px, icon column 62.88 px, padding 0.4em, radius 0.1em; centred on its button and pulled 20 px inside the window; value at 90% size and 70% opacity, 5em after the label |
+
+## Player OSD
+
+| Element | Value |
+|---|---|
+| Header | 111.59 px gradient `rgba(15,15,15,.75)` → 0; back at (16.2, 17.23); title 17.41 px `#eee` at x 70.58 |
+| Bottom | 222.88 px gradient; controls 111.6 px below its top |
+| Time row | time 7.44 px in, slider between, remaining time ("-7:25", toggles to the duration) at the right |
+| Slider | 1.25em container, 0.2em track inset 0.54em, accent fill, 1.08em thumb (×1.3 hovered), chapter markers 2×12 px; bubble `#282828`, 1.8em text, 1.2× its height above |
+| Buttons | 41.36 px, 24.84 px icons; left group 53.86 px apart (inline, a space between), right group 49.98 px apart; "Ends at" after four no-break spaces |
+| Skip button | `#303030`, 1.2em bold at 87%, 12×20 px padding, skip_next icon, 8rem up and 6rem in; 8 s then hidden unless the OSD shows |
+| Up Next | 30em + 1em padding, black 70%, 2em from the corner; shown 30/35/40 s before the end (runtime ≥ 40/50 min), never under 10 min |
+| Playback Info | `rgba(28,28,28,.8)`, radius 0.3em, 1.5em/5em from the corner, 84% text, labels 500 (Regular), values `#ddd` |

@@ -12,7 +12,25 @@ history so Back is instant, and no page polls.
 
 ## Phases
 
-Status: phases 1 and 2 and the search page are done.
+Status (2026-10-13): all seven phases are done and compared against
+jellyfin-web screen by screen (`scripts/parity/`). Pages differ by less than
+2% of pixels apart from artwork resampling (Home, library grids: 3–4%).
+
+Deliberate differences, each because the app is a native viewer client:
+
+- No SyncPlay or Cast buttons in the header, and no admin entries in the
+  drawer or item menus (out of scope).
+- Sign-in keeps **Change Server**, and a first-run "Connect to Server" has
+  no back arrow or Cancel: jellyfin-web runs on its server and never needs
+  to pick one, while there is nothing to go back to here.
+- The player has no picture-in-picture button (no reliable always-on-top
+  mini window on Wayland compositors) and its settings menu no **Quality**
+  entry (the app always plays the original stream, so there is nothing to
+  choose).
+- Selects open jellyfin-web's action sheet rather than the browser's
+  native list.
+- The Up Next card follows jellyfin-web's CSS and timing exactly but was not
+  compared live: neither test item has a next episode.
 
 1. **Navigation shell**
    - One history for every page, catalog and detail alike. Back restores the
