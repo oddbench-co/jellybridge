@@ -235,6 +235,24 @@ impl JellyfinApi {
         Ok((Self::from_session_with(session, api.http)?, account_name))
     }
 
+    /// An item's local trailers, as item ids to play.
+    pub async fn local_trailers(&self, item_id: &str) -> Result<Vec<String>, ApiError> {
+        let items: Vec<LibraryItem> = self
+            .send_json(
+                self.request(
+                    Method::GET,
+                    &format!(
+                        "Users/{}/Items/{}/LocalTrailers",
+                        encode_path_segment(&self.session.user_id),
+                        encode_path_segment(item_id)
+                    ),
+                )?,
+                "loading trailers",
+            )
+            .await?;
+        Ok(items.into_iter().map(|item| item.id).collect())
+    }
+
     /// Whether the server still accepts this session's token: `Ok(false)`
     /// only on a definite 401 for the signed-in user.
     pub async fn session_is_valid(&self) -> Result<bool, ApiError> {
@@ -848,6 +866,44 @@ impl JellyfinApi {
     /// A card image as jellyfin-web asks for it: filled to an exact size at
     /// quality 96, in whatever format the server prefers for a browser
     /// (WebP), so the pixels are the ones jellyfin-web shows.
+    /// An image with jellyfin-web's detail-page parameters: an optional
+    /// width cap and a quality; the format follows the Accept header.
+    pub async fn fetch_web_image(
+        &self,
+        image: &ImageRef,
+        max_width: Option<u32>,
+        quality: u8,
+    ) -> Result<Vec<u8>, ApiError> {
+        let suffix = image
+            .index
+            .map(|index| format!("/{index}"))
+            .unwrap_or_default();
+        let mut query = vec![("tag", image.tag.clone())];
+        if let Some(width) = max_width {
+            query.push(("maxWidth", width.to_string()));
+        }
+        query.push(("quality", quality.to_string()));
+        let response = self
+            .request(
+                Method::GET,
+                &format!(
+                    "Items/{}/Images/{}{}",
+                    encode_path_segment(&image.item_id),
+                    image.image_type.jellyfin_name(),
+                    suffix
+                ),
+            )?
+            .header(
+                reqwest::header::ACCEPT,
+                "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            )
+            .query(&query)
+            .send()
+            .await?;
+        let response = check_status(response, "loading artwork")?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
     pub async fn fetch_card_image(
         &self,
         image: &ImageRef,
@@ -1379,14 +1435,11 @@ impl From<LibraryItem> for DetailItemData {
             .collect();
         let directors = person_names(&item.people, "Director");
         let writers = person_names(&item.people, "Writer");
+        // Cast & Crew lists everyone in the server's order (actors, then
+        // the crew); guest stars have their own row.
         let (guest_stars, people): (Vec<_>, Vec<_>) = item
             .people
             .into_iter()
-            .filter(|person| {
-                person.kind.is_empty()
-                    || person.kind.eq_ignore_ascii_case("Actor")
-                    || person.kind.eq_ignore_ascii_case("GuestStar")
-            })
             .partition(|person| person.kind.eq_ignore_ascii_case("GuestStar"));
         let to_person = |person: BaseItemPerson| {
             let image = person
@@ -1475,6 +1528,13 @@ impl From<LibraryItem> for DetailItemData {
                 .as_deref()
                 .and_then(parse_iso_date)
                 .map(|(year, _, _)| year),
+            local_trailers: item.local_trailer_count,
+            trailer_urls: item
+                .remote_trailers
+                .iter()
+                .filter_map(|trailer| trailer.url.clone())
+                .filter(|url| url.starts_with("http"))
+                .collect(),
             series_continuing: item
                 .status
                 .as_deref()
@@ -1866,6 +1926,12 @@ fn year_line(item: &LibraryItem) -> String {
     }
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct RemoteTrailer {
+    #[serde(rename = "Url")]
+    url: Option<String>,
+}
+
 #[derive(Serialize)]
 struct AuthRequest<'a> {
     #[serde(rename = "Username")]
@@ -1939,6 +2005,10 @@ struct LibraryItem {
     /// A series' airing state: "Continuing" or "Ended".
     #[serde(rename = "Status")]
     status: Option<String>,
+    #[serde(rename = "LocalTrailerCount", default)]
+    local_trailer_count: u32,
+    #[serde(rename = "RemoteTrailers", default)]
+    remote_trailers: Vec<RemoteTrailer>,
     #[serde(rename = "Name", default)]
     name: String,
     #[serde(rename = "Type", default)]
@@ -2311,7 +2381,9 @@ mod tests {
                 .map(|person| person.name.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(&detail.people), ["Regular"]);
+        // Cast & Crew keeps the crew, as jellyfin-web's does.
+        assert_eq!(names(&detail.people), ["Regular", "Helmer"]);
+        assert_eq!(detail.people[1].role, "Director");
         assert_eq!(names(&detail.guest_stars), ["Visitor"]);
         assert_eq!(
             detail

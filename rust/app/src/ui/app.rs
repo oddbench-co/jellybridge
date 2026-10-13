@@ -105,6 +105,8 @@ pub enum UiAction {
         audio: bool,
     },
     OpenExternalUrl(String),
+    /// The detail item's trailer: a local one plays, an online one opens.
+    PlayTrailer(String),
     TogglePlayback,
     SeekRelative(f64),
     SeekAbsolute(f64),
@@ -349,6 +351,7 @@ impl JellyBridgeApp {
                 features::detail::select_detail_track(context, index, audio);
             }
             UiAction::OpenExternalUrl(url) => detail::open_external_url(url),
+            UiAction::PlayTrailer(id) => features::playback::play_trailer(context, &id),
             UiAction::TogglePlayback => send(PlayerCommand::TogglePaused),
             UiAction::SeekRelative(seconds) => send(PlayerCommand::SeekRelative(seconds)),
             UiAction::SeekAbsolute(seconds) => send(PlayerCommand::SeekAbsolute(seconds)),

@@ -258,7 +258,7 @@ fn present_page(context: &AppContext, show: bool) {
 /// images from the window, the screen and whether the cards scroll
 /// sideways (shelves) or wrap (grids).
 #[derive(Clone, Copy)]
-struct ArtSizes {
+pub(crate) struct ArtSizes {
     window: egui::Vec2,
     screen_width: f32,
     pixels: f32,
@@ -266,7 +266,7 @@ struct ArtSizes {
 }
 
 impl ArtSizes {
-    fn new(ctx: &egui::Context, overflow: bool) -> Self {
+    pub(crate) fn new(ctx: &egui::Context, overflow: bool) -> Self {
         let window = ctx.content_rect().size();
         let screen_width = ctx
             .input(|input| input.viewport().monitor_size)
@@ -283,16 +283,26 @@ impl ArtSizes {
     /// sizes it.
     fn art(self, images: &crate::api::CardImages, shape: Shape) -> Option<Art> {
         let picked = images.pick(shape == Shape::Backdrop, shape == Shape::Banner)?;
+        Some(self.image_art(picked.image, shape, picked.aspect))
+    }
+
+    /// The art for one image on a card of `shape`, sized as jellyfin-web
+    /// sizes card images.
+    pub(crate) fn image_art(
+        self,
+        image: crate::features::detail::ImageRef,
+        shape: Shape,
+        aspect: Option<f32>,
+    ) -> Art {
         let image_shape = jf::ImageShape::for_card(shape, self.overflow);
         let (fill_width, fill_height) = jf::card_fill_size(
             image_shape,
             self.window,
             self.screen_width,
             self.pixels,
-            picked.aspect,
+            aspect,
         );
-        let image = picked.image;
-        Some(Art {
+        Art {
             key: format!(
                 "{}:{}:{}:{}@{}x{}",
                 image.item_id,
@@ -307,7 +317,7 @@ impl ArtSizes {
                 fill_width,
                 fill_height,
             },
-        })
+        }
     }
 }
 

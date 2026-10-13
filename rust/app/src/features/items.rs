@@ -33,6 +33,8 @@ pub enum LinkTarget {
         item_types: String,
     },
     Person(String),
+    /// An external page (IMDb, TMDB), opened in the browser.
+    Url(String),
 }
 
 pub fn open_link(context: &AppContext, target: LinkTarget) {
@@ -69,6 +71,7 @@ pub fn open_link(context: &AppContext, target: LinkTarget) {
             context,
             DetailTarget::new(id, DetailKind::Person),
         ),
+        LinkTarget::Url(url) => crate::ui::detail::open_external_url(url),
     }
 }
 

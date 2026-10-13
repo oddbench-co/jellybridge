@@ -98,6 +98,34 @@ pub fn play_queue(context: &AppContext, source: crate::api::QueueSource, shuffle
 }
 
 /// Plays `ids` in order from `start` ("Play all from here").
+/// The Trailer button: the item's first local trailer plays here; without
+/// one, its first online trailer opens in the browser (jellyfin-web plays
+/// those in its own YouTube overlay).
+pub fn play_trailer(context: &AppContext, id: &str) {
+    let item = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.detail.item_by_id(id));
+    let Some(item) = item else { return };
+    if item.local_trailers == 0 {
+        if let Some(url) = item.trailer_urls.first() {
+            crate::ui::detail::open_external_url(url.clone());
+        }
+        return;
+    }
+    let Some(api) = context.api() else { return };
+    let ctx = context.clone();
+    let id = id.to_owned();
+    context.runtime.spawn(async move {
+        match api.local_trailers(&id).await {
+            Ok(trailers) if !trailers.is_empty() => play_ids(&ctx, trailers, 0),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "trailer unavailable"),
+        }
+    });
+}
+
 pub fn play_ids(context: &AppContext, ids: Vec<String>, start: usize) {
     let Some(api) = context.api() else { return };
     if start >= ids.len() {

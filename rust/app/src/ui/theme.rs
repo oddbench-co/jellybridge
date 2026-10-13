@@ -28,7 +28,6 @@ pub const JF_ACCENT: Color32 = rgb(0x00a4dc);
 pub const JF_PLAYED_RED: Color32 = rgb(0xcc3333);
 pub const JF_RAISED: Color32 = rgb(0x303030); // raised buttons
 pub const JF_INPUT: Color32 = rgb(0x292929); // inputs and selects
-pub const JF_CARD_EMPTY: Color32 = rgb(0x262626); // a card with no artwork
 pub const JF_RIBBON: Color32 = Color32::from_rgba_unmultiplied_const(32, 32, 32, 204);
 pub const JF_PROGRESS_TRACK: Color32 = Color32::from_rgba_unmultiplied_const(51, 51, 51, 204);
 pub const JF_BADGE: Color32 = Color32::from_rgba_unmultiplied_const(170, 170, 190, 51);
@@ -39,7 +38,6 @@ pub const JF_FONT_SECONDARY: f32 = 12.8;
 pub const JF_FONT_SECTION: f32 = 22.32;
 pub const JF_FONT_TITLE: f32 = 26.78;
 pub const JF_FONT_SUBTITLE: f32 = 17.41;
-pub const JF_FONT_SMALL: f32 = 13.69;
 pub const JF_RADIUS: f32 = 3.0;
 
 // Background ramp (darkest → lightest)

@@ -44,6 +44,13 @@ pub struct Art {
 pub enum ArtSource {
     /// Detail-page artwork: hero images, shelves, cast photos.
     Detail { image: ImageRef, max_width: u32 },
+    /// An image asked for exactly as jellyfin-web asks (its detail page's
+    /// backdrop and logo): an optional width cap and a quality, nothing else.
+    Web {
+        image: ImageRef,
+        max_width: Option<u32>,
+        quality: u8,
+    },
     /// A card image filled to the exact size jellyfin-web asks for.
     Card {
         image: ImageRef,
@@ -118,15 +125,26 @@ impl ImageCache {
     }
 
     /// Uploads a decoded image and makes it resident.
-    pub fn finish(&mut self, ctx: &egui::Context, key: String, image: Option<ColorImage>) {
+    pub fn finish(
+        &mut self,
+        ctx: &egui::Context,
+        key: String,
+        image: Option<ColorImage>,
+        mipmaps: bool,
+    ) {
         self.pending.remove(&key);
         let Some(image) = image else {
             self.failed.insert(key);
             return;
         };
-        // A mipmap chain adds a third on top of the base level.
-        let bytes = image.width() * image.height() * 4 * 4 / 3;
-        let texture = ctx.load_texture(&key, image, ARTWORK_TEXTURE);
+        let base = image.width() * image.height() * 4;
+        let (bytes, options) = if mipmaps {
+            // A mipmap chain adds a third on top of the base level.
+            (base * 4 / 3, ARTWORK_TEXTURE)
+        } else {
+            (base, TextureOptions::LINEAR)
+        };
+        let texture = ctx.load_texture(&key, image, options);
         self.insert(key, texture, bytes);
     }
 
@@ -206,7 +224,7 @@ pub fn fetch(context: &AppContext, art: Art) {
         let key = art.key;
         context
             .ui
-            .update(move |state| state.images.finish(&state.ctx.clone(), key, None));
+            .update(move |state| state.images.finish(&state.ctx.clone(), key, None, true));
         return;
     };
     let ctx = context.clone();
@@ -224,6 +242,21 @@ pub fn fetch(context: &AppContext, art: Art) {
                 ),
                 image.tag.clone(),
                 *max_width,
+            ),
+            ArtSource::Web {
+                image,
+                max_width,
+                quality,
+            } => (
+                format!(
+                    "{}-{}-{}-web{}q{quality}",
+                    image.item_id,
+                    image.image_type.jellyfin_name(),
+                    image.index.unwrap_or(0),
+                    max_width.unwrap_or(0),
+                ),
+                image.tag.clone(),
+                max_width.unwrap_or(0),
             ),
             ArtSource::Card {
                 image,
@@ -265,6 +298,11 @@ pub fn fetch(context: &AppContext, art: Art) {
                 ArtSource::Detail { image, max_width } => {
                     api.fetch_detail_image(image, *max_width).await
                 }
+                ArtSource::Web {
+                    image,
+                    max_width,
+                    quality,
+                } => api.fetch_web_image(image, *max_width, *quality).await,
                 ArtSource::Card {
                     image,
                     fill_width,
@@ -293,9 +331,12 @@ pub fn fetch(context: &AppContext, art: Art) {
             .inspect_err(|error| tracing::debug!(key = %art.key, %error, "artwork unavailable"))
             .ok();
         let key = art.key;
+        // A full-window backdrop is drawn at its own size: a mipmap chain
+        // would only cost memory.
+        let mipmaps = !matches!(art.source, ArtSource::Web { .. });
         ctx.ui.update(move |state| {
             let egui_ctx = state.ctx.clone();
-            state.images.finish(&egui_ctx, key, image);
+            state.images.finish(&egui_ctx, key, image, mipmaps);
         });
     });
 }
@@ -406,7 +447,7 @@ mod tests {
             "drawn twice, wanted once"
         );
 
-        cache.finish(&ctx, art.key.clone(), None);
+        cache.finish(&ctx, art.key.clone(), None, true);
         assert!(cache.texture(&art).is_none());
         assert!(
             cache.take_wanted().is_empty(),
@@ -421,6 +462,7 @@ mod tests {
             &ctx,
             art.key.clone(),
             Some(ColorImage::filled([2, 3], egui::Color32::WHITE)),
+            true,
         );
         assert!(cache.texture(&art).is_some());
         assert_eq!(cache.size("poster"), Some([2, 3]));

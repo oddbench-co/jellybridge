@@ -260,6 +260,15 @@ pub fn paragraph(
     lines.len() as f32 * line_height
 }
 
+/// Where Chrome puts a line's baseline in a `line_height` box: the
+/// half-leading, floored to a whole pixel, above the font's rounded ascent
+/// (Noto Sans: 1.069em up, 0.293em down; both rounded to whole pixels).
+pub fn baseline(top: f32, size: f32, line_height: f32) -> f32 {
+    let ascent = (1.069 * size).round();
+    let descent = (0.293 * size).round();
+    top + ((line_height - ascent - descent) / 2.0).floor() + ascent
+}
+
 /// `.cardDefaultText`: the name written large on a card with no artwork
 /// (2em bold, wrapping, 0.06em 0.5em padding), centred in the tile.
 fn paint_default_text(ui: &Ui, image: Rect, name: &str) {

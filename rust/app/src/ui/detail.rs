@@ -9,7 +9,7 @@ use super::jf::{self, CardModel, Shape};
 use super::scrollbar;
 use super::top_bar;
 use super::widgets::{self, Shelf};
-use super::{Screen, UiState, detail_art, primary_card_image, theme};
+use super::{Screen, UiState, detail_art, primary_card_image, theme, web_art};
 use crate::app::AppContext;
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageType, PersonData, StreamData,
@@ -58,14 +58,14 @@ pub struct DetailVm {
     pub episodes: Vec<DetailCard>,
     pub people: Vec<DetailPerson>,
     pub guest_stars: Vec<DetailPerson>,
-    /// Unwatched episodes left in a series or season, for the poster badge.
-    pub unplayed_count: i32,
     pub audio_options: Vec<String>,
     pub subtitle_options: Vec<String>,
     pub audio_index: i32,
     pub subtitle_index: i32,
     /// The ribbon's info row, item by item as jellyfin-web lays it out.
     pub misc: Vec<MiscItem>,
+    /// The item has a trailer (local or online): the ribbon offers it.
+    pub has_trailer: bool,
 }
 
 /// One entry of the info row under a detail page's title.
@@ -121,7 +121,8 @@ pub struct DetailPerson {
     pub id: Option<String>,
     pub name: String,
     pub role: String,
-    pub art: Option<Art>,
+    /// Sized for its card when drawn (the size depends on the window).
+    pub image: Option<crate::features::detail::ImageRef>,
 }
 
 /// Switches to an empty detail page while the real one loads.
@@ -246,8 +247,12 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
                 },
             )
         }),
-        backdrop: item.backdrop.as_ref().map(|image| detail_art(image, 1600)),
-        logo: item.logo.as_ref().map(|image| detail_art(image, 600)),
+        // jellyfin-web's page backdrop and logo requests.
+        backdrop: item
+            .backdrop
+            .as_ref()
+            .map(|image| web_art(image, Some(3840), 80)),
+        logo: item.logo.as_ref().map(|image| web_art(image, None, 90)),
         kind: Some(item.kind),
         tagline: item.tagline.clone(),
         media_info: item.media_summary.clone(),
@@ -328,15 +333,12 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
             .collect(),
         people: item.people.iter().map(to_detail_person).collect(),
         guest_stars: item.guest_stars.iter().map(to_detail_person).collect(),
-        unplayed_count: matches!(item.kind, DetailKind::Series | DetailKind::Season)
-            .then_some(item.unplayed_count)
-            .flatten()
-            .unwrap_or(0),
         audio_options,
         subtitle_options,
         audio_index: tracks.audio_index,
         subtitle_index: tracks.subtitle_index,
         misc: misc_items(page),
+        has_trailer: item.local_trailers > 0 || !item.trailer_urls.is_empty(),
     }
 }
 
@@ -431,11 +433,15 @@ fn credit_rows(item: &DetailItemData) -> Vec<(&'static str, Vec<CreditLink>)> {
         item_types: types.to_owned(),
     };
     let person = |id, _name| LinkTarget::Person(id);
+    // jellyfin-web names each row in the singular for one entry.
+    let row = |one: &'static str, many: &'static str, links: Vec<CreditLink>| {
+        (if links.len() == 1 { one } else { many }, links)
+    };
     [
-        ("Genres", links(&item.genres, &genre)),
-        ("Director", links(&item.directors, &person)),
-        ("Writers", links(&item.writers, &person)),
-        ("Studios", links(&item.studios, &studio)),
+        row("Genre", "Genres", links(&item.genres, &genre)),
+        row("Director", "Directors", links(&item.directors, &person)),
+        row("Writer", "Writers", links(&item.writers, &person)),
+        row("Studio", "Studios", links(&item.studios, &studio)),
     ]
     .into_iter()
     .filter(|(_, links)| !links.is_empty())
@@ -546,7 +552,7 @@ fn to_detail_person(person: &PersonData) -> DetailPerson {
         id: person.id.clone(),
         name: person.name.clone(),
         role: person.role.clone(),
-        art: person.image.as_ref().map(|image| detail_art(image, 320)),
+        image: person.image.clone(),
     }
 }
 
@@ -556,25 +562,34 @@ pub fn open_external_url(url: String) {
     std::thread::spawn(move || open_in_browser(&url));
 }
 
-/// The ribbon under the backdrop that carries the title and the actions.
-const RIBBON_HEIGHT: f32 = 107.0;
+/// The ribbon across the bottom of the backdrop band (7.2em).
+const RIBBON_HEIGHT: f32 = jf::layout_unit(7.2 * jf::EM);
+/// The poster's rise above the band's bottom (12.96em).
+const POSTER_RISE: f32 = jf::layout_unit(12.96 * jf::EM);
+/// Space above the primary and secondary content (1.25em).
+const CONTENT_PADDING: f32 = jf::layout_unit(1.25 * jf::EM);
 const LABEL_WIDTH: f32 = 93.0;
-const MEDIA_ROW: f32 = 30.8;
 
-/// Page geometry, in jellyfin-web's viewport units.
+/// Page geometry, as jellyfin-web's detail page lays it out in viewport
+/// units.
 struct Layout {
+    /// The page's width (the window less the page scrollbar).
     width: f32,
-    /// The backdrop: 40vh.
-    backdrop_height: f32,
+    /// The backdrop band: 40vh.
+    band: f32,
+    /// 3.3% of the page: the poster's inset and the primary column's
+    /// right padding.
     padding: f32,
     poster: egui::Vec2,
     /// Where the text column starts: 32.45vw.
     content_left: f32,
+    /// The logo box: 25vw by 16vh, 25vw from the right, 10vh down.
+    logo: Rect,
 }
 
 impl Layout {
-    fn new(width: f32, height: f32, kind: Option<DetailKind>, backdrop: bool) -> Self {
-        let poster_width = width * 0.25;
+    fn new(width: f32, window: egui::Vec2, kind: Option<DetailKind>) -> Self {
+        let poster_width = jf::layout_unit(window.x * 0.25);
         let ratio = match kind {
             Some(DetailKind::Episode | DetailKind::Video) => 9.0 / 16.0,
             Some(DetailKind::Playlist) => 1.0,
@@ -582,25 +597,28 @@ impl Layout {
         };
         Self {
             width,
-            // Without a backdrop jellyfin-web puts the ribbon right under
-            // the header.
-            backdrop_height: if backdrop {
-                (height * 0.4).max(RIBBON_HEIGHT + 120.0)
-            } else {
-                top_bar::HEIGHT + 30.0 + RIBBON_HEIGHT
-            },
+            band: jf::layout_unit(window.y * 0.4),
             padding: jf::page_padding(width),
             poster: vec2(poster_width, poster_width * ratio),
-            content_left: width * 0.3245,
+            content_left: jf::layout_unit(window.x * 0.3245),
+            logo: Rect::from_min_size(
+                pos2(width - 2.0 * window.x * 0.25, window.y * 0.1),
+                vec2(window.x * 0.25, window.y * 0.16),
+            ),
         }
     }
 
+    /// The primary column's text width (3.3% padding on the right).
     fn content_width(&self) -> f32 {
         (self.width - self.content_left - self.padding).max(120.0)
     }
 
     fn ribbon_top(&self) -> f32 {
-        self.backdrop_height - RIBBON_HEIGHT
+        self.band - RIBBON_HEIGHT
+    }
+
+    fn poster_bottom(&self) -> f32 {
+        self.band - POSTER_RISE + self.poster.y
     }
 }
 
@@ -608,6 +626,7 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
     ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
     let page_width = screen.width() - scrollbar::reserved(ui);
+    let page = Rect::from_min_size(screen.min, vec2(page_width, screen.height()));
     let bar = Rect::from_min_size(screen.min, vec2(page_width, top_bar::HEIGHT));
     if state.busy {
         ui.put(
@@ -617,13 +636,15 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         top_bar::draw(ui, state, bar, actions);
         return;
     }
-    let layout = Layout::new(
-        page_width,
-        screen.height(),
-        state.detail.kind,
-        state.detail.backdrop.is_some(),
-    );
-    let page = Rect::from_min_size(screen.min, vec2(page_width, screen.height()));
+    // jellyfin-web shows the item's backdrop behind the whole page, fixed
+    // to the window, under 86% black.
+    if let Some((texture, size)) = resident(&mut state.images, state.detail.backdrop.as_ref()) {
+        widgets::image_cover(ui.painter(), texture, size, page, 0.0);
+        ui.painter()
+            .rect_filled(page, 0.0, Color32::from_black_alpha(219));
+    }
+    let window = vec2(jf::window_width(ui), screen.height());
+    let layout = Layout::new(page_width, window, state.detail.kind);
     let mut page_ui = widgets::clipped_child(ui, page);
     let output = ScrollArea::vertical()
         .id_salt(("detail-page", state.detail.id.as_str()))
@@ -632,54 +653,52 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         .show(&mut page_ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             let page_top = ui.cursor().top();
-            draw_backdrop(ui, state, &layout);
+            // Below the band the page is opaque #101010
+            // (`.noBackdropTransparency`); its height is known at the end.
+            let ground = ui.painter().add(egui::Shape::Noop);
+            draw_band(ui, state, &layout);
             draw_ribbon(ui, state, &layout, page_top, actions);
             if !state.message.is_empty() {
                 draw_error_banner(ui, state, &layout, actions);
             }
             draw_info(ui, state, &layout, actions);
-            draw_shelves(ui, state, &layout, actions);
-            ui.allocate_exact_size(vec2(layout.width, 40.0), Sense::hover());
+            draw_primary_sections(ui, state, &layout, actions);
+            // The lower sections start under the poster when it reaches
+            // further than the text.
+            let below_poster = page_top + layout.poster_bottom() - ui.cursor().top();
+            if below_poster > 0.0 {
+                ui.allocate_exact_size(vec2(layout.width, below_poster), Sense::hover());
+            }
+            ui.allocate_exact_size(vec2(layout.width, CONTENT_PADDING), Sense::hover());
+            draw_secondary_sections(ui, state, &layout, actions);
+            ui.allocate_exact_size(vec2(layout.width, jf::PAGE_BOTTOM), Sense::hover());
+            let below_band = Rect::from_min_max(
+                pos2(ui.max_rect().left(), page_top + layout.band),
+                pos2(ui.max_rect().left() + layout.width, ui.cursor().top()),
+            );
+            ui.painter().set(
+                ground,
+                egui::Shape::rect_filled(below_band, 0.0, theme::JF_BG),
+            );
             draw_poster(ui, state, &layout, page_top);
         });
     scrollbar::draw(&mut page_ui, &output);
-    // The header floats over the backdrop, translucent.
     top_bar::draw(ui, state, bar, actions);
 }
 
-fn draw_backdrop(ui: &mut Ui, state: &mut UiState, layout: &Layout) {
-    let (hero, _) =
-        ui.allocate_exact_size(vec2(layout.width, layout.backdrop_height), Sense::hover());
-    if !ui.is_rect_visible(hero) {
+/// The backdrop band (its backdrop is the page's), with the logo.
+fn draw_band(ui: &mut Ui, state: &mut UiState, layout: &Layout) {
+    let (band, _) = ui.allocate_exact_size(vec2(layout.width, layout.band), Sense::hover());
+    if !ui.is_rect_visible(band) {
         return;
     }
-    let painter = ui.painter().with_clip_rect(hero.intersect(ui.clip_rect()));
-    if let Some((texture, size)) = resident(&mut state.images, state.detail.backdrop.as_ref()) {
-        widgets::image_cover(&painter, texture, size, hero, 0.0);
-        // jellyfin-web dims the backdrop under its translucent header and
-        // ribbon; the page ground shows through at 50%.
-        painter.rect_filled(hero, 0.0, theme::with_alpha(theme::JF_BG, 0.5));
+    // `.detailLogo` is hidden on windows 68.75em wide or less.
+    if jf::window_width(ui) <= 1100.0 {
+        return;
     }
     if let Some((texture, size)) = resident(&mut state.images, state.detail.logo.as_ref()) {
-        // Centred in the space above the ribbon, right of the poster column.
-        let area = Rect::from_min_max(
-            pos2(
-                hero.left() + layout.content_left,
-                hero.top() + top_bar::HEIGHT,
-            ),
-            pos2(
-                hero.right() - layout.padding,
-                hero.top() + layout.ribbon_top(),
-            ),
-        );
-        let logo = Rect::from_center_size(
-            area.center(),
-            vec2(
-                (area.width() * 0.4).min(500.0),
-                (area.height() * 0.75).min(200.0),
-            ),
-        );
-        widgets::image_contain(&painter, texture, size, logo);
+        let logo = layout.logo.translate(band.min.to_vec2());
+        widgets::image_contain(ui.painter(), texture, size, logo);
     }
 }
 
@@ -716,7 +735,9 @@ fn draw_ribbon(
         && detail.kind.is_some_and(DetailKind::is_video);
     let kind = detail.kind.unwrap_or(DetailKind::Other);
     let mut buttons: Vec<(Icon, &str, Color32, &str)> = Vec::new();
-    if detail.playable {
+    // A playlist or collection offers Play and Shuffle even when empty.
+    let container = matches!(kind, DetailKind::BoxSet | DetailKind::Playlist);
+    if detail.playable || container {
         buttons.push((
             Icon::Play,
             if resumable { "Resume" } else { "Play" },
@@ -724,25 +745,25 @@ fn draw_ribbon(
             "play",
         ));
         if resumable {
-            buttons.push((
-                Icon::Replay,
-                "Play from beginning",
-                Color32::WHITE,
-                "restart",
-            ));
+            buttons.push((Icon::Replay, "Play", Color32::WHITE, "restart"));
         }
-        if matches!(
+    }
+    if detail.has_trailer {
+        buttons.push((Icon::Theaters, "Trailer", Color32::WHITE, "trailer"));
+    }
+    if (detail.playable || container)
+        && matches!(
             kind,
             DetailKind::Series | DetailKind::Season | DetailKind::BoxSet | DetailKind::Playlist
-        ) {
-            buttons.push((Icon::Shuffle, "Shuffle", Color32::WHITE, "shuffle"));
-        }
+        )
+    {
+        buttons.push((Icon::Shuffle, "Shuffle", Color32::WHITE, "shuffle"));
     }
     if !matches!(kind, DetailKind::Person | DetailKind::Playlist) {
         buttons.push((
             Icon::Check,
             if detail.watched {
-                "Mark unplayed"
+                "Watched"
             } else {
                 "Mark played"
             },
@@ -780,28 +801,38 @@ fn draw_ribbon(
     if !super::menu::menu_commands(&menu).is_empty() {
         buttons.push((Icon::MoreVert, "More", Color32::WHITE, "more"));
     }
-    let buttons_width = buttons.len() as f32 * 49.0;
-    let mut x = ribbon.right() - layout.padding - buttons_width;
-    let text_right = x - 16.0;
+    // `.mainDetailButtons`: flat buttons (1.6em icons, 0.85em by 0.7em
+    // padding) at 108% on windows 100em wide, right-aligned in the ribbon.
+    let scale = if jf::window_width(ui) >= 1600.0 {
+        1.08
+    } else {
+        1.0
+    };
+    let font = jf::EM * scale;
+    let icon_size = 1.6 * font;
+    let button = vec2(
+        icon_size + 1.7 * font,
+        jf::layout_unit(icon_size + 1.4 * font),
+    );
+    let mut x = ribbon.right() - layout.padding - buttons.len() as f32 * button.x;
+    let text_right = x;
     for (icon, label, color, name) in buttons {
-        let rect = Rect::from_min_size(pos2(x, ribbon.center().y - 22.5), vec2(49.0, 45.0));
-        x += 49.0;
-        let clicked = jf::round_icon_button(
-            ui,
-            rect,
-            icon,
-            if color == Color32::WHITE {
-                theme::JF_TEXT
-            } else {
-                color
-            },
-            24.8,
-            label,
-            !busy,
-            Id::new(("detail-action", name)),
-        )
-        .clicked();
-        if !clicked {
+        let rect = Rect::from_min_size(pos2(x, ribbon.center().y - button.y / 2.0), button);
+        x += button.x;
+        let response = ui.interact(rect, Id::new(("detail-action", name)), Sense::click());
+        widgets::describe_button(&response, !busy, label);
+        // `.button-flat:hover` turns the icon accent; a coloured icon
+        // (played, favourite) keeps its colour.
+        let tint = if color != Color32::WHITE {
+            color
+        } else if response.hovered() && !busy {
+            theme::JF_ACCENT
+        } else {
+            jf::TEXT_80
+        };
+        icons::paint_centered(&painter, icon, rect.center(), icon_size, tint);
+        widgets::pointer_on_hover(&response);
+        if !response.clicked() || busy {
             continue;
         }
         let queue = matches!(kind, DetailKind::BoxSet | DetailKind::Playlist);
@@ -812,6 +843,7 @@ fn draw_ribbon(
             },
             "play" => UiAction::PlayCurrent { from_start: false },
             "restart" => UiAction::PlayCurrent { from_start: true },
+            "trailer" => UiAction::PlayTrailer(detail.id.clone()),
             "shuffle" => UiAction::PlayQueue {
                 source: crate::features::items::queue_source(detail.kind_name, &detail.id),
                 shuffle: true,
@@ -831,46 +863,42 @@ fn draw_ribbon(
         });
     }
 
-    // Title block, vertically centred in the ribbon.
+    // `.infoWrapper`, vertically centred: the name (an `h1`, and for an
+    // episode or season the series as a link over an `h3`), then the info
+    // row with 0.6em under it.
     let left = ribbon.left() + layout.content_left;
     let width = (text_right - left).max(80.0);
-    let heading_links = !detail.series_id.is_empty()
+    let parented = !detail.series_id.is_empty()
         && matches!(detail.kind, Some(DetailKind::Episode | DetailKind::Season));
+    let h1 = 1.8 * jf::EM;
+    let h1_line = jf::layout_unit(1.35 * h1);
+    let h3 = 1.17 * jf::EM;
+    let h3_line = jf::layout_unit(1.35 * h3);
+    let has_sub = !detail.subheading.is_empty();
+    let name_height = if has_sub {
+        jf::layout_unit(65.7)
+    } else {
+        h1_line
+    };
+    let misc = misc_layout(ui, &detail.misc);
+    let misc_block = misc
+        .as_ref()
+        .map_or(0.0, |(_, height)| height + jf::layout_unit(0.6 * jf::EM));
+    let block = name_height + misc_block;
+    let top = ribbon.top() + (RIBBON_HEIGHT - block) / 2.0;
     let heading_text = if detail.heading.is_empty() {
         &detail.title
     } else {
         &detail.heading
     };
-    let heading = widgets::elided(
-        ui,
-        heading_text,
-        theme::bold(theme::JF_FONT_TITLE),
-        theme::JF_TEXT,
-        width,
-    );
-    let subheading = (!detail.subheading.is_empty()).then(|| {
-        widgets::elided(
-            ui,
-            &detail.subheading,
-            theme::bold(theme::JF_FONT_SUBTITLE),
-            theme::JF_TEXT,
-            width,
-        )
-    });
-    let misc_height = if detail.misc.is_empty() { 0.0 } else { 24.0 };
-    let block = heading.size().y
-        + subheading.as_ref().map_or(0.0, |line| line.size().y + 2.0)
-        + misc_height;
-    let mut y = ribbon.top() + (RIBBON_HEIGHT - block) / 2.0;
-    let heading_rect = Rect::from_min_size(pos2(left, y), heading.size());
-    let sense = if heading_links {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(heading_rect, Id::new("detail-heading"), sense);
-    painter.galley(heading_rect.min, heading, Color32::WHITE);
-    if heading_links {
+    let heading = widgets::elided(ui, heading_text, theme::bold(h1), jf::TEXT_80, width);
+    let heading_rect = Rect::from_min_size(pos2(left, top), vec2(heading.size().x, h1_line));
+    widgets::galley_on_baseline(&painter, left, jf::baseline(top, h1, h1_line), heading);
+    if parented {
+        let response = ui.interact(heading_rect, Id::new("detail-heading"), Sense::click());
+        if response.hovered() {
+            underline(ui, heading_rect, h1, h1_line);
+        }
         widgets::pointer_on_hover(&response);
         if response.clicked() {
             actions.push(UiAction::OpenDetail {
@@ -879,18 +907,30 @@ fn draw_ribbon(
             });
         }
     }
-    y = heading_rect.bottom();
-    if let Some(subheading) = subheading {
-        let rect = Rect::from_min_size(pos2(left, y + 2.0), subheading.size());
-        let links = !detail.season_id.is_empty();
-        let sense = if links {
-            Sense::click()
-        } else {
-            Sense::hover()
+    if has_sub {
+        // "Season 1 - 1. Name": the season part links to the season.
+        let sub_top = top + jf::layout_unit(38.75);
+        let (season, rest) = match detail.subheading.split_once(" - ") {
+            Some((season, rest)) if !detail.season_id.is_empty() => {
+                (season.to_owned(), format!(" - {rest}"))
+            }
+            _ => (String::new(), detail.subheading.clone()),
         };
-        let response = ui.interact(rect, Id::new("detail-subheading"), sense);
-        painter.galley(rect.min, subheading, Color32::WHITE);
-        if links {
+        let mut x = left;
+        if !season.is_empty() {
+            let galley = painter.layout_no_wrap(season.clone(), theme::bold(h3), jf::TEXT_80);
+            let rect = Rect::from_min_size(pos2(x, sub_top), vec2(galley.size().x, h3_line));
+            x = rect.right();
+            widgets::galley_on_baseline(
+                &painter,
+                rect.left(),
+                jf::baseline(sub_top, h3, h3_line),
+                galley,
+            );
+            let response = ui.interact(rect, Id::new("detail-subheading"), Sense::click());
+            if response.hovered() {
+                underline(ui, rect, h3, h3_line);
+            }
             widgets::pointer_on_hover(&response);
             if response.clicked() {
                 actions.push(UiAction::OpenDetail {
@@ -899,70 +939,140 @@ fn draw_ribbon(
                 });
             }
         }
-        y = rect.bottom();
-    }
-    if !detail.misc.is_empty() {
-        draw_misc(
+        let galley = widgets::elided(
             ui,
+            &rest,
+            theme::bold(h3),
+            jf::TEXT_80,
+            (left + width - x).max(0.0),
+        );
+        widgets::galley_on_baseline(&painter, x, jf::baseline(sub_top, h3, h3_line), galley);
+    }
+    if let Some((items, height)) = misc {
+        draw_misc(
             &painter,
-            &detail.misc,
-            pos2(left, y + 12.0),
+            items,
+            pos2(left, top + name_height),
+            height,
             left + width,
         );
     }
 }
 
-/// The info row: plain items 15 px apart, the rating in a box, stars and
-/// the critic score with their icons.
-fn draw_misc(ui: &Ui, painter: &egui::Painter, misc: &[MiscItem], start: egui::Pos2, right: f32) {
-    let center_y = start.y;
-    let mut x = start.x;
-    let font = theme::regular(theme::JF_FONT);
-    for item in misc {
+/// One laid-out item of the info row.
+enum MiscPiece {
+    Text(std::sync::Arc<egui::Galley>),
+    Badge(std::sync::Arc<egui::Galley>),
+    Stars(std::sync::Arc<egui::Galley>),
+    Critic(std::sync::Arc<egui::Galley>, bool),
+}
+
+/// The info row's items and its height (the tallest item: text 1.35em,
+/// the rating badge 0.92em text padded 0.22em, a 1.4em star).
+fn misc_layout(ui: &Ui, misc: &[MiscItem]) -> Option<(Vec<MiscPiece>, f32)> {
+    if misc.is_empty() {
+        return None;
+    }
+    let font = theme::regular(jf::EM);
+    let mut height = jf::layout_unit(1.35 * jf::EM);
+    let pieces = misc
+        .iter()
+        .map(|item| match item {
+            MiscItem::Text(text) => MiscPiece::Text(ui.painter().layout_no_wrap(
+                text.clone(),
+                font.clone(),
+                jf::TEXT_80,
+            )),
+            MiscItem::Badge(text) => {
+                let size = 0.92 * jf::EM;
+                height = height.max(jf::layout_unit(1.35 * size + 0.44 * size));
+                MiscPiece::Badge(ui.painter().layout_no_wrap(
+                    text.clone(),
+                    theme::regular(size),
+                    theme::JF_BADGE_TEXT,
+                ))
+            }
+            MiscItem::Stars(stars) => {
+                height = height.max(jf::layout_unit(1.4 * jf::EM));
+                MiscPiece::Stars(ui.painter().layout_no_wrap(
+                    format!("{}", (stars * 10.0).round() / 10.0),
+                    font.clone(),
+                    jf::TEXT_80,
+                ))
+            }
+            MiscItem::Critic(score) => MiscPiece::Critic(
+                ui.painter()
+                    .layout_no_wrap(score.to_string(), font.clone(), jf::TEXT_80),
+                *score >= 60,
+            ),
+        })
+        .collect();
+    Some((pieces, height))
+}
+
+/// `.itemMiscInfo`: items 1em apart (the badge 1em of its own size),
+/// vertically centred in the row.
+fn draw_misc(
+    painter: &egui::Painter,
+    pieces: Vec<MiscPiece>,
+    origin: egui::Pos2,
+    height: f32,
+    right: f32,
+) {
+    let em = jf::EM;
+    let line = jf::layout_unit(1.35 * em);
+    let center = origin.y + height / 2.0;
+    let text_top = center - line / 2.0;
+    let mut x = origin.x;
+    for piece in pieces {
         if x >= right {
             break;
         }
-        match item {
-            MiscItem::Text(text) => {
-                let galley = widgets::elided(ui, text, font.clone(), theme::JF_TEXT, right - x);
-                x = widgets::galley_v_centered(painter, x, center_y, galley).right() + 15.0;
+        match piece {
+            MiscPiece::Text(galley) => {
+                let width = galley.size().x;
+                widgets::galley_on_baseline(painter, x, jf::baseline(text_top, em, line), galley);
+                x += width + em;
             }
-            MiscItem::Badge(text) => {
-                let galley = widgets::elided(
-                    ui,
-                    text,
-                    theme::regular(theme::JF_FONT_SMALL),
-                    theme::JF_BADGE_TEXT,
-                    right - x,
-                );
+            MiscPiece::Badge(galley) => {
+                let size = 0.92 * em;
+                let badge_line = jf::layout_unit(1.35 * size);
+                let pad = vec2(0.5 * size, 0.22 * size);
                 let rect = Rect::from_min_size(
-                    pos2(x, center_y - 12.0),
-                    vec2(galley.size().x + 13.7, 24.0),
+                    pos2(x, center - (badge_line + 2.0 * pad.y) / 2.0),
+                    vec2(galley.size().x + 2.0 * pad.x, badge_line + 2.0 * pad.y),
                 );
-                painter.rect_filled(rect, theme::JF_RADIUS, theme::JF_BADGE);
-                widgets::galley_centered(painter, rect, galley);
-                x = rect.right() + 15.0;
+                painter.rect_filled(rect, 0.25 * size, theme::JF_BADGE);
+                let width = galley.size().x;
+                widgets::galley_on_baseline(
+                    painter,
+                    rect.left() + pad.x,
+                    jf::baseline(rect.top() + pad.y, size, badge_line),
+                    galley,
+                );
+                x += width + 2.0 * pad.x + size;
             }
-            MiscItem::Stars(stars) => {
+            MiscPiece::Stars(galley) => {
+                let star = 1.4 * em;
                 icons::paint_centered(
                     painter,
                     Icon::Star,
-                    pos2(x + 9.0, center_y),
-                    18.0,
+                    pos2(x + star / 2.0, center),
+                    star,
                     theme::RATING_GOLD,
                 );
-                let galley = painter.layout_no_wrap(
-                    format!("{}", (stars * 10.0).round() / 10.0),
-                    font.clone(),
-                    theme::JF_TEXT,
-                );
-                x = widgets::galley_v_centered(painter, x + 21.0, center_y, galley).right() + 15.0;
+                x += star + 0.125 * star;
+                let width = galley.size().x;
+                widgets::galley_on_baseline(painter, x, jf::baseline(text_top, em, line), galley);
+                x += width + em;
             }
-            MiscItem::Critic(score) => {
-                tomato(painter, pos2(x + 9.0, center_y), *score >= 60);
-                let galley =
-                    painter.layout_no_wrap(score.to_string(), font.clone(), theme::JF_TEXT);
-                x = widgets::galley_v_centered(painter, x + 22.0, center_y, galley).right() + 15.0;
+            MiscPiece::Critic(galley, fresh) => {
+                // The tomato: 1.2em tall at the left of 1.5em of padding.
+                tomato(painter, pos2(x + 0.6 * em, center), fresh);
+                x += 1.5 * em;
+                let width = galley.size().x;
+                widgets::galley_on_baseline(painter, x, jf::baseline(text_top, em, line), galley);
+                x += width + em;
             }
         }
     }
@@ -1025,199 +1135,216 @@ fn draw_error_banner(ui: &mut Ui, state: &UiState, layout: &Layout, actions: &mu
 
 /// Media rows, tagline, overview, tags, links and credits in the text
 /// column under the ribbon.
+/// The text column under the ribbon, as jellyfin-web stacks it: track
+/// selections, tagline, overview, person facts, tags, external links, and
+/// the Genres / Director / Writers / Studios group. CSS margins are kept,
+/// including where they collapse.
 fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
+    const EM: f32 = jf::EM;
+    let small = 0.92 * EM;
     let detail = &mut state.detail;
-    let left = layout.content_left;
+    let origin = ui.cursor().min;
+    let left = origin.x + layout.content_left;
     let width = layout.content_width();
-    ui.allocate_exact_size(vec2(layout.width, 22.0), Sense::hover());
-    let row = |ui: &mut Ui, height: f32, gap_before: f32| -> Rect {
-        if gap_before > 0.0 {
-            ui.allocate_exact_size(vec2(layout.width, gap_before), Sense::hover());
+    // `.trackSelections` and `.detailsGroupItem` stop at 44em.
+    let narrow = width.min(jf::layout_unit(44.0 * EM));
+    let line = jf::layout_unit(1.35 * EM);
+    let mut y = origin.y + CONTENT_PADDING;
+
+    // Track selections: rows of 1.75em, 0.3em apart.
+    let row_height = jf::layout_unit(1.75 * EM);
+    let value_left = left + jf::layout_unit(LABEL_WIDTH + 0.2 * EM);
+    let value_width = narrow - (value_left - left);
+    let mut rows = 0;
+    let mut track_row = |ui: &mut Ui, y: &mut f32, title: &str| -> Rect {
+        if rows > 0 {
+            *y += jf::layout_unit(0.3 * EM);
         }
-        let (rect, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
-        Rect::from_min_size(pos2(rect.left() + left, rect.top()), vec2(width, height))
+        rows += 1;
+        let label = ui
+            .painter()
+            .layout_no_wrap(title.to_owned(), theme::regular(EM), jf::TEXT_80);
+        widgets::galley_on_baseline(ui.painter(), left, baseline(*y, EM, row_height), label);
+        let field = Rect::from_min_size(pos2(value_left, *y), vec2(value_width, row_height));
+        *y += row_height;
+        field
     };
-    let label = |ui: &Ui, rect: Rect, text: &str| {
-        ui.painter().text(
-            pos2(rect.left(), rect.center().y),
-            Align2::LEFT_CENTER,
-            text,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT,
-        );
-    };
-    let value_width = (width - LABEL_WIDTH).min(559.0);
-    let mut media_rows = 0;
-    if !detail.media_info.is_empty() {
-        let rect = row(ui, MEDIA_ROW, 0.0);
-        label(ui, rect, "Video");
-        let galley = widgets::elided(
-            ui,
-            &detail.media_info,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT_SECONDARY,
-            value_width,
-        );
-        widgets::galley_v_centered(
+    // A track with no choice is a disabled select: its text at 70%.
+    let fixed = |ui: &Ui, field: Rect, text: &str| {
+        let color = theme::with_alpha(jf::TEXT_80, 0.7 * 0.8);
+        let galley = widgets::elided(ui, text, theme::regular(EM), color, field.width());
+        widgets::galley_on_baseline(
             ui.painter(),
-            rect.left() + LABEL_WIDTH,
-            rect.center().y,
+            field.left(),
+            baseline(field.top(), EM, field.height()),
             galley,
         );
-        media_rows += 1;
+    };
+    if !detail.media_info.is_empty() {
+        let field = track_row(ui, &mut y, "Video");
+        fixed(ui, field, &detail.media_info);
     }
     if detail.audio_options.len() == 1 {
-        let rect = row(ui, MEDIA_ROW, 0.0);
-        label(ui, rect, "Audio");
-        let galley = widgets::elided(
+        let field = track_row(ui, &mut y, "Audio");
+        fixed(ui, field, &detail.audio_options[0]);
+    } else if detail.audio_options.len() > 1 {
+        let field = track_row(ui, &mut y, "Audio");
+        if let Some(picked) = track_select(
             ui,
-            &detail.audio_options[0],
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT_SECONDARY,
-            value_width,
-        );
-        widgets::galley_v_centered(
-            ui.painter(),
-            rect.left() + LABEL_WIDTH,
-            rect.center().y,
-            galley,
-        );
-        media_rows += 1;
-    }
-    let mut select =
-        |ui: &mut Ui, title: &str, options: &[String], index: &mut i32, audio: bool| {
-            let rect = row(ui, MEDIA_ROW, 0.0);
-            label(ui, rect, title);
-            let field = Rect::from_min_size(
-                pos2(rect.left() + LABEL_WIDTH, rect.center().y - 13.0),
-                vec2(value_width, 26.0),
-            );
-            if let Some(picked) = track_select(ui, field, options, *index, ("detail-track", audio))
-                && picked != *index
-            {
-                *index = picked;
-                actions.push(UiAction::DetailTrack {
-                    index: picked,
-                    audio,
-                });
-            }
-        };
-    if detail.audio_options.len() > 1 {
-        let options = std::mem::take(&mut detail.audio_options);
-        select(ui, "Audio", &options, &mut detail.audio_index, true);
-        detail.audio_options = options;
-        media_rows += 1;
+            field,
+            &detail.audio_options,
+            detail.audio_index,
+            ("detail-track", true),
+        ) {
+            detail.audio_index = picked;
+            actions.push(UiAction::DetailTrack {
+                index: picked,
+                audio: true,
+            });
+        }
     }
     if detail.subtitle_options.len() > 1 {
-        let options = std::mem::take(&mut detail.subtitle_options);
-        select(ui, "Subtitles", &options, &mut detail.subtitle_index, false);
-        detail.subtitle_options = options;
-        media_rows += 1;
+        let field = track_row(ui, &mut y, "Subtitles");
+        if let Some(picked) = track_select(
+            ui,
+            field,
+            &detail.subtitle_options,
+            detail.subtitle_index,
+            ("detail-track", false),
+        ) {
+            detail.subtitle_index = picked;
+            actions.push(UiAction::DetailTrack {
+                index: picked,
+                audio: false,
+            });
+        }
     }
-    let mut gap = if media_rows > 0 { 14.0 } else { 0.0 };
-    let paragraph = |ui: &mut Ui, text: &str, font: egui::FontId, color: Color32, gap: &mut f32| {
-        let galley = widgets::wrapped(ui, text, font, color, width, None);
-        let rect = row(ui, galley.size().y, *gap);
-        ui.painter().galley(rect.min, galley, Color32::WHITE);
-        *gap = 18.0;
-    };
+
+    // A pending bottom margin, collapsed with the next top margin. The
+    // empty `p.itemGenres` always leaves 1em.
+    let p_margin = jf::layout_unit(EM);
+    let mut pending = p_margin;
     if !detail.tagline.is_empty() {
-        paragraph(
+        // `h3.tagline`: 1.17em, 1em margins of its own size.
+        let size = 1.17 * EM;
+        let margin = jf::layout_unit(size);
+        y += pending.max(margin);
+        let galley = widgets::elided(
             ui,
             &detail.tagline,
-            theme::regular(theme::JF_FONT_SUBTITLE),
-            theme::JF_TEXT,
-            &mut gap,
-        );
-    }
-    if !detail.overview.is_empty() {
-        // jellyfin-web shows five lines and a "Show more" under long text.
-        let expanded_id = Id::new(("detail-overview-expanded", detail.id.as_str()));
-        let expanded = ui
-            .ctx()
-            .data(|data| data.get_temp::<bool>(expanded_id))
-            .unwrap_or(false);
-        let full = widgets::wrapped(
-            ui,
-            &detail.overview,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT,
+            theme::regular(size),
+            jf::TEXT_80,
             width,
-            None,
         );
-        let long = full.rows.len() > 5;
-        let galley = if long && !expanded {
-            widgets::wrapped(
-                ui,
-                &detail.overview,
-                theme::regular(theme::JF_FONT),
-                theme::JF_TEXT,
-                width,
-                Some(5),
-            )
-        } else {
-            full
-        };
-        let rect = row(ui, galley.size().y, gap);
-        ui.painter().galley(rect.min, galley, Color32::WHITE);
-        gap = 18.0;
-        if long {
-            let text = if expanded { "Show less" } else { "Show more" };
-            let galley =
-                widgets::elided(ui, text, theme::bold(theme::JF_FONT), theme::JF_TEXT, width);
-            let rect = row(ui, galley.size().y + 12.0, 6.0);
-            let button = Rect::from_min_size(
-                pos2(rect.right() - galley.size().x - 8.0, rect.top()),
-                galley.size() + vec2(8.0, 12.0),
-            );
-            let response = ui.interact(button, expanded_id.with("button"), Sense::click());
-            widgets::describe_button(&response, true, text);
-            ui.painter()
-                .galley(button.min + vec2(4.0, 6.0), galley, Color32::WHITE);
-            widgets::pointer_on_hover(&response);
-            if response.clicked() {
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(expanded_id, !expanded));
+        let tagline_line = jf::layout_unit(1.35 * size);
+        widgets::galley_on_baseline(ui.painter(), left, baseline(y, size, tagline_line), galley);
+        y += tagline_line;
+        pending = margin;
+    }
+    let mut clamped = false;
+    let expanded_id = Id::new(("detail-overview-expanded", detail.id.as_str()));
+    let expanded = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(expanded_id))
+        .unwrap_or(false);
+    if !detail.overview.is_empty() {
+        // `p.overview` holds the overview's paragraphs (1em apart inside
+        // the box) and clamps them to 6 lines in all (12 on narrow
+        // windows); a clamp cuts the last margin.
+        y += pending.max(p_margin) + p_margin;
+        let clamp = if jf::window_width(ui) >= 640.0 { 6 } else { 12 };
+        let mut left_lines = if expanded { usize::MAX } else { clamp };
+        for (index, paragraph) in overview_paragraphs(&detail.overview).iter().enumerate() {
+            if left_lines == 0 {
+                clamped = true;
+                break;
+            }
+            if index > 0 {
+                y += p_margin;
+            }
+            let lines = widgets::wrap_lines(ui, paragraph, theme::regular(EM), width);
+            let shown = lines.len().min(left_lines);
+            for text in lines.iter().take(shown) {
+                let galley =
+                    ui.painter()
+                        .layout_no_wrap(text.clone(), theme::regular(EM), jf::TEXT_80);
+                widgets::galley_on_baseline(ui.painter(), left, baseline(y, EM, line), galley);
+                y += line;
+            }
+            left_lines -= shown;
+            if shown < lines.len() {
+                clamped = true;
+                break;
             }
         }
-    }
-    for (label, value) in &detail.person_rows {
-        let rect = row(ui, 24.0, gap.max(8.0));
-        gap = 0.0;
-        let mut job = egui::text::LayoutJob::default();
-        job.append(
-            &format!("{label}: "),
-            0.0,
-            egui::TextFormat::simple(theme::regular(theme::JF_FONT), theme::JF_TEXT_SECONDARY),
-        );
-        let bold = *label == "Birth place";
-        job.append(
-            value,
-            0.0,
-            egui::TextFormat::simple(
-                if bold {
-                    theme::bold(theme::JF_FONT)
-                } else {
-                    theme::regular(theme::JF_FONT)
-                },
-                if bold {
-                    Color32::WHITE
-                } else {
-                    theme::JF_TEXT_SECONDARY
-                },
-            ),
-        );
-        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-        widgets::galley_v_centered(ui.painter(), rect.left(), rect.center().y, galley);
-        if !detail.person_rows.is_empty() {
-            gap = 0.0;
+        if !clamped {
+            y += p_margin;
         }
+        pending = p_margin;
     }
-    if !detail.person_rows.is_empty() {
-        gap = 12.0;
+    // `.overview-controls` (a flex row, so margins do not collapse across
+    // it): "Show more" when the overview is clamped.
+    y += pending;
+    pending = 0.0;
+    if clamped || expanded {
+        let controls = jf::layout_unit(55.77);
+        let text = if expanded { "Show less" } else { "Show more" };
+        let galley = ui
+            .painter()
+            .layout_no_wrap(text.to_owned(), theme::bold(EM), jf::TEXT_80);
+        // An `emby-button`: 1.075em either side, 0.9em above and below.
+        let button = Rect::from_min_size(
+            pos2(
+                left + width - galley.size().x - 2.0 * 16.0,
+                y + (controls - 46.86) / 2.0,
+            ),
+            vec2(galley.size().x + 2.0 * 16.0, 46.86),
+        );
+        let response = ui.interact(button, expanded_id.with("button"), Sense::click());
+        widgets::describe_button(&response, true, text);
+        let text_rect = Rect::from_min_size(
+            pos2(button.left() + 16.0, button.center().y - 10.0),
+            vec2(galley.size().x, 20.0),
+        );
+        widgets::galley_on_baseline(
+            ui.painter(),
+            text_rect.left(),
+            text_rect.top() + 16.0,
+            galley,
+        );
+        if response.hovered() {
+            underline(ui, text_rect, EM, line);
+        }
+        widgets::pointer_on_hover(&response);
+        if response.clicked() {
+            ui.ctx()
+                .data_mut(|data| data.insert_temp(expanded_id, !expanded));
+        }
+        y += controls;
+    }
+    // The person facts: one paragraph each.
+    for (label, value) in &detail.person_rows {
+        y += pending.max(p_margin);
+        let flow = vec![CreditLink {
+            name: value.clone(),
+            target: None,
+        }];
+        let bold = *label == "Birth place";
+        let prefix = format!("{label}: ");
+        y += link_flow(
+            ui,
+            pos2(left, y),
+            width,
+            &flow,
+            EM,
+            &prefix,
+            bold,
+            "person-row",
+            actions,
+        );
+        pending = p_margin;
     }
     if !detail.tags.is_empty() {
-        // "Tags:" then each tag in bold, linking to everything with it.
         let tags = detail
             .tags
             .iter()
@@ -1229,166 +1356,184 @@ fn draw_info(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Ve
                 }),
             })
             .collect::<Vec<_>>();
-        let height = link_flow_height(ui, &tags, theme::JF_FONT_SMALL, width, "Tags: ");
-        let rect = row(ui, height, gap.max(12.0));
-        draw_link_flow(
+        let margin = jf::layout_unit(0.7 * small);
+        y += pending.max(margin);
+        y += link_flow(
             ui,
-            rect,
+            pos2(left, y),
+            width,
             &tags,
-            theme::JF_FONT_SMALL,
+            small,
             "Tags: ",
+            true,
             "detail-tag",
             actions,
         );
-        gap = 8.0;
+        pending = margin;
     }
     if !detail.links.is_empty() {
-        let rect = row(ui, 20.0, gap);
-        let mut x = rect.left();
-        let count = detail.links.len();
-        for (index, (name, url)) in detail.links.iter().enumerate() {
-            let text = if index + 1 < count {
-                format!("{name},")
-            } else {
-                name.clone()
-            };
-            let galley = widgets::elided(
-                ui,
-                &text,
-                theme::bold(theme::JF_FONT_SMALL),
-                theme::JF_TEXT,
-                rect.right() - x,
-            );
-            let link = Rect::from_min_size(
-                pos2(x, rect.center().y - galley.size().y / 2.0),
-                galley.size(),
-            );
-            let response = ui.interact(link, Id::new(("detail-link", index)), Sense::click());
-            widgets::describe_button(&response, true, name);
-            let color = if response.hovered() {
-                theme::JF_ACCENT
-            } else {
-                Color32::WHITE
-            };
-            ui.painter().galley(link.min, galley, color);
-            widgets::pointer_on_hover(&response);
-            if response.on_hover_text(url).clicked() {
-                actions.push(UiAction::OpenExternalUrl(url.clone()));
-            }
-            x = link.right() + 5.0;
-            if x >= rect.right() {
-                break;
-            }
-        }
-        gap = 18.0;
-    }
-    let value_width = (width - LABEL_WIDTH).min(450.0);
-    for (title, links) in &detail.credits {
-        let height = link_flow_height(ui, links, theme::JF_FONT, value_width, "");
-        let rect = row(ui, height + 7.3, gap);
-        gap = 0.0;
-        ui.painter().text(
-            rect.min,
-            Align2::LEFT_TOP,
-            *title,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT,
+        let links = detail
+            .links
+            .iter()
+            .map(|(name, url)| CreditLink {
+                name: name.clone(),
+                target: Some(crate::features::items::LinkTarget::Url(url.clone())),
+            })
+            .collect::<Vec<_>>();
+        let margin = jf::layout_unit(0.7 * small);
+        y += pending.max(margin);
+        y += link_flow(
+            ui,
+            pos2(left, y),
+            width,
+            &links,
+            small,
+            "",
+            true,
+            "detail-link",
+            actions,
         );
-        let values =
-            Rect::from_min_size(rect.min + vec2(LABEL_WIDTH, 0.0), vec2(value_width, height));
-        draw_link_flow(ui, values, links, theme::JF_FONT, "", title, actions);
+        pending = margin;
     }
-    ui.allocate_exact_size(vec2(layout.width, 20.0), Sense::hover());
+    // `.itemDetailsGroup`: 1.5em down; rows of a 6.25em label and links,
+    // 0.5em apart.
+    y += pending.max(jf::layout_unit(1.5 * EM));
+    let content_left = left + jf::layout_unit(LABEL_WIDTH + 0.6 * EM);
+    for (title, links) in &detail.credits {
+        let label =
+            ui.painter()
+                .layout_no_wrap((*title).to_owned(), theme::regular(EM), jf::TEXT_80);
+        widgets::galley_on_baseline(ui.painter(), left, baseline(y, EM, line), label);
+        let height = link_flow(
+            ui,
+            pos2(content_left, y),
+            narrow - (content_left - left),
+            links,
+            EM,
+            "",
+            true,
+            title,
+            actions,
+        );
+        y += height + jf::layout_unit(0.5 * EM);
+    }
+    ui.allocate_exact_size(vec2(layout.width, y - origin.y), Sense::hover());
 }
 
-/// Lays out `prefix` then the names, comma separated, bold, wrapping at
-/// `width`: (position, size, index) for each name, and the total height.
-fn link_flow_layout(
-    ui: &Ui,
+fn baseline(top: f32, size: f32, line_height: f32) -> f32 {
+    jf::baseline(top, size, line_height)
+}
+
+/// The overview's paragraphs, as jellyfin-web's Markdown renders them:
+/// blank lines separate paragraphs, a single line break is a space.
+fn overview_paragraphs(overview: &str) -> Vec<String> {
+    overview
+        .replace("\r\n", "\n")
+        .split("\n\n")
+        .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|paragraph| !paragraph.is_empty())
+        .collect()
+}
+
+/// A link's hover underline, under the text of a line box.
+fn underline(ui: &Ui, rect: Rect, size: f32, line_height: f32) {
+    let y = baseline(rect.top(), size, line_height) + (0.1 * size).max(1.0);
+    ui.painter().line_segment(
+        [pos2(rect.left(), y), pos2(rect.right(), y)],
+        egui::Stroke::new((size / 14.0).max(1.0), jf::TEXT_80),
+    );
+}
+
+/// Inline text as jellyfin-web writes credits and tags: `prefix`, then the
+/// names (bold when `bold`) separated by a plain ", ", wrapping between
+/// names at `width`, on 1.35 line boxes. Names with a target are links
+/// (underlined on hover). Returns the block's height.
+#[allow(clippy::too_many_arguments)]
+fn link_flow(
+    ui: &mut Ui,
+    origin: egui::Pos2,
+    width: f32,
     links: &[CreditLink],
     size: f32,
-    width: f32,
     prefix: &str,
-) -> (Vec<(egui::Pos2, egui::Vec2)>, f32) {
-    let line = size * 1.45;
-    let prefix_width = if prefix.is_empty() {
-        0.0
+    bold: bool,
+    id: &str,
+    actions: &mut Vec<UiAction>,
+) -> f32 {
+    let line = jf::layout_unit(1.35 * size);
+    let regular = theme::regular(size);
+    let name_font = if bold {
+        theme::bold(size)
     } else {
-        widgets::text_width(ui, prefix, theme::regular(size))
+        theme::regular(size)
     };
-    let mut x = prefix_width;
+    let separator = widgets::text_width(ui, ", ", regular.clone());
+    let mut x = 0.0;
     let mut y = 0.0;
-    let mut placed = Vec::with_capacity(links.len());
+    if !prefix.is_empty() {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(prefix.to_owned(), regular.clone(), jf::TEXT_80);
+        x = galley.size().x;
+        widgets::galley_on_baseline(
+            ui.painter(),
+            origin.x,
+            baseline(origin.y, size, line),
+            galley,
+        );
+    }
     for (index, link) in links.iter().enumerate() {
-        let text = if index + 1 < links.len() {
-            format!("{},", link.name)
-        } else {
-            link.name.clone()
-        };
-        let text_width = widgets::text_width(ui, &text, theme::bold(size)).min(width);
-        if x > 0.0 && x + text_width > width {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(link.name.clone(), name_font.clone(), jf::TEXT_80);
+        let name_width = galley.size().x.min(width);
+        if x > 0.0 && x + name_width > width {
             x = 0.0;
             y += line;
         }
-        placed.push((pos2(x, y), vec2(text_width, line)));
-        x += text_width + size * 0.3;
-    }
-    (placed, y + line)
-}
-
-fn link_flow_height(ui: &Ui, links: &[CreditLink], size: f32, width: f32, prefix: &str) -> f32 {
-    link_flow_layout(ui, links, size, width, prefix).1
-}
-
-/// Draws a link flow in `rect`; a clicked name becomes an `OpenLink`.
-fn draw_link_flow(
-    ui: &mut Ui,
-    rect: Rect,
-    links: &[CreditLink],
-    size: f32,
-    prefix: &str,
-    id: &str,
-    actions: &mut Vec<UiAction>,
-) {
-    let (placed, _) = link_flow_layout(ui, links, size, rect.width(), prefix);
-    if !prefix.is_empty() {
-        ui.painter().text(
-            rect.min,
-            Align2::LEFT_TOP,
-            prefix,
-            theme::regular(size),
-            theme::JF_TEXT,
+        let rect = Rect::from_min_size(pos2(origin.x + x, origin.y + y), vec2(name_width, line));
+        widgets::galley_on_baseline(
+            ui.painter(),
+            rect.left(),
+            baseline(rect.top(), size, line),
+            galley,
         );
-    }
-    for (index, (link, (offset, extent))) in links.iter().zip(placed).enumerate() {
-        let area = Rect::from_min_size(rect.min + offset.to_vec2(), extent);
-        let text = if index + 1 < links.len() {
-            format!("{},", link.name)
-        } else {
-            link.name.clone()
-        };
-        let color = match &link.target {
-            Some(target) => {
-                let response = ui.interact(area, Id::new((id, index)), Sense::click());
-                widgets::describe_button(&response, true, &link.name);
-                widgets::pointer_on_hover(&response);
-                if response.clicked() {
-                    actions.push(UiAction::OpenLink(target.clone()));
-                }
-                if response.hovered() {
-                    theme::JF_ACCENT
-                } else {
-                    Color32::WHITE
-                }
+        if let Some(target) = &link.target {
+            let response = ui.interact(rect, Id::new((id, index)), Sense::click());
+            widgets::describe_button(&response, true, &link.name);
+            widgets::pointer_on_hover(&response);
+            if response.hovered() {
+                underline(ui, rect, size, line);
             }
-            None => Color32::WHITE,
-        };
-        let galley = widgets::elided(ui, &text, theme::bold(size), color, area.width() + 1.0);
-        ui.painter().galley(area.min, galley, color);
+            if response.clicked() {
+                actions.push(match target {
+                    crate::features::items::LinkTarget::Url(url) => {
+                        UiAction::OpenExternalUrl(url.clone())
+                    }
+                    target => UiAction::OpenLink(target.clone()),
+                });
+            }
+        }
+        x += name_width;
+        if index + 1 < links.len() {
+            let comma = ui
+                .painter()
+                .layout_no_wrap(",".to_owned(), regular.clone(), jf::TEXT_80);
+            widgets::galley_on_baseline(
+                ui.painter(),
+                origin.x + x,
+                baseline(rect.top(), size, line),
+                comma,
+            );
+            x += separator;
+        }
     }
+    y + line
 }
 
-/// jellyfin-web's select: a `#292929` field with a chevron, opening a list.
+/// A track `<select>` as jellyfin-web draws one in the text column: the
+/// choice flush left on a #292929 box with an arrow 0.3em from the right;
+/// a click opens jellyfin's action sheet of the options.
 fn track_select(
     ui: &mut Ui,
     field: Rect,
@@ -1396,29 +1541,82 @@ fn track_select(
     index: i32,
     id: (&str, bool),
 ) -> Option<i32> {
+    let em = jf::EM;
     let selected = usize::try_from(index).unwrap_or(0);
-    let mut picked = selected;
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
-    child.spacing_mut().interact_size.y = field.height();
-    child.visuals_mut().widgets.inactive.weak_bg_fill = theme::JF_INPUT;
-    child.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    child.visuals_mut().widgets.hovered.weak_bg_fill = theme::JF_RAISED;
-    egui::ComboBox::from_id_salt(id)
-        .width(field.width())
-        .selected_text(
-            egui::RichText::new(options.get(selected).map_or("", String::as_str))
-                .font(theme::regular(theme::JF_FONT))
-                .color(theme::JF_TEXT),
-        )
-        .show_ui(&mut child, |ui| {
-            for (option_index, option) in options.iter().enumerate() {
-                ui.selectable_value(&mut picked, option_index, option);
-            }
-        });
-    (picked != selected).then(|| i32::try_from(picked).unwrap_or(0))
+    let id = Id::new(id);
+    let response = ui.interact(field, id, Sense::click());
+    widgets::describe_button(
+        &response,
+        true,
+        options.get(selected).map_or("", String::as_str),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(field, 0.2 * em, Color32::from_gray(41));
+    let arrow = 1.4 * em;
+    let text_width = field.width() - arrow - 0.3 * em;
+    if let Some(text) = options.get(selected) {
+        let galley = widgets::elided(ui, text, theme::regular(em), jf::TEXT_80, text_width);
+        widgets::galley_on_baseline(
+            painter,
+            field.left(),
+            baseline(field.top(), em, field.height()),
+            galley,
+        );
+    }
+    let arrow_box = Rect::from_min_size(
+        pos2(field.right() - 0.3 * em - arrow, field.top() + 0.2 * em),
+        vec2(arrow, arrow),
+    );
+    icons::paint_centered(
+        painter,
+        Icon::ExpandMore,
+        arrow_box.center(),
+        arrow,
+        jf::TEXT_80,
+    );
+    widgets::pointer_on_hover(&response);
+    let open_id = id.with("open");
+    let mut open = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    if response.clicked() {
+        open = true;
+    }
+    let mut picked = None;
+    if open {
+        let items = options
+            .iter()
+            .enumerate()
+            .map(|(option, label)| super::dialogs::SheetItem {
+                label,
+                icon: None,
+                checked: option == selected,
+            })
+            .collect::<Vec<_>>();
+        let (choice, close) =
+            super::dialogs::action_sheet(ui.ctx(), id.with("sheet"), field, &items, selected);
+        if let Some(choice) = choice {
+            picked = (choice != selected).then(|| i32::try_from(choice).unwrap_or(0));
+            open = false;
+        }
+        if close {
+            open = false;
+        }
+    }
+    ui.ctx().data_mut(|data| data.insert_temp(open_id, open));
+    picked
 }
 
-fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut Vec<UiAction>) {
+/// The sections in the text column, right after the text: Next Up and
+/// Seasons, a season's episodes, a person's filmography, a collection's or
+/// playlist's items.
+fn draw_primary_sections(
+    ui: &mut Ui,
+    state: &mut UiState,
+    layout: &Layout,
+    actions: &mut Vec<UiAction>,
+) {
     let detail = &state.detail;
     let images = &mut state.images;
     let shelf = ShelfSpec { layout };
@@ -1474,24 +1672,6 @@ fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut
                 actions,
             );
         }
-        Some(DetailKind::Episode) => {
-            let heading = if detail.season_name.is_empty() {
-                "More from this season".to_owned()
-            } else {
-                format!("More from {}", detail.season_name)
-            };
-            shelf.cards(
-                ui,
-                images,
-                "season-episodes",
-                &heading,
-                &detail.episodes,
-                Shape::Backdrop,
-                1,
-                &detail.id,
-                actions,
-            );
-        }
         _ => {}
     }
     for section in &detail.sections {
@@ -1525,6 +1705,19 @@ fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut
             );
         }
     }
+}
+
+/// The sections under the poster: cast, guest stars, more from the
+/// season, more like this.
+fn draw_secondary_sections(
+    ui: &mut Ui,
+    state: &mut UiState,
+    layout: &Layout,
+    actions: &mut Vec<UiAction>,
+) {
+    let detail = &state.detail;
+    let images = &mut state.images;
+    let shelf = ShelfSpec { layout };
     shelf.people(
         ui,
         images,
@@ -1541,6 +1734,25 @@ fn draw_shelves(ui: &mut Ui, state: &mut UiState, layout: &Layout, actions: &mut
         &detail.id,
         actions,
     );
+    // jellyfin-web shows the rest of the season only when there is a rest.
+    if detail.kind == Some(DetailKind::Episode) && detail.episodes.len() > 1 {
+        let heading = if detail.season_name.is_empty() {
+            "More from this season".to_owned()
+        } else {
+            format!("More from {}", detail.season_name)
+        };
+        shelf.cards(
+            ui,
+            images,
+            "season-episodes",
+            &heading,
+            &detail.episodes,
+            Shape::Backdrop,
+            1,
+            &detail.id,
+            actions,
+        );
+    }
     shelf.cards(
         ui,
         images,
@@ -1572,14 +1784,18 @@ impl ShelfSpec<'_> {
         id: Id,
     ) -> Option<(Shelf, Rect, f32)> {
         let layout = self.layout;
-        ui.allocate_exact_size(vec2(layout.width, 10.0), Sense::hover());
-        let (rect, _) =
-            ui.allocate_exact_size(vec2(layout.width, 46.0 + card_height), Sense::hover());
+        // `.detailVerticalSection`: a 45.72px title row, then the cards;
+        // sections follow one another without a gap.
+        let title_height = jf::SECTION_TITLE;
+        let (rect, _) = ui.allocate_exact_size(
+            vec2(layout.width, title_height + card_height),
+            Sense::hover(),
+        );
         if !ui.is_rect_visible(rect) {
             return None;
         }
         let viewport = Rect::from_min_max(
-            pos2(rect.left() + layout.content_left, rect.top() + 46.0),
+            pos2(rect.left() + layout.content_left, rect.top() + title_height),
             rect.max,
         );
         let content_width = count as f32 * card_width + layout.padding;
@@ -1587,7 +1803,7 @@ impl ShelfSpec<'_> {
         let offset = shelf.scroll(ui);
         let title_row = Rect::from_min_max(
             pos2(rect.left() + layout.content_left, rect.top()),
-            pos2(rect.right(), rect.top() + 46.0),
+            pos2(rect.right(), rect.top() + title_height),
         );
         let paging = (content_width > viewport.width())
             .then(|| (shelf.can_page_back(offset), shelf.can_page_forward(offset)));
@@ -1615,7 +1831,7 @@ impl ShelfSpec<'_> {
         if cards.is_empty() {
             return;
         }
-        let width = jf::overflow_width(self.layout.width, shape);
+        let width = jf::overflow_width(jf::window_width(ui), shape);
         let height = jf::card_height(width, shape, lines);
         let id = Id::new(("detail-shelf", name, page.to_owned()));
         let Some((mut shelf, viewport, offset)) =
@@ -1709,15 +1925,23 @@ impl ShelfSpec<'_> {
         if cards.is_empty() {
             return;
         }
+        // A filmography or collection: jellyfin-web's overflow-sized cards
+        // wrapping in the text column, under a bare heading.
         let layout = self.layout;
         let grid = layout.content_width();
-        let width = jf::grid_card_width(layout.width, grid, shape);
+        let width = jf::overflow_width(jf::window_width(ui), shape);
         let columns = ((grid / width).floor() as usize).max(1);
-        let height = jf::card_height(width, shape, 2);
+        // Episodes link both lines; anything else has a plain year.
+        let text = jf::CardText {
+            lines: 2,
+            title_link: true,
+            subtitle_link: shape == Shape::Backdrop,
+        };
+        let height = jf::card_height_for(width, shape, text);
         let rows = cards.len().div_ceil(columns);
-        ui.allocate_exact_size(vec2(layout.width, 10.0), Sense::hover());
+        let title_height = jf::SECTION_HEADING;
         let (rect, _) = ui.allocate_exact_size(
-            vec2(layout.width, 46.0 + rows as f32 * height),
+            vec2(layout.width, title_height + rows as f32 * height),
             Sense::hover(),
         );
         if !ui.is_rect_visible(rect) {
@@ -1726,13 +1950,13 @@ impl ShelfSpec<'_> {
         let id = Id::new(("detail-grid", title, page.to_owned()));
         let title_row = Rect::from_min_max(
             pos2(rect.left() + layout.content_left, rect.top()),
-            pos2(rect.right(), rect.top() + 46.0),
+            pos2(rect.right(), rect.top() + title_height),
         );
         jf::section_title(ui, title_row, title, 0.0, None, id.with("title"));
         for (index, card) in cards.iter().enumerate() {
             let origin = pos2(
                 rect.left() + layout.content_left + (index % columns) as f32 * width,
-                rect.top() + 46.0 + (index / columns) as f32 * height,
+                rect.top() + title_height + (index / columns) as f32 * height,
             );
             if !ui.is_rect_visible(Rect::from_min_size(origin, vec2(width, height))) {
                 continue;
@@ -1798,8 +2022,14 @@ impl ShelfSpec<'_> {
         if people.is_empty() {
             return;
         }
-        let width = jf::overflow_width(self.layout.width, Shape::Portrait);
-        let height = jf::card_height(width, Shape::Portrait, 2);
+        let width = jf::overflow_width(jf::window_width(ui), Shape::Portrait);
+        let text = jf::CardText {
+            lines: 2,
+            title_link: true,
+            subtitle_link: false,
+        };
+        let height = jf::card_height_for(width, Shape::Portrait, text);
+        let sizes = super::catalog::ArtSizes::new(ui.ctx(), true);
         let id = Id::new(("detail-people", title, page.to_owned()));
         let Some((shelf, viewport, offset)) =
             self.frame(ui, title, people.len(), width, height, id)
@@ -1814,11 +2044,15 @@ impl ShelfSpec<'_> {
             {
                 continue;
             }
+            let art = person
+                .image
+                .clone()
+                .map(|image| sizes.image_art(image, Shape::Portrait, None));
             let model = CardModel {
-                placeholder_icon: None,
+                placeholder_icon: Some(Icon::Person),
                 title: &person.name,
                 subtitle: &person.role,
-                art: person.art.as_ref(),
+                art: art.as_ref(),
                 watched: false,
                 unplayed: 0,
                 progress: 0.0,
@@ -1827,7 +2061,8 @@ impl ShelfSpec<'_> {
                 actions: false,
                 more: false,
                 title_link: true,
-                subtitle_link: true,
+                // The role ("as …", "Director") is plain text.
+                subtitle_link: false,
             };
             let response = jf::card(
                 &mut strip,
@@ -1928,7 +2163,9 @@ fn draw_episode_list(
     let _ = (left, width);
 }
 
-/// jellyfin-web's list rows (a season's episodes, a playlist's entries).
+/// jellyfin-web's large list rows (a season's episodes, a playlist's
+/// entries): `.listItem-largeImage` in the text column, whose container
+/// keeps 3.3% of its width free on the right.
 fn draw_rows(
     ui: &mut Ui,
     images: &mut ImageCache,
@@ -1938,14 +2175,20 @@ fn draw_rows(
     origin: &dyn Fn(&DetailCard) -> super::menu::MenuOrigin,
     actions: &mut Vec<UiAction>,
 ) {
-    let left = layout.content_left;
+    let window = jf::window_width(ui);
     let width = layout.content_width();
+    let row_width = width - jf::layout_unit(width * 0.033);
+    // 13vw image plus the row's 0.25em padding above and below.
+    let height = jf::layout_unit(window * 0.13) + 2.0 * jf::layout_unit(0.25 * jf::EM);
     for (index, card) in cards.iter().enumerate() {
-        let (row, _) = ui.allocate_exact_size(vec2(layout.width, 181.0), Sense::hover());
+        let (row, _) = ui.allocate_exact_size(vec2(layout.width, height), Sense::hover());
         if !ui.is_rect_visible(row) {
             continue;
         }
-        let row = Rect::from_min_size(pos2(row.left() + left, row.top()), vec2(width, 181.0));
+        let row = Rect::from_min_size(
+            pos2(row.left() + layout.content_left, row.top()),
+            vec2(row_width, height),
+        );
         episode_row(
             ui,
             images,
@@ -1970,42 +2213,48 @@ fn episode_row(
     origin: &dyn Fn() -> super::menu::MenuOrigin,
     actions: &mut Vec<UiAction>,
 ) {
+    const EM: f32 = jf::EM;
+    let window = jf::window_width(ui);
     let painter = ui.painter().clone();
-    let thumb = Rect::from_min_size(row.min + vec2(8.0, 9.0), vec2(246.0, 164.0));
+    // `.listItem:hover` lights the whole row.
+    let hovered = ui.rect_contains_pointer(row) && !busy;
+    if hovered {
+        painter.rect_filled(row, 0.0, Color32::from_gray(36));
+    }
+    // Padding 0.25em 0.25em 0.25em 0.5em.
+    let inner = Rect::from_min_max(
+        row.min + vec2(jf::layout_unit(0.5 * EM), jf::layout_unit(0.25 * EM)),
+        row.max - vec2(jf::layout_unit(0.25 * EM), jf::layout_unit(0.25 * EM)),
+    );
+    // `.listItemImage-large`: 19.5vw by 13vw.
+    let image = Rect::from_min_size(
+        inner.min,
+        vec2(
+            jf::layout_unit(window * 0.195),
+            jf::layout_unit(window * 0.13),
+        ),
+    );
     let response = ui.interact(
-        thumb,
+        image,
         Id::new(("episode-thumb", index, episode.id.as_str())),
         if busy { Sense::hover() } else { Sense::click() },
     );
     widgets::describe_button(&response, !busy, &format!("Play {}", episode.title));
-    match resident(images, episode.art.as_ref()) {
-        Some((texture, size)) => widgets::image_cover(&painter, texture, size, thumb, 0.0),
-        None => {
-            painter.rect_filled(thumb, 0.0, theme::JF_CARD_EMPTY);
-        }
+    if let Some((texture, size)) = resident(images, episode.art.as_ref()) {
+        widgets::image_cover(&painter, texture, size, image, 0.0);
     }
-    if episode.progress > 0.0 && episode.progress < 1.0 {
-        let track = Rect::from_min_max(
-            pos2(thumb.left(), thumb.bottom() - 4.0),
-            thumb.right_bottom(),
-        );
-        painter.rect_filled(track, 0.0, theme::JF_PROGRESS_TRACK);
-        painter.rect_filled(
-            Rect::from_min_size(track.min, vec2(track.width() * episode.progress, 4.0)),
-            0.0,
-            theme::JF_ACCENT,
-        );
-    }
-    // jellyfin-web's list play button: a large, faint play icon centred on
-    // the thumbnail, brighter under the pointer.
-    let play_color = if response.hovered() {
-        Color32::WHITE
-    } else {
-        Color32::from_white_alpha(153)
-    };
-    icons::paint_centered(&painter, Icon::Play, thumb.center(), 40.0, play_color);
+    // `.listItemImageButton`: a faint play button, always over the image
+    // (jellyfin-web's list rows show no progress bar).
+    painter.circle_filled(image.center(), 82.08 / 2.0, Color32::from_black_alpha(102));
+    icons::paint_centered(
+        &painter,
+        Icon::Play,
+        image.center(),
+        55.61,
+        Color32::from_white_alpha(153),
+    );
     if response.has_focus() {
-        widgets::border(&painter, thumb, 0.0, 2.0, theme::JF_ACCENT);
+        widgets::border(&painter, image, 0.0, 2.0, theme::JF_ACCENT);
     }
     if !busy {
         widgets::pointer_on_hover(&response);
@@ -2014,109 +2263,160 @@ fn episode_row(
         actions.push(UiAction::PlayDetail(episode.id.clone()));
     }
 
-    // Buttons on the right: info, played, favorite, more.
-    let buttons_left = row.right() - 4.0 * 41.5;
-    let center_y = row.top() + 90.0;
+    // `.listViewUserDataButtons`: info, played, favourite, more, at the
+    // right, vertically centred.
+    let button = vec2(41.36, 41.38);
+    let buttons_left = inner.right() - 4.0 * button.x;
     let mut x = buttons_left;
-    let mut button = |icon: Icon, color: Color32, label: &str, name: &str| {
-        let rect = Rect::from_min_size(pos2(x, center_y - 20.5), vec2(41.0, 41.0));
-        x += 41.5;
-        jf::round_icon_button(
-            ui,
-            rect,
-            icon,
-            color,
-            24.8,
-            label,
-            !busy,
-            Id::new(("episode-action", index, name)),
-        )
-        .clicked()
+    let mut slot = || {
+        let rect = Rect::from_min_size(pos2(x, inner.center().y - button.y / 2.0), button);
+        x += button.x;
+        rect
     };
-    if button(Icon::InfoOutline, theme::JF_TEXT, "Info", "info") {
+    let info = slot();
+    if jf::round_icon_button(
+        ui,
+        info,
+        Icon::InfoOutline,
+        jf::TEXT_80,
+        jf::TOOLBAR_ICON,
+        "Info",
+        !busy,
+        Id::new(("episode-action", index, "info")),
+    )
+    .clicked()
+    {
         actions.push(UiAction::OpenDetail {
             id: episode.id.clone(),
             kind: episode.kind.to_owned(),
         });
     }
+    let played = slot();
     let played_color = if episode.watched {
         theme::JF_PLAYED_RED
     } else {
-        theme::JF_TEXT
+        jf::TEXT_80
     };
-    if button(
+    let played_label = if episode.watched {
+        "Watched"
+    } else {
+        "Mark played"
+    };
+    if jf::round_icon_button(
+        ui,
+        played,
         Icon::Check,
         played_color,
-        if episode.watched {
-            "Mark unplayed"
-        } else {
-            "Mark played"
-        },
-        "played",
-    ) {
+        jf::TOOLBAR_ICON,
+        played_label,
+        !busy,
+        Id::new(("episode-action", index, "played")),
+    )
+    .clicked()
+    {
         actions.push(UiAction::SetWatched {
             id: episode.id.clone(),
             watched: !episode.watched,
         });
     }
+    let favorite = slot();
     let favorite_color = if episode.favorite {
         theme::JF_PLAYED_RED
     } else {
-        theme::JF_TEXT
+        jf::TEXT_80
     };
-    if button(
+    let favorite_label = if episode.favorite {
+        "Remove from favorites"
+    } else {
+        "Add to favorites"
+    };
+    if jf::round_icon_button(
+        ui,
+        favorite,
         Icon::Favorite,
         favorite_color,
-        if episode.favorite {
-            "Remove from favorites"
-        } else {
-            "Add to favorites"
-        },
-        "favorite",
-    ) {
+        jf::TOOLBAR_ICON,
+        favorite_label,
+        !busy,
+        Id::new(("episode-action", index, "favorite")),
+    )
+    .clicked()
+    {
         actions.push(UiAction::SetFavorite {
             id: episode.id.clone(),
             favorite: !episode.favorite,
         });
     }
-    let more_rect = Rect::from_min_size(
-        pos2(buttons_left + 3.0 * 41.5, center_y - 20.5),
-        vec2(41.0, 41.0),
-    );
-    if button(Icon::MoreVert, theme::JF_TEXT, "More", "more") {
+    let more = slot();
+    if jf::round_icon_button(
+        ui,
+        more,
+        Icon::MoreVert,
+        jf::TEXT_80,
+        jf::TOOLBAR_ICON,
+        "More",
+        !busy,
+        Id::new(("episode-action", index, "more")),
+    )
+    .clicked()
+    {
         actions.push(UiAction::OpenMenu(Box::new(super::menu::MenuRequest {
             item_id: episode.id.clone(),
             name: episode.title.clone(),
             kind: episode.kind.to_owned(),
             series_id: episode.series_id.clone(),
             season_id: episode.season_id.clone(),
-            anchor: more_rect,
+            anchor: more,
             origin: origin(),
         })));
     }
 
-    // Text column between the thumbnail and the buttons.
-    let text_left = thumb.right() + 22.0;
-    let text_width = (buttons_left - 12.0 - text_left).max(60.0);
+    // `.listItemBody`: 0.85em by 0.75em of padding, centred; lines of
+    // 1.2em with 0.1em padding; the info row and overview 50% white.
+    let pad = vec2(jf::layout_unit(0.75 * EM), jf::layout_unit(0.85 * EM));
+    let text_left = image.right() + jf::layout_unit(0.75 * EM) + pad.x;
+    let text_width = (buttons_left - pad.x - text_left).max(60.0);
+    let line = jf::layout_unit(1.2 * EM);
+    let line_pad = jf::layout_unit(0.1 * EM);
+    let title_height = line + 2.0 * line_pad;
+    let star = 1.4 * EM;
+    let info_height = line.max(star) + 2.0 * line_pad;
+    let overview_lines = if episode.overview.is_empty() || window <= 800.0 {
+        Vec::new()
+    } else {
+        overview_paragraphs(&episode.overview)
+            .iter()
+            .flat_map(|paragraph| {
+                widgets::wrap_lines(ui, paragraph, theme::regular(EM), text_width)
+            })
+            .collect::<Vec<_>>()
+    };
+    let p_margin = jf::layout_unit(EM);
+    let overview_height = if overview_lines.is_empty() {
+        0.0
+    } else {
+        2.0 * line_pad + 2.0 * p_margin + overview_lines.len() as f32 * line
+    };
+    let body = title_height + info_height + overview_height;
+    let mut y = inner.center().y - body / 2.0;
     let label = if episode.index_label.is_empty() {
         episode.title.clone()
     } else {
         format!("{} {}", episode.index_label, episode.title)
     };
-    let title = widgets::elided(
-        ui,
-        &label,
-        theme::regular(theme::JF_FONT),
-        theme::JF_TEXT,
-        text_width,
+    let title = widgets::elided(ui, &label, theme::regular(EM), jf::TEXT_80, text_width);
+    let title_rect = Rect::from_min_size(pos2(text_left, y), vec2(title.size().x, title_height));
+    widgets::galley_on_baseline(
+        &painter,
+        text_left,
+        jf::baseline(y + line_pad, EM, line),
+        title,
     );
-    let title_rect = Rect::from_min_size(pos2(text_left, row.top() + 17.0), title.size());
     let title_response = ui.interact(
         title_rect,
         Id::new(("episode-title", index)),
         Sense::click(),
     );
-    painter.galley(title_rect.min, title, Color32::WHITE);
     widgets::pointer_on_hover(&title_response);
     if title_response.clicked() {
         actions.push(UiAction::OpenDetail {
@@ -2124,15 +2424,18 @@ fn episode_row(
             kind: episode.kind.to_owned(),
         });
     }
-    let meta_y = title_rect.bottom() + 12.0;
+    y += title_height;
+    let secondary = theme::JF_TEXT_SECONDARY;
+    let center = y + info_height / 2.0;
+    let text_top = center - line / 2.0;
     let mut meta_x = text_left;
     let runtime = episode
         .subtitle
-        .rsplit(" • ")
+        .rsplit(" \u{2022} ")
         .next()
         .unwrap_or_default()
         .to_owned();
-    for (text, star) in [
+    for (text, has_star) in [
         (runtime, false),
         (
             if episode.rating > 0.0 {
@@ -2147,45 +2450,47 @@ fn episode_row(
         if text.is_empty() {
             continue;
         }
-        if star {
+        if has_star {
             icons::paint_centered(
                 &painter,
                 Icon::Star,
-                pos2(meta_x + 9.0, meta_y),
-                18.0,
+                pos2(meta_x + star / 2.0, center),
+                star,
                 theme::RATING_GOLD,
             );
-            meta_x += 21.0;
+            meta_x += star + 0.125 * star;
         }
         let galley = widgets::elided(
             ui,
             &text,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT_SECONDARY,
+            theme::regular(EM),
+            secondary,
             text_left + text_width - meta_x,
         );
-        meta_x = widgets::galley_v_centered(&painter, meta_x, meta_y, galley).right() + 15.0;
+        let width = galley.size().x;
+        widgets::galley_on_baseline(&painter, meta_x, jf::baseline(text_top, EM, line), galley);
+        meta_x += width + EM;
     }
-    if !episode.overview.is_empty() {
-        let overview = widgets::wrapped(
-            ui,
-            &episode.overview,
-            theme::regular(theme::JF_FONT),
-            theme::JF_TEXT_SECONDARY,
-            text_width,
-            Some(5),
-        );
-        painter.galley(pos2(text_left, meta_y + 22.0), overview, Color32::WHITE);
+    y += info_height;
+    if !overview_lines.is_empty() {
+        y += line_pad + p_margin;
+        for text in &overview_lines {
+            let galley = painter.layout_no_wrap(text.clone(), theme::regular(EM), secondary);
+            widgets::galley_on_baseline(&painter, text_left, jf::baseline(y, EM, line), galley);
+            y += line;
+        }
     }
 }
 
 /// The poster (or episode still), overlapping the ribbon on the left.
 fn draw_poster(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32) {
     let detail = &state.detail;
+    // `.detailImageContainer .card`: 25vw wide at 3.3%, risen 12.96em
+    // above the band's bottom.
     let rect = Rect::from_min_size(
         pos2(
             ui.max_rect().left() + layout.padding,
-            page_top + layout.ribbon_top() - 86.0,
+            page_top + layout.band - POSTER_RISE,
         ),
         layout.poster,
     );
@@ -2193,44 +2498,12 @@ fn draw_poster(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32)
         return;
     }
     let painter = ui.painter().clone();
-    match resident(&mut state.images, detail.artwork.as_ref()) {
-        Some((texture, size)) => {
-            widgets::image_cover(&painter, texture, size, rect, theme::JF_RADIUS)
-        }
-        None => {
-            painter.rect_filled(rect, theme::JF_RADIUS, theme::JF_CARD_EMPTY);
-        }
+    // The card's padder shows under (or instead of) the image; its shadow
+    // is clipped to the card, which is just the image here.
+    painter.rect_filled(rect, jf::CARD_RADIUS, Color32::from_gray(36));
+    if let Some((texture, size)) = resident(&mut state.images, detail.artwork.as_ref()) {
+        widgets::image_cover(&painter, texture, size, rect, jf::CARD_RADIUS);
     }
-    if detail.progress > 0.0
-        && detail.progress < 1.0
-        && !matches!(detail.kind, Some(DetailKind::Series | DetailKind::Season))
-    {
-        let track = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 4.0), rect.right_bottom());
-        painter.rect_filled(track, 0.0, theme::JF_PROGRESS_TRACK);
-        painter.rect_filled(
-            Rect::from_min_size(track.min, vec2(track.width() * detail.progress, 4.0)),
-            0.0,
-            theme::JF_ACCENT,
-        );
-    }
-    // The same corner indicator as on cards.
-    let model = CardModel {
-        placeholder_icon: None,
-        title: "",
-        subtitle: "",
-        art: None,
-        watched: detail.watched
-            && matches!(detail.kind, Some(DetailKind::Season | DetailKind::Series)),
-        unplayed: u32::try_from(detail.unplayed_count).unwrap_or(0),
-        progress: 0.0,
-        favorite: false,
-        playable: false,
-        actions: false,
-        more: false,
-        title_link: true,
-        subtitle_link: true,
-    };
-    jf::corner_indicator(&painter, rect, &model);
 }
 
 fn next_up_label(item: &DetailItemData) -> String {

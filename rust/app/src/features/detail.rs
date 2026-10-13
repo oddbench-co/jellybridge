@@ -126,6 +126,10 @@ pub struct StreamData {
 #[derive(Clone, Debug)]
 pub struct DetailItemData {
     pub id: String,
+    /// Trailers: local ones (played in the app) and online ones (opened in
+    /// the browser).
+    pub local_trailers: u32,
+    pub trailer_urls: Vec<String>,
     pub title: String,
     pub kind: DetailKind,
     pub parent_id: Option<String>,
@@ -181,6 +185,8 @@ impl DetailItemData {
     pub(crate) fn fixture(id: &str, kind: DetailKind) -> Self {
         Self {
             id: id.into(),
+            local_trailers: 0,
+            trailer_urls: Vec::new(),
             title: id.into(),
             kind,
             parent_id: None,

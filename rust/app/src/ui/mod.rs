@@ -220,6 +220,23 @@ fn primary_card_image(item: &DetailItemData) -> Option<&ImageRef> {
 }
 
 /// Detail-page artwork at `max_width` pixels.
+/// Artwork fetched with jellyfin-web's own parameters (see
+/// [`images::ArtSource::Web`]).
+fn web_art(image: &ImageRef, max_width: Option<u32>, quality: u8) -> images::Art {
+    images::Art {
+        key: format!(
+            "{}@web{}q{quality}",
+            image_key(image),
+            max_width.unwrap_or(0)
+        ),
+        source: images::ArtSource::Web {
+            image: image.clone(),
+            max_width,
+            quality,
+        },
+    }
+}
+
 fn detail_art(image: &ImageRef, max_width: u32) -> images::Art {
     images::Art {
         key: image_key(image),
