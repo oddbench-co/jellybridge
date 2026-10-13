@@ -47,6 +47,9 @@ pub enum PlayerCommand {
     /// mpv properties from the user's settings (audio channels, subtitle
     /// look), applied as they are.
     Configure(Vec<(&'static str, String)>),
+    /// Report [`PlayerEvent::Stats`] with every position poll (the OSD's
+    /// Playback Info panel is open), or stop.
+    Stats(bool),
     TogglePaused,
     SeekRelative(f64),
     SeekAbsolute(f64),
@@ -151,6 +154,12 @@ pub enum PlayerEvent {
     },
     Chapters(Vec<PlayerChapter>),
     HardwarePath(HardwareDecodePath),
+    /// Playback Info's live numbers, while it is open.
+    Stats {
+        width: i64,
+        height: i64,
+        dropped_frames: i64,
+    },
     /// The media played to its end (not stopped or replaced).
     Ended,
     /// mpv was built and its render client is waiting in the
@@ -525,6 +534,7 @@ fn worker_loop(
     let mut loaded = false;
     let mut paused = false;
     let mut poll_now = false;
+    let mut stats = false;
     let mut next_progress_poll = Instant::now();
     'worker: loop {
         loop {
@@ -536,9 +546,15 @@ fn worker_loop(
                         break 'worker;
                     }
                 }
+                Ok(PlayerCommand::Stats(enabled)) => {
+                    stats = enabled;
+                    poll_now = enabled;
+                }
                 Ok(command) => {
                     if matches!(command, PlayerCommand::Load { .. }) {
                         slot.set_idle(false);
+                        // A new item starts with Playback Info closed.
+                        stats = false;
                     }
                     if let Err(error) = apply_command(&mpv, command, &mut pending_load, event_sink)
                     {
@@ -553,7 +569,11 @@ fn worker_loop(
 
         // Negative waits forever. After the first event the rest of the queue
         // is drained without waiting.
-        let mut timeout = if loaded && !paused {
+        // A poll asked for now (Playback Info opened while paused) must not
+        // wait for mpv's next event.
+        let mut timeout = if poll_now {
+            0.0
+        } else if loaded && !paused {
             next_progress_poll
                 .saturating_duration_since(Instant::now())
                 .as_secs_f64()
@@ -673,6 +693,14 @@ fn worker_loop(
                     duration,
                 });
             }
+            if stats {
+                event_sink(PlayerEvent::Stats {
+                    width: mpv.get_i64("video-params/w").or_else(|_| mpv.get_i64("width")).unwrap_or(0),
+                    height: mpv.get_i64("video-params/h").or_else(|_| mpv.get_i64("height")).unwrap_or(0),
+                    dropped_frames: mpv.get_i64("frame-drop-count").unwrap_or(0)
+                        + mpv.get_i64("decoder-frame-drop-count").unwrap_or(0),
+                });
+            }
         }
     }
 
@@ -705,7 +733,7 @@ fn apply_command(
     event_sink: &impl Fn(PlayerEvent),
 ) -> Result<(), libmpv::Error> {
     match command {
-        PlayerCommand::Prepare => Ok(()),
+        PlayerCommand::Prepare | PlayerCommand::Stats(_) => Ok(()),
         PlayerCommand::Configure(options) => {
             for (name, value) in options {
                 if let Err(error) = mpv.set_property(name, Value::Str(&value)) {

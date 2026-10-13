@@ -365,6 +365,27 @@ impl JellyfinApi {
         Ok((name, media_info_blocks(&item, admin)))
     }
 
+    /// jellyfin-web's "Original Media Info" for Playback Info: the media
+    /// source and its video stream, and the audio stream with Jellyfin index
+    /// `audio_index` (else the default one).
+    pub async fn original_media_info(
+        &self,
+        item_id: &str,
+        audio_index: Option<i64>,
+    ) -> Result<Vec<(String, String)>, ApiError> {
+        let user = encode_path_segment(&self.session.user_id);
+        let item: serde_json::Value = self
+            .send_json(
+                self.request(
+                    Method::GET,
+                    &format!("Users/{user}/Items/{}", encode_path_segment(item_id)),
+                )?,
+                "loading playback info",
+            )
+            .await?;
+        Ok(original_media_rows(&item["MediaSources"][0], audio_index))
+    }
+
     /// The direct stream URL jellyfin-web's "Copy Stream URL" copies. It
     /// carries the access token, as jellyfin-web's does.
     pub fn stream_url(&self, item_id: &str) -> String {
@@ -564,6 +585,84 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
     blocks
 }
 
+/// jellyfin-web's playerstats "Original Media Info" rows.
+fn original_media_rows(source: &serde_json::Value, audio_index: Option<i64>) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut add = |label: &str, value: String| rows.push((label.to_owned(), value));
+    if let Some(container) = source["Container"].as_str().filter(|value| !value.is_empty()) {
+        add("Container", container.to_owned());
+    }
+    if let Some(size) = source["Size"].as_f64().filter(|size| *size > 0.0) {
+        add("Size", readable_size(size));
+    }
+    if let Some(bitrate) = source["Bitrate"].as_f64().filter(|rate| *rate > 0.0) {
+        add("Bitrate", stats_bitrate(bitrate));
+    }
+    let streams = source["MediaStreams"].as_array().map(Vec::as_slice).unwrap_or_default();
+    fn of_type<'a>(streams: &'a [serde_json::Value], kind: &'a str) -> impl Iterator<Item = &'a serde_json::Value> {
+        streams.iter().filter(move |stream| stream["Type"] == kind)
+    }
+    let codec_line = |stream: &serde_json::Value| {
+        [
+            stream["Codec"].as_str().map(str::to_uppercase),
+            stream["Profile"].as_str().map(str::to_owned),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+    };
+    if let Some(video) = of_type(streams, "Video").next() {
+        let codec = codec_line(video);
+        if !codec.is_empty() {
+            add("Video codec", codec);
+        }
+        if let Some(bitrate) = video["BitRate"].as_f64().filter(|rate| *rate > 0.0) {
+            add("Video bitrate", stats_bitrate(bitrate));
+        }
+        if let Some(range) = video["VideoDoViTitle"]
+            .as_str()
+            .or_else(|| video["VideoRangeType"].as_str())
+            .filter(|range| !range.is_empty())
+        {
+            add("Video range type", range.to_owned());
+        }
+    }
+    let audio = of_type(streams, "Audio")
+        .find(|stream| audio_index.is_some_and(|index| stream["Index"].as_i64() == Some(index)))
+        .or_else(|| of_type(streams, "Audio").find(|stream| stream["IsDefault"].as_bool() == Some(true)))
+        .or_else(|| of_type(streams, "Audio").next());
+    if let Some(audio) = audio {
+        let codec = codec_line(audio);
+        if !codec.is_empty() {
+            add("Audio codec", codec);
+        }
+        if let Some(bitrate) = audio["BitRate"].as_f64().filter(|rate| *rate > 0.0) {
+            add("Audio bitrate", stats_bitrate(bitrate));
+        }
+        if let Some(channels) = audio["Channels"].as_i64().filter(|count| *count > 0) {
+            add("Audio channels", channels.to_string());
+        }
+        if let Some(rate) = audio["SampleRate"].as_i64().filter(|rate| *rate > 0) {
+            add("Audio sample rate", format!("{rate} Hz"));
+        }
+        if let Some(depth) = audio["BitDepth"].as_i64().filter(|depth| *depth > 0) {
+            add("Audio bit depth", depth.to_string());
+        }
+    }
+    rows
+}
+
+/// playerstats' bitrate: "12.3 Mbps" above a megabit, else whole kbps.
+fn stats_bitrate(bits: f64) -> String {
+    if bits > 1e6 {
+        format!("{:.1} Mbps", bits / 1e6)
+    } else {
+        format!("{} kbps", (bits / 1e3).floor())
+    }
+}
+
 /// A JSON number as JavaScript prints it.
 fn js_number(number: &serde_json::Number) -> String {
     match number.as_f64() {
@@ -642,6 +741,27 @@ mod tests {
         assert!(blocks[2].rows.contains(&("Channels".into(), "6 ch".into())));
         assert!(blocks[3].rows.contains(&("External".into(), "Yes".into())));
         assert!(media_info_blocks(&item, true)[0].rows.contains(&("Path".into(), "/movies/film.mkv".into())));
+    }
+
+    #[test]
+    fn playback_info_lists_the_original_media_like_jellyfin() {
+        let source = serde_json::json!({
+            "Container": "mkv", "Size": 5_690_000_000u64, "Bitrate": 15_512_000,
+            "MediaStreams": [
+                { "Type": "Video", "Codec": "hevc", "Profile": "Main 10", "BitRate": 15_200_000, "VideoRangeType": "SDR" },
+                { "Type": "Audio", "Index": 1, "Codec": "eac3", "BitRate": 192_000, "Channels": 6, "SampleRate": 48000, "IsDefault": true },
+                { "Type": "Audio", "Index": 2, "Codec": "aac", "BitRate": 640_000, "Channels": 2 }
+            ]
+        });
+        let rows = original_media_rows(&source, Some(2));
+        let value = |label: &str| rows.iter().find(|(name, _)| name == label).map(|(_, value)| value.as_str());
+        assert_eq!(value("Size"), Some("5.3 GiB"));
+        assert_eq!(value("Bitrate"), Some("15.5 Mbps"));
+        assert_eq!(value("Video codec"), Some("HEVC Main 10"));
+        // The audio row follows the stream being played, not the default.
+        assert_eq!(value("Audio codec"), Some("AAC"));
+        assert_eq!(value("Audio bitrate"), Some("640 kbps"));
+        assert_eq!(original_media_rows(&source, None).iter().find(|(name, _)| name == "Audio codec").map(|(_, v)| v.as_str()), Some("EAC3"));
     }
 
     #[test]

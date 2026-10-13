@@ -184,6 +184,22 @@ pub fn play_adjacent(context: &AppContext, forward: bool) {
     }
 }
 
+/// Fills Playback Info's "Original Media Info" from the server.
+pub fn load_playback_info(context: &AppContext, item_id: String, audio_index: Option<i64>) {
+    let Some(api) = context.api() else { return };
+    let ui = context.ui.clone();
+    context.runtime.spawn(async move {
+        match api.original_media_info(&item_id, audio_index).await {
+            Ok(rows) => ui.update(move |state| {
+                if let Some(stats) = &mut state.player.stats {
+                    stats.original = rows;
+                }
+            }),
+            Err(error) => tracing::warn!(%error, "playback info failed"),
+        }
+    });
+}
+
 /// Starts the playing item again from the beginning.
 pub fn replay_current(context: &AppContext) {
     let item = context

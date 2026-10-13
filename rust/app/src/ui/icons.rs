@@ -58,6 +58,7 @@ pub enum Icon {
     FolderOpen,
     PlaylistAdd,
     ContentCopy,
+    Close,
     Undo,
     Redo,
     FastRewind,
@@ -125,6 +126,9 @@ impl Icon {
                 "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
             }
             Icon::Download => "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
+            Icon::Close => {
+                "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+            }
             Icon::Undo => {
                 "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"
             }
@@ -275,6 +279,7 @@ mod tests {
             Icon::Play,
             Icon::Pause,
             Icon::Replay,
+            Icon::Close,
             Icon::Undo,
             Icon::Redo,
             Icon::FastRewind,

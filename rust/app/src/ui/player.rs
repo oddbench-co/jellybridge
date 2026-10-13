@@ -41,6 +41,15 @@ pub enum PlayerMenu {
     Repeat,
 }
 
+/// jellyfin-web's Playback Info panel, while open.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlaybackStats {
+    pub video_size: (i64, i64),
+    pub dropped_frames: i64,
+    /// "Original Media Info" from the server; empty while it loads.
+    pub original: Vec<(String, String)>,
+}
+
 /// jellyfin-web's repeat modes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RepeatMode {
@@ -118,6 +127,7 @@ pub struct PlayerVm {
     /// The button the open menu came from; its sheet is centred on it.
     pub menu_anchor: Rect,
     pub repeat: RepeatMode,
+    pub stats: Option<PlaybackStats>,
     /// When the chrome hides unless something holds it up.
     pub hide_at: Option<f64>,
     /// When a single click on the video arrived, pending a double click.
@@ -167,6 +177,7 @@ impl Default for PlayerVm {
             menu: PlayerMenu::None,
             menu_anchor: Rect::NOTHING,
             repeat: RepeatMode::None,
+            stats: None,
             hide_at: None,
             pending_click: None,
             timeline_position: 0.0,
@@ -299,6 +310,16 @@ pub fn apply_player_event(
             tracing::info!(decode_path = %path, "application playback decode path");
             player.decode_label = format!("Decode path: {path}");
         }
+        PlayerEvent::Stats {
+            width,
+            height,
+            dropped_frames,
+        } => {
+            if let Some(stats) = &mut player.stats {
+                stats.video_size = (width, height);
+                stats.dropped_frames = dropped_frames;
+            }
+        }
         PlayerEvent::Ended => player.status = "Playback ended".to_owned(),
         // Only here for the repaint every player event brings: that frame
         // builds the render context, or releases it after the player is left.
@@ -395,6 +416,7 @@ pub fn present_playback_started(
         player.scrubbing = false;
         player.timeline_position = player.position;
         player.menu = PlayerMenu::None;
+        player.stats = None;
         player.pending_click = None;
         player.status.clear();
         // Shows the chrome and starts its idle timer, as any activity does.
@@ -662,6 +684,7 @@ pub fn draw(
     }
     state.player.chrome_hovered = chrome_hovered;
     draw_floating(ui, state, screen, now, actions);
+    draw_playback_info(ui, state, screen, actions);
     draw_menus(ui, state, screen, actions);
 
     if !state.player.controls_visible() && state.player.menu == PlayerMenu::None {
@@ -1096,6 +1119,99 @@ fn draw_volume(
     widgets::pointer_on_hover(&response);
 }
 
+/// A Playback Info section: its heading (if any) and label/value rows.
+type StatsSection<'a> = (Option<&'a str>, Vec<(String, String)>);
+
+/// jellyfin-web's Playback Info (playerstats): a translucent panel at the
+/// top left listing the player, the play method, the video's live numbers
+/// and the original media, with a close button.
+fn draw_playback_info(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &mut Vec<UiAction>) {
+    let Some(stats) = &state.player.stats else { return };
+    // 84% type; sizes in its em.
+    let font = 0.84 * OSD_FONT;
+    let line = 17.0;
+    let pixels = ui.ctx().pixels_per_point();
+    let mut sections: Vec<StatsSection<'_>> = vec![
+        (
+            Some("Playback Info"),
+            vec![
+                ("Player".to_owned(), "mpv".to_owned()),
+                ("Play method".to_owned(), "Direct playing".to_owned()),
+            ],
+        ),
+        (
+            None,
+            vec![
+                ("Protocol".to_owned(), "http".to_owned()),
+                ("Stream type".to_owned(), "Video".to_owned()),
+            ],
+        ),
+    ];
+    let mut video = vec![(
+        "Player dimensions".to_owned(),
+        format!("{}x{}", (screen.width() * pixels).round(), (screen.height() * pixels).round()),
+    )];
+    if stats.video_size.0 > 0 && stats.video_size.1 > 0 {
+        video.push(("Video resolution".to_owned(), format!("{}x{}", stats.video_size.0, stats.video_size.1)));
+    }
+    video.push(("Dropped frames".to_owned(), stats.dropped_frames.to_string()));
+    sections.push((Some("Video Info"), video));
+    if !stats.original.is_empty() {
+        sections.push((Some("Original Media Info"), stats.original.clone()));
+    }
+    let label_font = theme::regular(font);
+    let value_color = Color32::from_gray(0xdd);
+    let width_of = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), label_font.clone(), Color32::WHITE).size().x;
+    let row_width = |indent: f32, (label, value): &(String, String)| indent + width_of(label) + 0.5 * font + width_of(value);
+    let content = sections
+        .iter()
+        .flat_map(|(name, rows)| {
+            name.map(width_of)
+                .into_iter()
+                .chain(rows.iter().map(|row| row_width(font, row)))
+        })
+        .fold(0.0, f32::max)
+        .min(50.0 * font);
+    let height: f32 = sections
+        .iter()
+        .map(|(name, rows)| if name.is_some() { font + line } else { 0.0 } + rows.len() as f32 * line)
+        .sum::<f32>()
+        + font;
+    let rect = Rect::from_min_size(
+        pos2(screen.left() + 1.5 * OSD_FONT, screen.top() + 5.0 * OSD_FONT),
+        vec2(font + content + 3.0 * font, height),
+    );
+    let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("player-stats"));
+    let painter = ui.ctx().layer_painter(layer);
+    painter.rect_filled(rect, 0.3 * OSD_FONT, Color32::from_rgba_unmultiplied(28, 28, 28, 204));
+    let mut y = rect.top();
+    let left = rect.left() + font;
+    for (name, rows) in &sections {
+        if let Some(name) = name {
+            y += font;
+            let galley = painter.layout_no_wrap((*name).to_owned(), label_font.clone(), Color32::WHITE);
+            widgets::galley_on_baseline(&painter, left, jf::baseline(y, font, line), galley);
+            y += line;
+        }
+        for (label, value) in rows {
+            let baseline = jf::baseline(y, font, line);
+            let label_galley = painter.layout_no_wrap(label.clone(), label_font.clone(), Color32::WHITE);
+            let label_width = label_galley.size().x;
+            widgets::galley_on_baseline(&painter, left + font, baseline, label_galley);
+            let value_galley = painter.layout_no_wrap(value.clone(), label_font.clone(), value_color);
+            widgets::galley_on_baseline(&painter, left + font + label_width + 0.5 * font, baseline, value_galley);
+            y += line;
+        }
+    }
+    let close = Rect::from_min_size(pos2(rect.right() - 6.72 - 34.73, rect.top() + 3.11), vec2(34.73, 34.73));
+    let mut child = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(screen));
+    if jf::round_icon_button(&mut child, close, Icon::Close, Color32::from_gray(0xcc), 20.87, "Close", true, Id::new("player-stats-close"))
+        .clicked()
+    {
+        actions.push(UiAction::TogglePlaybackInfo);
+    }
+}
+
 /// Skip Intro / Recap / Credits and the Up Next card. Both stay up while the
 /// chrome is hidden, as in Jellyfin, and slide above the chrome when it shows.
 fn draw_floating(
@@ -1296,6 +1412,7 @@ fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec
                 SheetItem { label: "Aspect Ratio", icon: None, checked: false, aside: Some(aspect) },
                 SheetItem { label: "Playback Speed", icon: None, checked: false, aside: Some(speed) },
                 SheetItem { label: "Repeat Mode", icon: None, checked: false, aside: Some(player.repeat.label()) },
+                item("Playback Info", false),
             ],
         ),
         PlayerMenu::Speed => (
@@ -1340,6 +1457,7 @@ fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec
     }
     let Some(index) = picked else { return };
     match menu {
+        PlayerMenu::Settings if index == 3 => actions.push(UiAction::TogglePlaybackInfo),
         PlayerMenu::Settings => {
             player.menu = [PlayerMenu::Aspect, PlayerMenu::Speed, PlayerMenu::Repeat][index.min(2)];
         }

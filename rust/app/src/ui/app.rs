@@ -143,6 +143,8 @@ pub enum UiAction {
     /// Start the playing item again from the beginning (Repeat all at the
     /// end of the queue).
     ReplayCurrent,
+    /// Open or close the player's Playback Info panel.
+    TogglePlaybackInfo,
     SetAspect(usize),
     SelectAudio(i32),
     SelectSubtitle(i32),
@@ -422,6 +424,20 @@ impl JellyBridgeApp {
                 send(PlayerCommand::Configure(vec![("loop-file", looped.to_owned())]));
             }
             UiAction::ReplayCurrent => features::playback::replay_current(context),
+            UiAction::TogglePlaybackInfo => {
+                let player = &mut self.state.player;
+                if player.stats.take().is_some() {
+                    send(PlayerCommand::Stats(false));
+                } else {
+                    player.stats = Some(super::player::PlaybackStats::default());
+                    send(PlayerCommand::Stats(true));
+                    // The playing audio stream's Jellyfin index, for its row.
+                    let audio_index = usize::try_from(player.audio_index).ok().and_then(|index| {
+                        context.player_tracks.lock().ok()?.audio.get(index)?.source_index
+                    });
+                    features::playback::load_playback_info(context, player.item_id.clone(), audio_index);
+                }
+            }
             UiAction::SetSpeed(index) => {
                 if let Some(speed) = PLAYBACK_SPEEDS.get(index) {
                     send(PlayerCommand::SetSpeed(*speed));
