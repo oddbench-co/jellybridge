@@ -87,6 +87,25 @@ pub fn galley_baseline(galley: &Galley) -> f32 {
 /// Paints `galley` with its first baseline at `baseline`, snapped down
 /// onto the device-pixel grid as Chrome places text (measured: rounding
 /// put one line in three a pixel off). `x` is its left edge.
+/// `text` broken into the lines egui would wrap it into at `width`.
+pub fn wrap_lines(ui: &Ui, text: &str, font: egui::FontId, width: f32) -> Vec<String> {
+    let galley = ui
+        .painter()
+        .layout(text.to_owned(), font, Color32::WHITE, width);
+    galley
+        .rows
+        .iter()
+        .map(|row| {
+            row.glyphs
+                .iter()
+                .map(|glyph| glyph.chr)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect()
+}
+
 pub fn galley_on_baseline(painter: &Painter, x: f32, baseline: f32, galley: Arc<Galley>) -> Rect {
     let pixels = painter.pixels_per_point();
     let baseline = (baseline * pixels).floor() / pixels;

@@ -15,6 +15,10 @@
 //! 3.6  key    shift+N        with modifiers (shift, ctrl, alt)
 //! 4.0  text   hello          type text
 //! 5.0  play   <item id>      play that item, as a card's play button does
+//! 5.0  open   <item id>      open a card on the current page, as a click does
+//! 5.0  detail <Type> <id>    open an item's page (Type as Jellyfin names it)
+//! 5.0  tab    <index>        switch the page's tab
+//! 5.0  back                  go back
 //! 6.0  shot   <file.png>     save the window's next frame, pixel exact
 //! ```
 //!
@@ -23,13 +27,14 @@
 
 use std::collections::VecDeque;
 
+use super::app::UiAction;
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, pos2, vec2};
 
 pub struct InputScript {
     steps: VecDeque<(f64, Step)>,
     start: Option<f64>,
     last_now: f64,
-    plays: Vec<String>,
+    actions: Vec<UiAction>,
     shots: Vec<String>,
 }
 
@@ -40,6 +45,7 @@ enum Step {
     Key(Key, Modifiers),
     Text(String),
     Play(String),
+    Action(Box<UiAction>),
     Shot(String),
 }
 
@@ -56,7 +62,7 @@ impl InputScript {
             steps,
             start: None,
             last_now: 0.0,
-            plays: Vec::new(),
+            actions: Vec::new(),
             shots: Vec::new(),
         })
     }
@@ -72,7 +78,8 @@ impl InputScript {
             let (at, step) = self.steps.pop_front().expect("peeked");
             tracing::info!(at, "input script step");
             match step {
-                Step::Play(id) => self.plays.push(id),
+                Step::Play(id) => self.actions.push(UiAction::PlayItem(id)),
+                Step::Action(action) => self.actions.push(*action),
                 Step::Shot(path) => self.shots.push(path),
                 step => push(input, step),
             }
@@ -85,9 +92,10 @@ impl InputScript {
         std::mem::take(&mut self.shots)
     }
 
-    /// Items due to be played, taken once by the frame that dispatches them.
-    pub fn take_plays(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.plays)
+    /// App actions due (play, navigate), taken once by the frame that
+    /// dispatches them.
+    pub fn take_actions(&mut self) -> Vec<UiAction> {
+        std::mem::take(&mut self.actions)
     }
 
     /// Asks for a frame when the next step is due. Called during the frame:
@@ -134,7 +142,7 @@ fn push(input: &mut RawInput, step: Step) {
             }
         }
         Step::Text(text) => input.events.push(Event::Text(text)),
-        Step::Play(_) | Step::Shot(_) => {}
+        Step::Play(_) | Step::Action(_) | Step::Shot(_) => {}
     }
 }
 
@@ -154,7 +162,17 @@ fn parse_line(line: &str) -> Option<(f64, Step)> {
         "dclick" => numbers().map(|(x, y)| Step::Click(pos2(x, y), 2))?,
         "scroll" => numbers().map(|(x, y)| Step::Scroll(vec2(x, y)))?,
         "text" => Step::Text(rest.to_owned()),
-        "play" => Step::Play(rest.trim().to_owned()),
+        "play" => Step::Play(rest.to_owned()),
+        "open" => Step::Action(Box::new(UiAction::OpenItem(rest.to_owned()))),
+        "tab" => Step::Action(Box::new(UiAction::SwitchTab(rest.parse().ok()?))),
+        "back" => Step::Action(Box::new(UiAction::GoBack)),
+        "detail" => {
+            let (kind, id) = rest.split_once(char::is_whitespace)?;
+            Step::Action(Box::new(UiAction::OpenDetail {
+                id: id.trim().to_owned(),
+                kind: kind.to_owned(),
+            }))
+        }
         "shot" => Step::Shot(rest.trim().to_owned()),
         "key" => {
             let mut modifiers = Modifiers::NONE;

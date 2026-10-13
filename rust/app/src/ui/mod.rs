@@ -8,6 +8,19 @@
 //! start of its next frame, on the UI thread.
 
 pub mod app;
+
+/// The window's width in points, as of the last frame (0 before the
+/// first). Loaders that size requests by it, as jellyfin-web sizes some by
+/// its window, read it from any thread.
+pub fn window_width() -> f32 {
+    f32::from_bits(WINDOW_WIDTH.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+pub(crate) fn note_window_width(width: f32) {
+    WINDOW_WIDTH.store(width.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+static WINDOW_WIDTH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub mod catalog;
 pub mod detail;
 pub mod dialogs;

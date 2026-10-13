@@ -213,7 +213,8 @@ impl PageRoute {
     pub fn grid(&self) -> Option<GridKind> {
         match self {
             Self::Library { tab, library } => match tab {
-                LibraryTab::Movies | LibraryTab::Favorites => Some(GridKind::Movies),
+                LibraryTab::Movies => Some(GridKind::Movies),
+                LibraryTab::Favorites => Some(GridKind::Favorites),
                 LibraryTab::Collections => Some(GridKind::Collections),
                 LibraryTab::Shows => Some(GridKind::Shows),
                 LibraryTab::Episodes => Some(GridKind::Episodes),
@@ -272,6 +273,8 @@ impl PageRoute {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridKind {
     Movies,
+    /// A library's Favorites tab: just the view switch, sorted by name.
+    Favorites,
     Shows,
     Episodes,
     Collections,
@@ -333,7 +336,7 @@ impl GridKind {
             Self::Shows => &SHOWS,
             Self::Episodes => &EPISODES,
             Self::Collections | Self::Playlists => &COLLECTIONS,
-            Self::Studios => &[],
+            Self::Studios | Self::Favorites => &[],
         }
     }
 
@@ -351,11 +354,14 @@ impl GridKind {
     }
 
     pub fn shuffles(self) -> bool {
-        matches!(self, Self::Movies | Self::Shows | Self::Folder)
+        matches!(self, Self::Movies | Self::Folder)
     }
 
     pub fn filters(self) -> bool {
-        !matches!(self, Self::Studios | Self::Playlists)
+        matches!(
+            self,
+            Self::Movies | Self::Shows | Self::Episodes | Self::Folder
+        )
     }
 
     pub fn alphabet(self) -> bool {
@@ -664,11 +670,14 @@ pub struct GridSettings {
 impl GridSettings {
     pub fn default_for(kind: GridKind) -> Self {
         Self {
-            sort: kind
-                .sorts()
-                .first()
-                .map_or("SortName", |option| option.value)
-                .to_owned(),
+            sort: match kind {
+                GridKind::Favorites => "SortName,ProductionYear",
+                _ => kind
+                    .sorts()
+                    .first()
+                    .map_or("SortName", |option| option.value),
+            }
+            .to_owned(),
             descending: false,
             view: kind.default_view(),
             filters: GridFilters::default(),
@@ -726,7 +735,20 @@ pub struct Shelf {
     pub lines: usize,
     /// Wrap into rows (Genres, Upcoming) instead of scrolling sideways.
     pub wrap: bool,
+    pub title_style: TitleStyle,
     pub items: Vec<CatalogItemData>,
+}
+
+/// How a section is titled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TitleStyle {
+    /// A title row, taller when the title links somewhere.
+    #[default]
+    Auto,
+    /// The taller row even without a link (the Genres tabs).
+    Tall,
+    /// A bare `h2` heading (the library Suggestions tabs).
+    Heading,
 }
 
 /// One page of a grid.

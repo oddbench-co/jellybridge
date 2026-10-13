@@ -23,7 +23,7 @@ use crate::app::AppContext;
 use crate::features::catalog::CardToggle;
 use crate::features::pages::{
     CardShape, Feature, FilterOptions, GridKind, GridSettings, PAGE_SIZE, PageContent,
-    SeriesStatus, StatusFilter, VideoType, ViewMode,
+    SeriesStatus, StatusFilter, TitleStyle, VideoType, ViewMode,
 };
 
 /// What the catalog screen shows. Filled by the presenters below.
@@ -68,6 +68,7 @@ pub struct ShelfVm {
     /// The tallest text among the shelf's cards, which sets its height.
     pub text: jf::CardText,
     pub wrap: bool,
+    pub title_style: TitleStyle,
     pub items: Vec<CatalogItem>,
 }
 
@@ -333,6 +334,7 @@ fn shelf_vm(shelf: &crate::features::pages::Shelf, sizes: ArtSizes) -> ShelfVm {
         lines: shelf.lines,
         text,
         wrap: shelf.wrap,
+        title_style: shelf.title_style,
         items: shelf
             .items
             .iter()
@@ -386,7 +388,28 @@ fn to_ui_item(item: &CatalogItemData, sizes: ArtSizes) -> CatalogItem {
     }
 }
 
+impl ShelfVm {
+    fn title_height(&self) -> f32 {
+        if self.title_style == TitleStyle::Heading {
+            jf::SECTION_HEADING
+        } else if self.link || self.title_style == TitleStyle::Tall {
+            jf::SECTION_TITLE_LINKED
+        } else {
+            SECTION_TITLE
+        }
+    }
+}
+
 impl CatalogItem {
+    /// The card's text rows, whose heights depend on which are links.
+    fn text(&self, lines: usize) -> jf::CardText {
+        jf::CardText {
+            lines,
+            title_link: self.title_link,
+            subtitle_link: self.subtitle_link,
+        }
+    }
+
     fn model(&self, shape: Shape) -> CardModel<'_> {
         let art = match shape {
             Shape::Backdrop => self.thumb.as_ref(),
@@ -426,13 +449,16 @@ impl CatalogItem {
 
 const SEARCH_DEBOUNCE_SECONDS: f64 = 0.3;
 /// The A–Z picker's column, which the grid leaves free on its right.
-const ALPHA_COLUMN: f32 = 94.0;
 const ALPHABET: [&str; 27] = [
     "#", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
     "S", "T", "U", "V", "W", "X", "Y", "Z",
 ];
-/// The toolbar row above a grid.
-const TOOLBAR_HEIGHT: f32 = 68.0;
+const NOTHING_HERE: &str = "Nothing here.";
+const NO_COLLECTIONS: &str = "Collections allow you to enjoy personalized groupings of Movies, \
+     Series, and Albums. Click the '+' button to start creating collections.";
+
+/// A list view row.
+const LIST_ROW: f32 = 84.0;
 const SECTION_TITLE: f32 = jf::SECTION_TITLE;
 
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
@@ -620,11 +646,7 @@ fn draw_shelf(
     let window = jf::window_width(ui);
     let card_width = jf::overflow_width(window, shelf.shape);
     let card_height = jf::card_height_for(card_width, shelf.shape, shelf.text);
-    let title_height = if shelf.link {
-        jf::SECTION_TITLE_LINKED
-    } else {
-        SECTION_TITLE
-    };
+    let title_height = shelf.title_height();
     let (rect, _) = ui.allocate_exact_size(vec2(width, title_height + card_height), Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
@@ -689,11 +711,7 @@ fn draw_wrapped_shelf(
     let columns = ((grid / card_width).round() as usize).max(1);
     let card_height = jf::card_height_for(card_width, shelf.shape, shelf.text);
     let rows = shelf.items.len().div_ceil(columns);
-    let title_height = if shelf.link {
-        jf::SECTION_TITLE_LINKED
-    } else {
-        SECTION_TITLE
-    };
+    let title_height = shelf.title_height();
     let (rect, _) = ui.allocate_exact_size(
         vec2(width, title_height + rows as f32 * card_height),
         Sense::hover(),
@@ -785,76 +803,191 @@ fn grid_shape(view: ViewMode, items: &[CatalogItem]) -> Option<Shape> {
     }
 }
 
-/// A library grid: the toolbar, the cards (or list rows), the A–Z picker,
-/// and whichever dialog the toolbar opened.
+/// A library grid as jellyfin-web lays it out: one scrolling page holding
+/// the toolbar, the cards (or list rows) and a second paging line, with the
+/// A–Z picker fixed at the right; plus whichever dialog the toolbar opened.
 fn draw_grid(ui: &mut Ui, state: &mut UiState, grid: &mut GridVm, actions: &mut Vec<UiAction>) {
     let body = ui.max_rect();
     let window = jf::window_width(ui);
-    let padding = jf::page_padding(body.width());
-    let alphabet = grid.kind.alphabet() && grid.settings.view != ViewMode::List;
-    let right = if alphabet { ALPHA_COLUMN } else { padding };
-    let grid_width = body.width() - padding - right;
-
-    let toolbar = Rect::from_min_size(body.min, vec2(body.width(), TOOLBAR_HEIGHT));
-    let buttons = draw_toolbar(ui, toolbar, grid, &state.catalog.route, actions);
-
-    let area = Rect::from_min_max(pos2(body.left(), toolbar.bottom()), body.max);
-    let mut grid_ui = widgets::clipped_child(ui, area);
-    if grid.items.is_empty() {
-        let note = Rect::from_min_size(area.min, vec2(body.width(), 80.0));
-        centered_note(&grid_ui, note, "No items found.", theme::JF_TEXT_SECONDARY);
+    let window_height = ui.ctx().content_rect().height();
+    let page = body.width();
+    let alpha = (grid.kind.alphabet() && grid.settings.view != ViewMode::List)
+        .then(|| jf::alpha_picker(window, window_height))
+        .flatten();
+    let padding = jf::page_padding(page);
+    // `.padded-right-withalphapicker`: 7.5% of the page.
+    let right = if alpha.is_some() {
+        jf::layout_unit(page * 0.075)
     } else {
-        let items = grid.items.clone();
-        let page_key = state.catalog.page_key.clone();
-        let scroll_id = ("catalog-grid", page_key.as_str(), grid.start);
-        match grid_shape(grid.settings.view, &items) {
-            Some(shape) => {
-                let lines = if shape == Shape::Banner { 0 } else { 2 };
-                let card_width = jf::grid_card_width(window, grid_width, shape);
-                let columns = ((grid_width / card_width).round() as usize).max(1);
-                let row_height = jf::card_height(card_width, shape, lines);
-                let rows = items.len().div_ceil(columns);
-                let output = ScrollArea::vertical()
-                    .id_salt(scroll_id)
-                    .scroll_bar_visibility(scrollbar::HIDDEN)
-                    .auto_shrink(false)
-                    .show_rows(&mut grid_ui, row_height, rows, |ui, visible| {
-                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                        for row in visible {
-                            let (rect, _) = ui.allocate_exact_size(
-                                vec2(body.width(), row_height),
-                                Sense::hover(),
-                            );
-                            for column in 0..columns {
-                                let index = row * columns + column;
-                                let Some(item) = items.get(index) else { break };
-                                let origin = pos2(
-                                    body.left() + padding + column as f32 * card_width,
-                                    rect.top(),
-                                );
-                                let response = jf::card(
-                                    ui,
-                                    &mut state.images,
-                                    &item.model(shape),
-                                    origin,
-                                    card_width,
-                                    shape,
-                                    lines,
-                                    Id::new(("catalog-grid-card", item.id.as_str())),
-                                );
-                                card_actions(&items[index..], &response, actions);
-                            }
-                        }
-                    });
-                scrollbar::draw(&mut grid_ui, &output);
-            }
-            None => draw_list(&mut grid_ui, state, &items, scroll_id, padding, actions),
+        padding
+    };
+    let grid_width = page - padding - right;
+    let items = grid.items.clone();
+    let scroll_id = ("catalog-grid", state.catalog.page_key.clone(), grid.start);
+    let shape = grid_shape(grid.settings.view, &items);
+    // Banners carry no text; networks just their name.
+    let lines = match (shape, grid.kind) {
+        (Some(Shape::Banner), _) => 0,
+        (_, GridKind::Studios) => 1,
+        _ => 2,
+    };
+    let (card_width, columns, row_height) = match shape {
+        Some(shape) => {
+            let card_width = jf::layout_unit(jf::grid_card_width(window, grid_width, shape));
+            let columns = ((grid_width / card_width).round() as usize).max(1);
+            // A row is as tall as its tallest card; one page holds one kind
+            // of item, so that is the tallest text any of them has.
+            let row_height = items
+                .iter()
+                .map(|item| jf::card_height_for(card_width, shape, item.text(lines)))
+                .fold(0.0, f32::max);
+            (card_width, columns, row_height)
         }
-    }
-    if alphabet {
-        draw_alphabet(ui, area, &grid.settings, actions);
+        None => (0.0, 1, LIST_ROW),
+    };
+    let rows = items.len().div_ceil(columns);
+    let summary = grid_summary(grid);
+    let content_top = state.catalog.content_top;
+    // The cards' box, inside the page padding.
+    let container = Rect::from_min_max(
+        pos2(body.left() + padding, body.top()),
+        pos2(body.right() - right, body.bottom()),
+    );
+    let collections = grid.kind == GridKind::Collections;
+    // The Networks tab is just the cards: no toolbar or paging lines, 1em
+    // of padding on top, rows centred.
+    let bare = grid.kind == GridKind::Studios;
+    let toolbar_height = if bare {
+        jf::TOOLBAR_PADDING
+    } else {
+        jf::TOOLBAR_HEIGHT
+    };
+    let paging_height = if bare { 0.0 } else { jf::PAGING_BAR_HEIGHT };
+    let centered = collections || bare;
+    let empty_height = if !items.is_empty() {
+        0.0
+    } else if collections {
+        jf::center_message(ui, container, 0.0, NOTHING_HERE, NO_COLLECTIONS, false)
+    } else {
+        0.0
+    };
+    let mut buttons = ToolbarButtons::default();
+    let output = ScrollArea::vertical()
+        .id_salt(scroll_id)
+        .scroll_bar_visibility(scrollbar::HIDDEN)
+        .auto_shrink(false)
+        .show_viewport(ui, |ui, viewport| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            // Page coordinates start at the window top; the scroll area
+            // starts under the header (snapped to a device pixel).
+            let top = ui.max_rect().top();
+            let lead = (content_top - (top + viewport.top())).max(0.0);
+            let grid_top = lead + toolbar_height;
+            let grid_height = if items.is_empty() {
+                empty_height
+            } else {
+                rows as f32 * row_height
+            };
+            let total = grid_top + grid_height + paging_height + jf::PAGE_BOTTOM;
+            ui.allocate_exact_size(vec2(page, total), Sense::hover());
+            let toolbar = Rect::from_min_size(
+                pos2(body.left(), top + lead),
+                vec2(page, jf::TOOLBAR_HEIGHT),
+            );
+            if !bare {
+                buttons = draw_toolbar(ui, toolbar, grid, &summary, &state.catalog.route, actions);
+            }
+            let bar = Rect::from_min_size(
+                pos2(body.left(), top + grid_top + grid_height),
+                vec2(page, jf::PAGING_BAR_HEIGHT),
+            );
+            if !bare {
+                paging_text(ui, bar, bar.top() + jf::TOOLBAR_PADDING, &summary);
+            }
+            if items.is_empty() {
+                if collections {
+                    let at = top + grid_top;
+                    jf::center_message(ui, container, at, NOTHING_HERE, NO_COLLECTIONS, true);
+                }
+                return;
+            }
+            // Only the rows in view are laid out and asked for artwork.
+            let first = ((viewport.top() - grid_top) / row_height).floor().max(0.0) as usize;
+            let last = (((viewport.bottom() - grid_top) / row_height)
+                .ceil()
+                .max(0.0) as usize)
+                .min(rows);
+            for row in first..last {
+                let row_top = top + grid_top + row as f32 * row_height;
+                match shape {
+                    Some(shape) => {
+                        // Collections centre a short row (`.centered`).
+                        let in_row = (items.len() - row * columns).min(columns);
+                        let indent = if centered {
+                            (grid_width - in_row as f32 * card_width) / 2.0
+                        } else {
+                            0.0
+                        };
+                        for column in 0..columns {
+                            let index = row * columns + column;
+                            let Some(item) = items.get(index) else { break };
+                            let origin = pos2(
+                                body.left() + padding + indent + column as f32 * card_width,
+                                row_top,
+                            );
+                            let response = jf::card(
+                                ui,
+                                &mut state.images,
+                                &item.model(shape),
+                                origin,
+                                card_width,
+                                shape,
+                                lines,
+                                Id::new(("catalog-grid-card", item.id.as_str())),
+                            );
+                            card_actions(&items[index..], &response, actions);
+                        }
+                    }
+                    None => {
+                        let rect =
+                            Rect::from_min_size(pos2(body.left(), row_top), vec2(page, LIST_ROW));
+                        list_row(ui, &mut state.images, &items, row, rect, padding, actions);
+                    }
+                }
+            }
+        });
+    scrollbar::draw(ui, &output);
+    if let Some(alpha) = alpha {
+        draw_alphabet(ui, body, &alpha, &grid.settings, actions);
     }
     draw_dialog(ui, state, grid, &buttons, actions);
+}
+
+/// "1-35 of 35", or nothing for an empty page.
+fn grid_summary(grid: &GridVm) -> String {
+    if grid.items.is_empty() {
+        return "0-0 of 0".to_owned();
+    }
+    let shown_end = (grid.start + grid.items.len()).min(grid.total);
+    format!("{}-{} of {}", grid.start + 1, shown_end, grid.total)
+}
+
+/// The paging line centred in `row`, its 22px block starting at
+/// `block_top`; returns its width.
+fn paging_text(ui: &Ui, row: Rect, block_top: f32, summary: &str) -> f32 {
+    let galley = ui.painter().layout_no_wrap(
+        summary.to_owned(),
+        theme::regular(theme::JF_FONT),
+        jf::TEXT_80,
+    );
+    let width = galley.size().x;
+    widgets::galley_on_baseline(
+        ui.painter(),
+        row.center().x - width / 2.0,
+        block_top + jf::PAGING_BASELINE,
+        galley,
+    );
+    width
 }
 
 /// Where the toolbar's dialog buttons sit, for anchoring their menus.
@@ -867,15 +1000,11 @@ fn draw_toolbar(
     ui: &mut Ui,
     toolbar: Rect,
     grid: &GridVm,
+    summary: &str,
     route: &crate::features::pages::PageRoute,
     actions: &mut Vec<UiAction>,
 ) -> ToolbarButtons {
     let shown_end = (grid.start + grid.items.len()).min(grid.total);
-    let summary = if grid.items.is_empty() {
-        String::new()
-    } else {
-        format!("{}-{} of {}", grid.start + 1, shown_end, grid.total)
-    };
     let paged = grid.total > PAGE_SIZE;
     let mut icons_row: Vec<(Icon, &str, &str, bool)> = Vec::new();
     if paged {
@@ -893,13 +1022,6 @@ fn draw_toolbar(
     if grid.kind.shuffles() && !grid.items.is_empty() {
         icons_row.push((Icon::Shuffle, "Shuffle", "shuffle", true));
     }
-    match grid.kind {
-        GridKind::Collections => {
-            icons_row.push((Icon::Add, "New Collection", "new-collection", true))
-        }
-        GridKind::Playlists => icons_row.push((Icon::Add, "New Playlist", "new-playlist", true)),
-        _ => {}
-    }
     icons_row.push((Icon::ViewComfy, "Select view", "view", true));
     if !grid.kind.sorts().is_empty() {
         icons_row.push((Icon::SortByAlpha, "Sort", "sort", true));
@@ -907,39 +1029,47 @@ fn draw_toolbar(
     if grid.kind.filters() {
         icons_row.push((Icon::FilterAlt, "Filter", "filter", true));
     }
-    const STEP: f32 = 50.0;
-    let count = widgets::text_width(ui, &summary, theme::regular(theme::JF_FONT));
-    let total = count + 9.0 + icons_row.len() as f32 * STEP;
-    let left = toolbar.center().x - total / 2.0;
-    let center_y = toolbar.top() + 26.0 + 20.5;
-    ui.painter().text(
-        pos2(left, center_y),
-        Align2::LEFT_CENTER,
-        &summary,
-        theme::regular(theme::JF_FONT),
-        theme::JF_TEXT,
-    );
+    match grid.kind {
+        GridKind::Collections => {
+            icons_row.push((Icon::Add, "New Collection", "new-collection", true))
+        }
+        GridKind::Playlists => icons_row.push((Icon::Add, "New Playlist", "new-playlist", true)),
+        _ => {}
+    }
     let mut out = ToolbarButtons::default();
+    if !ui.is_rect_visible(toolbar) {
+        return out;
+    }
+    // A centred flex row: the paging text, then buttons with their margins.
+    let summary_width = widgets::text_width(ui, summary, theme::regular(theme::JF_FONT));
+    let total = summary_width + icons_row.len() as f32 * jf::TOOLBAR_STEP;
+    let left = toolbar.center().x - total / 2.0;
+    let button_top = toolbar.top() + jf::TOOLBAR_PADDING;
+    let row = Rect::from_min_size(pos2(left, toolbar.top()), vec2(summary_width, 0.0));
+    if !summary.is_empty() {
+        let block_top = button_top + (jf::TOOLBAR_BUTTON - jf::PAGING_BLOCK) / 2.0;
+        paging_text(ui, row, block_top, summary);
+    }
     let filtered = grid.settings.filters.count() > 0;
     for (index, (icon, label, name, enabled)) in icons_row.into_iter().enumerate() {
-        let rect = Rect::from_center_size(
+        let rect = Rect::from_min_size(
             pos2(
-                left + count + 9.0 + STEP * index as f32 + STEP / 2.0,
-                center_y,
+                left + summary_width + jf::TOOLBAR_MARGIN + jf::TOOLBAR_STEP * index as f32,
+                button_top,
             ),
-            vec2(41.0, 41.0),
+            vec2(jf::TOOLBAR_BUTTON, jf::TOOLBAR_BUTTON),
         );
         let color = if name == "filter" && filtered {
             theme::JF_ACCENT
         } else {
-            Color32::WHITE
+            jf::TEXT_80
         };
         let clicked = jf::round_icon_button(
             ui,
             rect,
             icon,
             color,
-            24.8,
+            jf::TOOLBAR_ICON,
             label,
             enabled,
             Id::new(("grid-toolbar", name)),
@@ -976,125 +1106,116 @@ fn draw_toolbar(
     out
 }
 
-/// jellyfin-web's list view: a row per item with a small thumbnail.
-fn draw_list(
+/// One row of the list view.
+fn list_row(
     ui: &mut Ui,
-    state: &mut UiState,
+    images: &mut ImageCache,
     items: &[CatalogItem],
-    scroll_id: (&str, &str, usize),
+    index: usize,
+    row: Rect,
     padding: f32,
     actions: &mut Vec<UiAction>,
 ) {
-    const ROW: f32 = 84.0;
-    let width = ui.max_rect().width();
-    let output = ScrollArea::vertical()
-        .id_salt(scroll_id)
-        .scroll_bar_visibility(scrollbar::HIDDEN)
-        .auto_shrink(false)
-        .show_rows(ui, ROW, items.len(), |ui, visible| {
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            for index in visible {
-                let item = &items[index];
-                let (row, _) = ui.allocate_exact_size(vec2(width, ROW), Sense::hover());
-                let inner = Rect::from_min_max(
-                    pos2(row.left() + padding, row.top()),
-                    pos2(row.right() - padding, row.bottom()),
-                );
-                let id = Id::new(("catalog-list-row", item.id.as_str()));
-                let response = ui.interact(inner, id, Sense::click());
-                widgets::describe_button(&response, true, &item.title);
-                if response.hovered() || response.has_focus() {
-                    ui.painter()
-                        .rect_filled(inner, 0.0, Color32::from_white_alpha(13));
-                }
-                let image = Rect::from_min_size(
-                    pos2(inner.left() + 8.0, inner.top() + 8.0),
-                    vec2(122.0, 68.0),
-                );
-                let art = item.thumb.as_ref().or(item.poster.as_ref());
-                let texture =
-                    art.and_then(|art| state.images.texture(art).zip(state.images.size(&art.key)));
-                match texture {
-                    Some((texture, size)) => {
-                        widgets::image_cover(ui.painter(), texture, size, image, theme::JF_RADIUS);
-                    }
-                    None => {
-                        let color = jf::default_background(&item.title);
-                        ui.painter().rect_filled(image, theme::JF_RADIUS, color);
-                    }
-                }
-                let text_left = image.right() + 16.0;
-                let text_width = inner.right() - text_left - 16.0;
-                let title = widgets::elided(
-                    ui,
-                    &item.title,
-                    theme::regular(theme::JF_FONT),
-                    theme::JF_TEXT,
-                    text_width,
-                );
-                widgets::galley_v_centered(ui.painter(), text_left, inner.center().y - 10.0, title);
-                if !item.subtitle.is_empty() {
-                    let subtitle = widgets::elided(
-                        ui,
-                        &item.subtitle,
-                        theme::regular(theme::JF_FONT_SECONDARY),
-                        theme::JF_TEXT_SECONDARY,
-                        text_width,
-                    );
-                    widgets::galley_v_centered(
-                        ui.painter(),
-                        text_left,
-                        inner.center().y + 11.0,
-                        subtitle,
-                    );
-                }
-                if item.watched {
-                    icons::paint_centered(
-                        ui.painter(),
-                        Icon::Check,
-                        pos2(inner.right() - 24.0, inner.center().y),
-                        22.0,
-                        theme::JF_PLAYED_RED,
-                    );
-                }
-                widgets::pointer_on_hover(&response);
-                if response.clicked() {
-                    actions.push(UiAction::OpenItem(item.id.clone()));
-                }
-            }
-        });
-    scrollbar::draw(ui, &output);
+    let item = &items[index];
+    let inner = Rect::from_min_max(
+        pos2(row.left() + padding, row.top()),
+        pos2(row.right() - padding, row.bottom()),
+    );
+    let id = Id::new(("catalog-list-row", item.id.as_str()));
+    let response = ui.interact(inner, id, Sense::click());
+    widgets::describe_button(&response, true, &item.title);
+    if response.hovered() || response.has_focus() {
+        ui.painter()
+            .rect_filled(inner, 0.0, Color32::from_white_alpha(13));
+    }
+    let image = Rect::from_min_size(
+        pos2(inner.left() + 8.0, inner.top() + 8.0),
+        vec2(122.0, 68.0),
+    );
+    let art = item.thumb.as_ref().or(item.poster.as_ref());
+    let texture = art.and_then(|art| images.texture(art).zip(images.size(&art.key)));
+    match texture {
+        Some((texture, size)) => {
+            widgets::image_cover(ui.painter(), texture, size, image, theme::JF_RADIUS);
+        }
+        None => {
+            let color = jf::default_background(&item.title);
+            ui.painter().rect_filled(image, theme::JF_RADIUS, color);
+        }
+    }
+    let text_left = image.right() + 16.0;
+    let text_width = inner.right() - text_left - 16.0;
+    let title = widgets::elided(
+        ui,
+        &item.title,
+        theme::regular(theme::JF_FONT),
+        theme::JF_TEXT,
+        text_width,
+    );
+    widgets::galley_v_centered(ui.painter(), text_left, inner.center().y - 10.0, title);
+    if !item.subtitle.is_empty() {
+        let subtitle = widgets::elided(
+            ui,
+            &item.subtitle,
+            theme::regular(theme::JF_FONT_SECONDARY),
+            theme::JF_TEXT_SECONDARY,
+            text_width,
+        );
+        widgets::galley_v_centered(ui.painter(), text_left, inner.center().y + 11.0, subtitle);
+    }
+    if item.watched {
+        icons::paint_centered(
+            ui.painter(),
+            Icon::Check,
+            pos2(inner.right() - 24.0, inner.center().y),
+            22.0,
+            theme::JF_PLAYED_RED,
+        );
+    }
+    widgets::pointer_on_hover(&response);
+    if response.clicked() {
+        actions.push(UiAction::OpenItem(item.id.clone()));
+    }
 }
 
 /// The A–Z picker: filters the grid to names starting with a letter; the
 /// active letter is in the accent, and clicking it again clears it.
-fn draw_alphabet(ui: &mut Ui, area: Rect, settings: &GridSettings, actions: &mut Vec<UiAction>) {
-    let letter_gap = 20.7;
-    let column_height = letter_gap * ALPHABET.len() as f32;
-    let top = area.center().y - column_height / 2.0;
-    let x = area.right() - 37.0;
+fn draw_alphabet(
+    ui: &mut Ui,
+    page: Rect,
+    alpha: &jf::AlphaPicker,
+    settings: &GridSettings,
+    actions: &mut Vec<UiAction>,
+) {
+    let window = ui.ctx().content_rect();
+    let bottom = window.bottom() - alpha.bottom;
+    let top = bottom - alpha.row * ALPHABET.len() as f32;
+    let left = page.right() - alpha.right - alpha.width;
     let active = settings.filters.starts_with.as_deref();
+    let font = theme::regular(alpha.font);
     for (index, letter) in ALPHABET.iter().enumerate() {
-        let cell = Rect::from_center_size(
-            pos2(x, top + index as f32 * letter_gap + letter_gap / 2.0),
-            vec2(26.0, letter_gap),
+        let cell = Rect::from_min_size(
+            pos2(left, top + index as f32 * alpha.row),
+            vec2(alpha.width, alpha.row),
         );
         let response = ui.interact(cell, Id::new(("alpha", *letter)), Sense::click());
         widgets::describe_button(&response, true, letter);
         let selected = active == Some(*letter);
+        // `.alphaPickerButton` is 50% white, `-selected` white.
         let color = if selected {
-            theme::JF_ACCENT
-        } else if response.hovered() {
-            theme::JF_TEXT
+            Color32::WHITE
         } else {
-            theme::JF_TEXT_SECONDARY
+            Color32::from_white_alpha(128)
         };
-        ui.painter().text(
-            cell.center(),
-            Align2::CENTER_CENTER,
-            *letter,
-            theme::regular(theme::JF_FONT),
-            color,
+        let galley = ui
+            .painter()
+            .layout_no_wrap((*letter).to_owned(), font.clone(), color);
+        let x = cell.center().x - galley.size().x / 2.0;
+        widgets::galley_on_baseline(
+            ui.painter(),
+            x,
+            cell.top() + alpha.pad + alpha.ascent,
+            galley,
         );
         widgets::pointer_on_hover(&response);
         if response.clicked() {

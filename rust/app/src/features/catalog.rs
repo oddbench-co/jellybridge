@@ -36,15 +36,33 @@ pub fn apply_home_result(
                 .unwrap_or_default();
             install_home(context, api, account, home);
         }
+        // One refused request does not prove the sign-in is gone (a server
+        // restart or a lock can answer 401 once): the session is dropped only
+        // when the server also refuses to say who it belongs to.
         Err(ApiError::Unauthorized) => {
-            let _ = context.store.clear();
-            if let Ok(mut state) = context.state.lock() {
-                crate::features::auth::reset_session_state(&mut state);
-            }
-            ui::show_login(
-                context,
-                "Your saved session is no longer valid. Please sign in again.",
-            );
+            let ctx = context.clone();
+            context.runtime.spawn(async move {
+                match api.session_is_valid().await {
+                    Ok(false) => {
+                        let _ = ctx.store.clear();
+                        if let Ok(mut state) = ctx.state.lock() {
+                            crate::features::auth::reset_session_state(&mut state);
+                        }
+                        ui::show_login(
+                            &ctx,
+                            "Your saved session is no longer valid. Please sign in again.",
+                        );
+                    }
+                    _ => apply_home_result(
+                        &ctx,
+                        api,
+                        Err(ApiError::Status {
+                            status: reqwest::StatusCode::UNAUTHORIZED,
+                            operation: "loading the page",
+                        }),
+                    ),
+                }
+            });
         }
         Err(error) => {
             if let Ok(mut state) = context.state.lock() {
@@ -697,6 +715,7 @@ mod tests {
             shape: crate::features::pages::CardShape::Backdrop,
             lines: 1,
             wrap: false,
+            title_style: crate::features::pages::TitleStyle::Auto,
             items: vec![movies],
         }];
         assert_eq!(

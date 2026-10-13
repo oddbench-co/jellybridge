@@ -119,6 +119,8 @@ pub struct CatalogItemData {
     /// The card's second line: "S1:E16 - Name" for an episode, the year
     /// for a movie or series, nothing for folders.
     pub card_subtitle: String,
+    /// The year line (a series' run), for sections that show title and year.
+    pub year: String,
     /// Whether each line is a link in jellyfin-web, which sets its height.
     pub title_link: bool,
     pub subtitle_link: bool,
@@ -134,6 +136,21 @@ pub struct CatalogItemData {
     pub child_count: u32,
     /// A library's kind ("movies", "tvshows", …); empty for anything else.
     pub collection_type: String,
+}
+
+impl CatalogItemData {
+    /// The card's lines as jellyfin-web's library Continue Watching
+    /// writes them (`showTitle`, `showYear`): the item's own name (an
+    /// episode's "S1:E1 - Name") over its year.
+    pub fn title_over_year(mut self) -> Self {
+        if self.kind == "Episode" && !self.card_subtitle.is_empty() {
+            self.card_title = std::mem::take(&mut self.card_subtitle);
+        }
+        self.card_subtitle = std::mem::take(&mut self.year);
+        self.title_link = true;
+        self.subtitle_link = false;
+        self
+    }
 }
 
 /// Times one dashboard request.
@@ -216,6 +233,17 @@ impl JellyfinApi {
         };
         let account_name = response.user.name;
         Ok((Self::from_session_with(session, api.http)?, account_name))
+    }
+
+    /// Whether the server still accepts this session's token: `Ok(false)`
+    /// only on a definite 401 for the signed-in user.
+    pub async fn session_is_valid(&self) -> Result<bool, ApiError> {
+        let response = self.request(Method::GET, "Users/Me")?.send().await?;
+        match check_status(response, "checking the sign-in") {
+            Ok(_) => Ok(true),
+            Err(ApiError::Unauthorized) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn session(&self) -> &StoredSession {
@@ -1135,6 +1163,15 @@ fn check_status(
     response: reqwest::Response,
     operation: &'static str,
 ) -> Result<reqwest::Response, ApiError> {
+    if !response.status().is_success() {
+        // The path only: queries can carry ids, never the token (a header).
+        tracing::warn!(
+            status = response.status().as_u16(),
+            path = response.url().path(),
+            operation,
+            "request failed"
+        );
+    }
     if response.status() == StatusCode::UNAUTHORIZED {
         return Err(ApiError::Unauthorized);
     }
@@ -1258,6 +1295,7 @@ impl From<LibraryItem> for CatalogItemData {
         // navigable. This also covers server-provided container types such as
         // ManualPlaylistsFolder and future container variants.
         let (card_title, card_subtitle) = card_lines(&item);
+        let year = year_line(&item);
         let (title_link, subtitle_link) = card_links(&item);
         let images = card_images(&item);
         let user = item.user_data.as_ref();
@@ -1275,6 +1313,7 @@ impl From<LibraryItem> for CatalogItemData {
             playable,
             card_title,
             card_subtitle,
+            year,
             title_link,
             subtitle_link,
             images,
@@ -1794,13 +1833,36 @@ fn card_lines(item: &LibraryItem) -> (String, String) {
             Some(album) => (album, item.name.clone()),
             None => (item.name.clone(), String::new()),
         },
-        "Movie" | "Series" | "Video" | "MusicVideo" => (
-            item.name.clone(),
-            item.production_year
-                .map(|year| year.to_string())
-                .unwrap_or_default(),
-        ),
+        "Movie" | "Series" | "Video" | "MusicVideo" => (item.name.clone(), year_line(item)),
         _ => (item.name.clone(), String::new()),
+    }
+}
+
+/// A card's year as jellyfin-web's card builder writes it: a series spans
+/// its run ("2019 - Present", "2019 - 2022"), anything else its year.
+fn year_line(item: &LibraryItem) -> String {
+    let start = item
+        .production_year
+        .map(|year| year.to_string())
+        .unwrap_or_default();
+    if item.kind != "Series" {
+        return start;
+    }
+    if item
+        .status
+        .as_deref()
+        .is_some_and(|status| status.eq_ignore_ascii_case("Continuing"))
+    {
+        return format!("{start} - Present");
+    }
+    let end = item
+        .end_date
+        .as_deref()
+        .and_then(parse_iso_date)
+        .map(|(year, _, _)| year.to_string());
+    match end {
+        Some(end) if !start.is_empty() && end != start => format!("{start} - {end}"),
+        _ => start,
     }
 }
 

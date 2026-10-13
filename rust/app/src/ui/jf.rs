@@ -57,6 +57,10 @@ const SECONDARY_BASELINE: f32 = 14.6;
 const PLAIN_SECONDARY_RAISE: f32 = (SECONDARY_ROW_LINK - SECONDARY_ROW) / 2.0;
 const SECTION_BASELINE: f32 = 33.71;
 const SECTION_BASELINE_LINKED: f32 = 41.92;
+/// A section titled by a bare `h2.sectionTitle` (the library Suggestions
+/// tab): the heading's margin and line, then the cards.
+pub const SECTION_HEADING: f32 = 48.703;
+const SECTION_BASELINE_HEADING: f32 = 42.14;
 /// A section title row (`.sectionTitle-cards`: 0.5em above, a 1.35 line,
 /// 0.2em below, at 22.32 px) and where its text sits.
 pub const SECTION_TITLE: f32 = 45.72;
@@ -140,6 +144,188 @@ pub fn window_width(ui: &egui::Ui) -> f32 {
 /// page scrollbar).
 pub fn page_padding(page_width: f32) -> f32 {
     layout_unit(page_width * 0.033)
+}
+
+/// White at 80%: jellyfin-web's toolbar icons and paging text.
+pub const TEXT_80: Color32 = theme::JF_TEXT;
+/// A library page's toolbar: 1em padding round a row of header-sized
+/// buttons.
+pub const TOOLBAR_PADDING: f32 = layout_unit(EM);
+pub const TOOLBAR_HEIGHT: f32 = 2.0 * TOOLBAR_PADDING + 41.375;
+/// Its buttons, their margin either side, and the step between them.
+pub const TOOLBAR_BUTTON: f32 = 41.359;
+pub const TOOLBAR_MARGIN: f32 = 4.3125;
+pub const TOOLBAR_STEP: f32 = TOOLBAR_BUTTON + 2.0 * TOOLBAR_MARGIN;
+/// The toolbar's icons (`.paper-icon-button-light`, 1.67em).
+pub const TOOLBAR_ICON: f32 = 24.843;
+/// The paging line's block (a 1.35 line round a 20px text box) and its
+/// baseline from the block's top.
+pub const PAGING_BLOCK: f32 = 22.047;
+pub const PAGING_BASELINE: f32 = 17.969;
+/// The paging line repeated under the grid, padded like the toolbar.
+pub const PAGING_BAR_HEIGHT: f32 = 2.0 * TOOLBAR_PADDING + PAGING_BLOCK;
+
+/// The library A–Z picker (`.alphaPicker-fixed-right`), sized by the
+/// window as jellyfin-web's media queries size it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AlphaPicker {
+    pub font: f32,
+    /// Space above and below each letter.
+    pub pad: f32,
+    pub ascent: f32,
+    pub row: f32,
+    pub width: f32,
+    /// From the page's right edge and the window's bottom edge.
+    pub right: f32,
+    pub bottom: f32,
+}
+
+/// The picker for a window, or `None` where jellyfin-web hides it
+/// (31.25em tall or less).
+pub fn alpha_picker(window_width: f32, window_height: f32) -> Option<AlphaPicker> {
+    const EM16: f32 = 16.0;
+    if window_height <= 31.25 * EM16 {
+        return None;
+    }
+    let scale = match window_height {
+        h if h <= 32.0 * EM16 => 0.74,
+        h if h <= 37.0 * EM16 => 0.82,
+        h if h <= 44.0 * EM16 => 0.90,
+        h if h <= 49.0 * EM16 => 0.94,
+        _ => 1.0,
+    };
+    let font = EM * scale;
+    let pad = match window_height {
+        h if h <= 44.0 * EM16 => 0.0,
+        h if h <= 50.0 * EM16 => 1.0,
+        _ => layout_unit(0.1 * font),
+    };
+    // Chrome's `line-height: normal` rounds the font's ascent and descent
+    // (Noto Sans: 1.069 and 0.293 em) to whole pixels.
+    let ascent = (1.069 * font).round();
+    let line = ascent + (0.293 * font).round();
+    Some(AlphaPicker {
+        font,
+        pad,
+        ascent,
+        row: line + 2.0 * pad,
+        width: layout_unit(1.5 * font),
+        right: if window_width >= 62.5 * EM16 {
+            font
+        } else {
+            0.4 * font
+        },
+        bottom: if window_height <= 50.0 * EM16 {
+            5.0 * font
+        } else {
+            5.5 * font
+        },
+    })
+}
+
+/// A block of text as Chrome sets it: wrapped to `width`, each line
+/// `line_height` tall (CSS `line-height`, in layout units), its baseline at
+/// the half-leading plus the font's ascent rounded to a whole pixel (Noto
+/// Sans: 1.069em up, 0.293em down). Lines are centred on `center_x` when
+/// `centered`, else start there. Returns the block's height.
+#[allow(clippy::too_many_arguments)]
+pub fn paragraph(
+    ui: &Ui,
+    text: &str,
+    font: egui::FontId,
+    line_height: f32,
+    top: f32,
+    x: f32,
+    width: f32,
+    centered: bool,
+    color: Color32,
+) -> f32 {
+    let size = font.size;
+    let ascent = (1.069 * size).round();
+    let content = ascent + (0.293 * size).round();
+    let line_height = layout_unit(line_height);
+    let lines = widgets::wrap_lines(ui, text, font.clone(), width);
+    for (index, line) in lines.iter().enumerate() {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(line.clone(), font.clone(), color);
+        let left = if centered {
+            x - galley.size().x / 2.0
+        } else {
+            x
+        };
+        let baseline = top + index as f32 * line_height + (line_height - content) / 2.0 + ascent;
+        widgets::galley_on_baseline(ui.painter(), left, baseline, galley);
+    }
+    lines.len() as f32 * line_height
+}
+
+/// `.cardDefaultText`: the name written large on a card with no artwork
+/// (2em bold, wrapping, 0.06em 0.5em padding), centred in the tile.
+fn paint_default_text(ui: &Ui, image: Rect, name: &str) {
+    let font = theme::bold(2.0 * EM);
+    let line = layout_unit(1.35 * 2.0 * EM);
+    let pad_x = layout_unit(0.5 * 2.0 * EM);
+    let lines = widgets::wrap_lines(ui, name, font.clone(), image.width() - 2.0 * pad_x).len();
+    let top = image.center().y - lines as f32 * line / 2.0;
+    paragraph(
+        ui,
+        name,
+        font,
+        line,
+        top,
+        image.center().x,
+        image.width() - 2.0 * pad_x,
+        true,
+        TEXT_80,
+    );
+}
+
+/// jellyfin-web's `.noItemsMessage.centerMessage`: an `h1` and a paragraph,
+/// centred in 30% of `container` with 5em above and below. Returns its
+/// height.
+pub fn center_message(
+    ui: &Ui,
+    container: Rect,
+    top: f32,
+    title: &str,
+    body: &str,
+    paint: bool,
+) -> f32 {
+    let width = layout_unit(container.width() * 0.3);
+    let center = container.center().x;
+    let padding = layout_unit(5.0 * EM);
+    let h1 = 1.8 * EM;
+    // `h1` keeps the browser's 0.67em margins, a `p` 1em; adjacent margins
+    // collapse to the larger.
+    let h1_margin = layout_unit(0.67 * h1);
+    let p_margin = layout_unit(EM);
+    let color = if paint { TEXT_80 } else { Color32::TRANSPARENT };
+    let mut y = top + padding + h1_margin;
+    y += paragraph(
+        ui,
+        title,
+        theme::regular(h1),
+        1.35 * h1,
+        y,
+        center,
+        width,
+        true,
+        color,
+    );
+    y += h1_margin.max(p_margin);
+    y += paragraph(
+        ui,
+        body,
+        theme::regular(EM),
+        1.35 * EM,
+        y,
+        center,
+        width,
+        true,
+        color,
+    );
+    y + p_margin + padding - top
 }
 
 /// `.padded-bottom-page`: the space under a page's last section (5em).
@@ -231,10 +417,9 @@ pub fn grid_card_width(window: f32, grid: f32, shape: Shape) -> f32 {
         }
         Shape::Banner => {
             let share = match window {
-                w if w >= 2100.0 => 0.20,
-                w if w >= 1600.0 => 0.25,
+                w if w >= 2100.0 => 0.25,
                 w if w >= 1200.0 => 1.0 / 3.0,
-                w if w >= 500.0 => 0.5,
+                w if w >= 800.0 => 0.5,
                 _ => 1.0,
             };
             grid * share
@@ -243,10 +428,11 @@ pub fn grid_card_width(window: f32, grid: f32, shape: Shape) -> f32 {
 }
 
 /// jellyfin-web's five placeholder colours for cards without artwork.
+/// `.defaultCardBackground1` … `5`, in order.
 const DEFAULT_BACKGROUNDS: [Color32; 5] = [
-    Color32::from_rgb(0x00, 0xa4, 0xdc),
-    Color32::from_rgb(0x44, 0xba, 0xe1),
     Color32::from_rgb(0x00, 0x45, 0x5c),
+    Color32::from_rgb(0x44, 0xba, 0xe1),
+    Color32::from_rgb(0x00, 0xa4, 0xdb),
     Color32::from_rgb(0x1c, 0x4c, 0x5c),
     Color32::from_rgb(0x00, 0x7e, 0xa8),
 ];
@@ -523,15 +709,7 @@ pub fn card(
                     // `.cardImageIcon { font-size: 5em }`, centred.
                     icons::paint_centered(&painter, icon, image.center(), 5.0 * EM, theme::JF_TEXT);
                 } else {
-                    let name = widgets::wrapped(
-                        ui,
-                        model.title,
-                        theme::bold(theme::JF_FONT * 1.4),
-                        Color32::WHITE,
-                        image.width() - 16.0,
-                        Some(3),
-                    );
-                    widgets::galley_centered(&painter, image, name);
+                    paint_default_text(ui, image, model.title);
                 }
             }
             // Still loading: the padder shows through.
@@ -738,7 +916,9 @@ pub fn section_title(
     paging: Option<(bool, bool)>,
     id: Id,
 ) -> i32 {
-    let baseline = if row.height() >= SECTION_TITLE_LINKED - 0.5 {
+    let baseline = if (row.height() - SECTION_HEADING).abs() < 0.01 {
+        SECTION_BASELINE_HEADING
+    } else if row.height() >= SECTION_TITLE_LINKED - 0.5 {
         SECTION_BASELINE_LINKED
     } else {
         SECTION_BASELINE
@@ -888,5 +1068,21 @@ mod tests {
         // row and a linked subtitle row, the bottom margin.
         let expected = 8.921875 + 273.444 * 0.5625 + TITLE_ROW_LINK + SECONDARY_ROW_LINK + 26.784;
         assert!((height - expected).abs() < 0.01);
+    }
+
+    #[test]
+    fn placeholder_colours_follow_jellyfin_classes() {
+        // "Apple TV": middle char 'e' (101) → 1+0+1 = 2 → class 3.
+        assert_eq!(
+            default_background("Apple TV"),
+            Color32::from_rgb(0x00, 0xa4, 0xdb)
+        );
+        // "Playlists": 'l' (108) → 9 → class 5.
+        assert_eq!(
+            default_background("Playlists"),
+            Color32::from_rgb(0x00, 0x7e, 0xa8)
+        );
+        // "HBO": 'B' (66) → 12 → 2 → class 3; "ABC": 'B' as well.
+        assert_eq!(default_background("HBO"), default_background("ABC"));
     }
 }

@@ -335,6 +335,7 @@ mod tests {
             shape: crate::features::pages::CardShape::Portrait,
             lines: 2,
             wrap: true,
+            title_style: crate::features::pages::TitleStyle::Auto,
             items,
         };
         let mut page = crate::features::pages::Page {

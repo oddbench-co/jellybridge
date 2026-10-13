@@ -14,11 +14,12 @@ use super::{
 };
 use crate::features::pages::{
     CardShape, FilterOptions, GridKind, GridPage, GridSettings, LibraryRef, LibraryTab, ListFilter,
-    ListQuery, PAGE_SIZE, PageContent, PageRoute, Shelf,
+    ListQuery, PAGE_SIZE, PageContent, PageRoute, Shelf, TitleStyle,
 };
 
 /// Cards per Genres-tab section, as jellyfin-web shows them.
 const GENRE_SECTION_LIMIT: &str = "9";
+const GENRE_SECTION_SIZE: usize = 9;
 /// Concurrent requests for one page's sections, so a library with thirty
 /// genres does not open thirty connections at once.
 const SECTION_CONCURRENCY: usize = 6;
@@ -345,14 +346,14 @@ impl JellyfinApi {
 
     async fn movie_suggestions(&self, library: &LibraryRef) -> Result<PageContent, ApiError> {
         let resume = self.resume_in(&library.id, "Movie");
-        let latest = self.latest_of(&library.id, "Movie");
+        let latest = self.latest_of(&library.id, "Movie", 18);
+        // jellyfin-web asks without a library: recommendations span them.
         let recommendations = self.send_json::<Vec<Recommendation>>(
             self.request(Method::GET, "Movies/Recommendations")?
                 .query(&[
                     ("UserId", self.session.user_id.as_str()),
-                    ("ParentId", library.id.as_str()),
                     ("categoryLimit", "6"),
-                    ("ItemLimit", "8"),
+                    ("ItemLimit", recommendation_limit()),
                     ("Fields", LIST_FIELDS),
                     ("EnableImageTypes", "Primary,Backdrop,Thumb"),
                     ("ImageTypeLimit", "1"),
@@ -360,14 +361,11 @@ impl JellyfinApi {
             "loading recommendations",
         );
         let (resume, latest, recommendations) = tokio::join!(resume, latest, recommendations);
+        // Every section wraps into rows; the first two are titled by a
+        // bare heading.
         let mut shelves = Vec::new();
-        shelves.extend(shelf_from_items(
-            resume,
-            "continue",
-            "Continue Watching",
-            CardShape::Backdrop,
-        ));
-        shelves.extend(shelf_from_items(
+        shelves.extend(continue_section(resume));
+        shelves.extend(suggestion_section(
             latest,
             "latest",
             "Recently Added Movies",
@@ -385,7 +383,8 @@ impl JellyfinApi {
                         link: None,
                         shape: CardShape::Portrait,
                         lines: 2,
-                        wrap: false,
+                        wrap: true,
+                        title_style: TitleStyle::Auto,
                         items: category.items.into_iter().map(Into::into).collect(),
                     });
                 }
@@ -397,7 +396,7 @@ impl JellyfinApi {
 
     async fn tv_suggestions(&self, library: &LibraryRef) -> Result<PageContent, ApiError> {
         let resume = self.resume_in(&library.id, "Episode");
-        let latest = self.latest_of(&library.id, "Episode");
+        let latest = self.latest_of(&library.id, "Episode", 30);
         let next_up_query = [
             ("UserId", self.session.user_id.as_str()),
             ("ParentId", library.id.as_str()),
@@ -406,20 +405,17 @@ impl JellyfinApi {
         ];
         let next_up = self.items_request("Shows/NextUp", &next_up_query, "loading next up");
         let (resume, latest, next_up) = tokio::join!(resume, latest, next_up);
+        // jellyfin-web's tvrecommended: every section wraps 16:9 cards
+        // under a bare heading.
         let mut shelves = Vec::new();
-        shelves.extend(shelf_from_items(
-            resume,
-            "continue",
-            "Continue Watching",
-            CardShape::Backdrop,
-        ));
-        shelves.extend(shelf_from_items(
+        shelves.extend(continue_section(resume));
+        shelves.extend(suggestion_section(
             latest,
             "latest",
             "Recently Added Episodes",
-            CardShape::Portrait,
+            CardShape::Backdrop,
         ));
-        shelves.extend(shelf_from_items(
+        shelves.extend(suggestion_section(
             next_up,
             "next-up",
             "Next Up",
@@ -428,24 +424,34 @@ impl JellyfinApi {
         Ok(PageContent::Shelves(shelves))
     }
 
+    /// A library's Continue Watching, asked for as jellyfin-web's library
+    /// pages ask: resumable items, most recently played first, five of them.
     async fn resume_in(&self, parent_id: &str, kind: &str) -> Result<Vec<LibraryItem>, ApiError> {
         self.items_request(
-            &format!(
-                "Users/{}/Items/Resume",
-                encode_path_segment(&self.session.user_id)
-            ),
+            &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
             &[
                 ("ParentId", parent_id),
                 ("IncludeItemTypes", kind),
-                ("Limit", "12"),
-                ("MediaTypes", "Video"),
+                ("Filters", "IsResumable"),
+                ("SortBy", "DatePlayed"),
+                ("SortOrder", "Descending"),
+                ("Recursive", "true"),
+                ("CollapseBoxSetItems", "false"),
+                ("Limit", "5"),
+                ("EnableTotalRecordCount", "false"),
             ],
             "loading continue watching",
         )
         .await
     }
 
-    async fn latest_of(&self, parent_id: &str, kind: &str) -> Result<Vec<LibraryItem>, ApiError> {
+    async fn latest_of(
+        &self,
+        parent_id: &str,
+        kind: &str,
+        limit: usize,
+    ) -> Result<Vec<LibraryItem>, ApiError> {
+        let limit = limit.to_string();
         self.send_json(
             self.request(
                 Method::GET,
@@ -461,7 +467,7 @@ impl JellyfinApi {
                 ("EnableUserData", "true"),
                 ("ImageTypeLimit", "1"),
                 ("EnableImageTypes", "Primary,Backdrop,Thumb"),
-                ("Limit", "18"),
+                ("Limit", limit.as_str()),
             ]),
             "loading latest media",
         )
@@ -521,8 +527,11 @@ impl JellyfinApi {
                     CardShape::Portrait,
                 )
                 .map(|shelf| Shelf {
-                    link: Some(link),
+                    // jellyfin-web links a genre only when it filled the
+                    // section; it does not ask how many there are.
+                    link: (shelf.items.len() >= GENRE_SECTION_SIZE).then_some(link),
                     wrap: true,
+                    title_style: TitleStyle::Tall,
                     ..shelf
                 })
             }
@@ -562,6 +571,7 @@ impl JellyfinApi {
                     shape: CardShape::Backdrop,
                     lines: 2,
                     wrap: true,
+                    title_style: TitleStyle::Auto,
                     items: vec![item.into()],
                 }),
             }
@@ -697,6 +707,7 @@ pub fn home_shelves(sections: Vec<CatalogSectionData>) -> Vec<Shelf> {
                 shape,
                 lines,
                 wrap: false,
+                title_style: TitleStyle::Auto,
                 items,
             }
         })
@@ -810,6 +821,7 @@ fn shelf_from_items(
             shape,
             lines: 2,
             wrap: false,
+            title_style: TitleStyle::Auto,
             items: items.into_iter().map(Into::into).collect(),
         }),
         Ok(_) => None,
@@ -818,6 +830,44 @@ fn shelf_from_items(
             None
         }
     }
+}
+
+/// Recommendation categories hold 8 items on wide windows, as on
+/// jellyfin-web (which decides by its window width).
+fn recommendation_limit() -> &'static str {
+    match crate::ui::window_width() {
+        width if width >= 1600.0 => "8",
+        width if width >= 1200.0 => "6",
+        _ => "5",
+    }
+}
+
+/// A library's Continue Watching: each card's own name over its year.
+fn continue_section(items: Result<Vec<LibraryItem>, ApiError>) -> Option<Shelf> {
+    suggestion_section(items, "continue", "Continue Watching", CardShape::Backdrop).map(
+        |mut shelf| {
+            shelf.items = shelf
+                .items
+                .into_iter()
+                .map(CatalogItemData::title_over_year)
+                .collect();
+            shelf
+        },
+    )
+}
+
+/// A Suggestions section: wrapped rows under a bare heading.
+fn suggestion_section(
+    items: Result<Vec<LibraryItem>, ApiError>,
+    id: &str,
+    title: &str,
+    shape: CardShape,
+) -> Option<Shelf> {
+    shelf_from_items(items, id, title, shape).map(|shelf| Shelf {
+        wrap: true,
+        title_style: TitleStyle::Heading,
+        ..shelf
+    })
 }
 
 /// "Tuesday, Oct 13", as jellyfin-web heads an Upcoming day.

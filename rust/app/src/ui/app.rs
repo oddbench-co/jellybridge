@@ -438,7 +438,7 @@ impl eframe::App for JellyBridgeApp {
         self.queue.drain(&mut self.state);
         let mut actions = std::mem::take(&mut self.state.deferred);
         if let Some(script) = self.input_script.as_mut() {
-            actions.extend(script.take_plays().into_iter().map(UiAction::PlayItem));
+            actions.extend(script.take_actions());
             for path in script.take_shots() {
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
@@ -450,6 +450,7 @@ impl eframe::App for JellyBridgeApp {
         self.report_render_error();
 
         let screen = ui.max_rect();
+        super::note_window_width(screen.width());
         if std::mem::take(&mut self.back_pending)
             && matches!(self.state.screen, Screen::Catalog | Screen::Detail)
             && !self.state.drawer_open
