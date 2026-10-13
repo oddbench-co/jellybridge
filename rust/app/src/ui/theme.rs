@@ -8,15 +8,6 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-/// `#rrggbbaa`, unmultiplied like the CSS-style colors it was written as.
-const fn rgba(hex: u32) -> Color32 {
-    Color32::from_rgba_unmultiplied_const(
-        (hex >> 24) as u8,
-        (hex >> 16) as u8,
-        (hex >> 8) as u8,
-        hex as u8,
-    )
-}
 
 // jellyfin-web dark theme (see docs/jellyfin-web-reference.md)
 pub const JF_BG: Color32 = rgb(0x101010); // page ground
@@ -50,7 +41,6 @@ pub const BORDER_STRONG: Color32 = rgb(0x52666f); // emphasized outlines, icons
 pub const TEXT_BRIGHT: Color32 = rgb(0xffffff); // buttons, hero titles
 pub const TEXT_PRIMARY: Color32 = rgb(0xf5f8f9); // headings, body
 pub const TEXT_SECONDARY: Color32 = rgb(0xc8d1d5); // supporting copy
-pub const TEXT_MUTED: Color32 = rgb(0xaeb8bd); // labels, captions
 
 // Accent (Jellyfin blue)
 pub const ACCENT: Color32 = rgb(0x00a4dc);
@@ -63,20 +53,15 @@ pub const DANGER_TEXT: Color32 = rgb(0xffb1b1);
 
 // Player
 pub const VIDEO_BG: Color32 = rgb(0x050607); // letterbox behind video
-pub const SCRIM: Color32 = rgb(0x000000); // use with `with_alpha`
-pub const OVERLAY: Color32 = rgba(0x171e21e5); // floating player chrome
 
 // Radii
 pub const RADIUS_SMALL: f32 = 6.0;
 pub const RADIUS_MEDIUM: f32 = 8.0;
-pub const RADIUS_LARGE: f32 = 12.0;
 
 // Type scale
 pub const FONT_CAPTION: f32 = 11.0;
-pub const FONT_BODY: f32 = 12.0;
 pub const FONT_BODY_LARGE: f32 = 13.0;
 pub const FONT_SUBTITLE: f32 = 14.0;
-pub const FONT_TITLE: f32 = 16.0;
 pub const FONT_HEADING: f32 = 21.0;
 
 /// `color` at `alpha` (0–1) opacity, keeping its hue.

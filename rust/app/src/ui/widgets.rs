@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use egui::epaint::{RectShape, Shadow};
+use egui::epaint::RectShape;
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
     Color32, CornerRadius, CursorIcon, FontId, Galley, Id, Mesh, Painter, Pos2, Rect, Response,
@@ -65,14 +65,6 @@ pub fn galley_centered(painter: &Painter, rect: Rect, galley: Arc<Galley>) {
         galley,
         Color32::WHITE,
     );
-}
-
-/// Paints a galley at `rect.min` (top-left aligned).
-pub fn galley_at(painter: &Painter, min: Pos2, galley: Arc<Galley>) -> Rect {
-    let min = pos2(min.x, snap_text_y(painter, min.y));
-    let rect = Rect::from_min_size(min, galley.size());
-    painter.galley(min, galley, Color32::WHITE);
-    rect
 }
 
 /// Distance from a galley's top to its first line's baseline.
@@ -184,24 +176,6 @@ pub fn image_contain(painter: &Painter, texture: TextureId, texture_size: [usize
         Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)),
         Color32::WHITE,
     );
-}
-
-/// A soft drop shadow under a rounded rect, like `drop-shadow-*` in CSS.
-pub fn drop_shadow(
-    painter: &Painter,
-    rect: Rect,
-    radius: f32,
-    blur: f32,
-    offset_y: f32,
-    color: Color32,
-) {
-    let shadow = Shadow {
-        offset: [0, offset_y.round().clamp(-127.0, 127.0) as i8],
-        blur: blur.round().clamp(0.0, 255.0) as u8,
-        spread: 0,
-        color,
-    };
-    painter.add(shadow.as_shape(rect, radius));
 }
 
 /// A rect filled with a top-to-bottom gradient (square corners).

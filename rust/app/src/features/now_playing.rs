@@ -7,9 +7,19 @@ use crate::features::detail::DetailItemData;
 
 /// How long before the end Up Next appears when the item has no outro
 /// segment, and the share of a short item's runtime used instead.
-const UP_NEXT_LEAD_SECONDS: f64 = 30.0;
-const SHORT_ITEM_SECONDS: f64 = 300.0;
-const SHORT_ITEM_LEAD_SHARE: f64 = 0.1;
+/// jellyfin-web shows Up Next this long before the end: 30 s, 35 s from
+/// 40 minutes, 40 s from 50 minutes; never for items under 10 minutes
+/// (unless their credits are marked).
+fn up_next_lead(duration: f64) -> f64 {
+    if duration >= 50.0 * 60.0 {
+        40.0
+    } else if duration >= 40.0 * 60.0 {
+        35.0
+    } else {
+        30.0
+    }
+}
+const UP_NEXT_MIN_RUNTIME: f64 = 10.0 * 60.0;
 /// Past this point "previous" restarts the item instead of going back, as
 /// in Jellyfin's player.
 const RESTART_THRESHOLD_SECONDS: f64 = 5.0;
@@ -164,9 +174,14 @@ pub struct SkipPrompt {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UpNext {
+    /// jellyfin-web's "Series - S1:E2 - Name".
     pub title: String,
-    pub subtitle: String,
+    /// The next item's media info row.
+    pub info: Vec<crate::ui::detail::MiscItem>,
     pub seconds_left: f64,
+    pub episode: bool,
+    /// Whether it will play by itself (else the card is static).
+    pub autoplay: bool,
 }
 
 /// The floating player UI for one position: at most one skip button and the
@@ -187,6 +202,10 @@ pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverl
     let auto_skip = current
         .filter(|segment| now.behaviour.action(segment.kind) == SegmentAction::Skip)
         .map(|segment| segment.end);
+    // An outro running to the end gives way to Up Next when there is one.
+    let ends_into_next = |segment: &MediaSegment| {
+        segment.end >= duration - 1.0 && now.next.is_some() && now.behaviour.up_next
+    };
     let skip = current
         .filter(|segment| now.behaviour.action(segment.kind) == SegmentAction::AskToSkip)
         .and_then(|segment| {
@@ -195,8 +214,7 @@ pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverl
                 SegmentKind::Recap => "Skip Recap",
                 SegmentKind::Preview => "Skip Preview",
                 SegmentKind::Commercial => "Skip Commercial",
-                // With a next episode, Up Next takes the credits' place.
-                SegmentKind::Outro if now.next.is_none() => "Skip Credits",
+                SegmentKind::Outro if !ends_into_next(segment) => "Skip Outro",
                 SegmentKind::Outro | SegmentKind::Unknown => return None,
             };
             Some(SkipPrompt {
@@ -210,9 +228,11 @@ pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverl
         .filter(|_| now.behaviour.up_next && !now.up_next_dismissed && duration > 0.0)
         .filter(|_| up_next_start(now, duration).is_some_and(|start| position >= start))
         .map(|next| UpNext {
-            title: next.title.clone(),
-            subtitle: episode_number(next),
+            title: display_name(next),
+            info: crate::ui::detail::misc_items(next, false),
             seconds_left: (duration - position).max(0.0),
+            episode: next.kind == crate::features::detail::DetailKind::Episode,
+            autoplay: now.behaviour.autoplay,
         });
     PlayerOverlay {
         skip,
@@ -221,31 +241,33 @@ pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverl
     }
 }
 
-/// When the Up Next card appears: at the credits if the server knows where
-/// they are, otherwise a fixed lead before the end.
+/// When the Up Next card appears: at credits that run to the end if the
+/// server knows them, otherwise jellyfin-web's lead before the end.
 fn up_next_start(now: &NowPlaying, duration: f64) -> Option<f64> {
     let outro = now
         .segments
         .iter()
-        .filter(|segment| segment.kind == SegmentKind::Outro && segment.start > 0.0)
+        .filter(|segment| segment.kind == SegmentKind::Outro && segment.end >= duration - 1.0)
         .map(|segment| segment.start)
         .reduce(f64::min);
     if let Some(start) = outro {
         return Some(start);
     }
-    let lead = if duration < SHORT_ITEM_SECONDS {
-        duration * SHORT_ITEM_LEAD_SHARE
-    } else {
-        UP_NEXT_LEAD_SECONDS
-    };
-    Some((duration - lead).max(0.0))
+    (duration >= UP_NEXT_MIN_RUNTIME).then(|| duration - up_next_lead(duration))
 }
 
-fn episode_number(item: &DetailItemData) -> String {
-    match (item.parent_index_number, item.index_number) {
-        (Some(season), Some(episode)) => format!("S{season}:E{episode}"),
-        (None, Some(episode)) => format!("E{episode}"),
-        _ => item.series_name.clone().unwrap_or_default(),
+/// jellyfin-web's name for an item with its series: "Series - S1:E2 - Name".
+fn display_name(item: &DetailItemData) -> String {
+    let number = match (item.parent_index_number, item.index_number) {
+        _ if item.kind != crate::features::detail::DetailKind::Episode => String::new(),
+        (Some(season), Some(episode)) => format!("S{season}:E{episode} - "),
+        (None, Some(episode)) => format!("E{episode} - "),
+        _ => String::new(),
+    };
+    let name = format!("{number}{}", item.title);
+    match item.series_name.as_deref().filter(|series| !series.is_empty()) {
+        Some(series) => format!("{series} - {name}"),
+        None => name,
     }
 }
 
@@ -345,7 +367,13 @@ mod tests {
             overlay_at(&playing(outro.clone(), false), 1410.0, 1500.0)
                 .skip
                 .map(|skip| skip.label),
-            Some("Skip Credits")
+            Some("Skip Outro")
+        );
+        // Credits that stop before the end are skippable either way.
+        let early = vec![segment(SegmentKind::Outro, 1300.0, 1400.0)];
+        assert_eq!(
+            overlay_at(&playing(early, true), 1310.0, 1500.0).skip.map(|skip| skip.label),
+            Some("Skip Outro")
         );
         let with_next = overlay_at(&playing(outro, true), 1410.0, 1500.0);
         assert_eq!(with_next.skip, None);
@@ -357,17 +385,19 @@ mod tests {
         let now = playing(vec![segment(SegmentKind::Outro, 1400.0, 1500.0)], true);
         assert!(overlay_at(&now, 1399.0, 1500.0).up_next.is_none());
         let up_next = overlay_at(&now, 1400.0, 1500.0).up_next.unwrap();
-        assert_eq!(up_next.title, "Episode next");
-        assert_eq!(up_next.subtitle, "S2:E1");
+        assert_eq!(up_next.title, "S2:E1 - Episode next");
+        assert!(up_next.episode);
         assert_eq!(up_next.seconds_left, 100.0);
 
+        // jellyfin-web's lead: 30 s, 35 s from 40 minutes, 40 s from 50.
         let now = playing(Vec::new(), true);
         assert!(overlay_at(&now, 1469.0, 1500.0).up_next.is_none());
         assert!(overlay_at(&now, 1470.0, 1500.0).up_next.is_some());
+        assert!(overlay_at(&now, 2962.5, 3003.0).up_next.is_none());
+        assert!(overlay_at(&now, 2963.5, 3003.0).up_next.is_some());
 
-        // A short item uses a share of its runtime instead.
-        assert!(overlay_at(&now, 170.0, 200.0).up_next.is_none());
-        assert!(overlay_at(&now, 180.0, 200.0).up_next.is_some());
+        // Never for items under ten minutes.
+        assert!(overlay_at(&now, 195.0, 200.0).up_next.is_none());
     }
 
     #[test]

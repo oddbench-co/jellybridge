@@ -3,11 +3,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Ui, pos2, vec2};
+use egui::{Color32, CursorIcon, Id, Rect, Sense, Ui, pos2, vec2};
 
 use super::app::UiAction;
 use super::jf;
-use super::icons::Icon;
+use super::icons::{self, Icon};
 use super::player_hotkeys::{
     PLAYBACK_SPEEDS, PlayerHotkeyAction, PlayerUiState, chapter_target, key_text, next_track_index,
     resolve_player_hotkey, speed_index, stepped_speed,
@@ -80,8 +80,10 @@ pub struct ChapterMarker {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UpNext {
     pub title: String,
-    pub subtitle: String,
+    pub info: Vec<super::detail::MiscItem>,
     pub countdown: i32,
+    pub episode: bool,
+    pub autoplay: bool,
 }
 
 /// What the player screen shows, plus the chrome's own state.
@@ -105,6 +107,9 @@ pub struct PlayerVm {
     pub has_next: bool,
     pub skip_label: String,
     pub skip_target: f64,
+    /// When the current skip prompt appeared: jellyfin-web hides it after
+    /// 8 s unless the controls are up.
+    pub skip_since: Option<f64>,
     /// The user's skip lengths (Playback settings), in seconds.
     pub skip_back: f64,
     pub skip_forward: f64,
@@ -158,6 +163,7 @@ impl Default for PlayerVm {
             has_next: false,
             skip_label: String::new(),
             skip_target: 0.0,
+            skip_since: None,
             skip_back: 10.0,
             skip_forward: 30.0,
             up_next: None,
@@ -357,18 +363,27 @@ pub fn present_player_loading(context: &AppContext) {
 
 /// Shows or clears the skip-segment button and the Up Next card.
 pub fn apply_player_overlay(state: &mut UiState, overlay: &PlayerOverlay) {
+    let now = state.ctx.input(|input| input.time);
     let player = &mut state.player;
     match &overlay.skip {
         Some(skip) => {
+            if player.skip_label != skip.label || player.skip_since.is_none() {
+                player.skip_since = Some(now);
+            }
             player.skip_label = skip.label.to_owned();
             player.skip_target = skip.target;
         }
-        None => player.skip_label.clear(),
+        None => {
+            player.skip_label.clear();
+            player.skip_since = None;
+        }
     }
     player.up_next = overlay.up_next.as_ref().map(|up_next| UpNext {
         title: up_next.title.clone(),
-        subtitle: up_next.subtitle.clone(),
-        countdown: up_next.seconds_left.ceil() as i32,
+        info: up_next.info.clone(),
+        countdown: up_next.seconds_left.round() as i32,
+        episode: up_next.episode,
+        autoplay: up_next.autoplay,
     });
 }
 
@@ -1028,7 +1043,9 @@ fn draw_timeline(
         player.timeline_position = hover_time;
         player.activity(now);
     }
-    if (response.drag_stopped() || response.clicked()) && player.scrubbing {
+    // A click seeks even when its press and release came in one frame, so
+    // no scrub began.
+    if response.clicked() || (response.drag_stopped() && player.scrubbing) {
         player.activity(now);
         if response.clicked() {
             player.timeline_position = hover_time;
@@ -1212,8 +1229,7 @@ fn draw_playback_info(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &
     }
 }
 
-/// Skip Intro / Recap / Credits and the Up Next card. Both stay up while the
-/// chrome is hidden, as in Jellyfin, and slide above the chrome when it shows.
+/// jellyfin-web's skip-segment button and Up Next card.
 fn draw_floating(
     ui: &mut Ui,
     state: &mut UiState,
@@ -1221,178 +1237,133 @@ fn draw_floating(
     now: f64,
     actions: &mut Vec<UiAction>,
 ) {
-    let lift = ui.ctx().animate_value_with_time(
-        Id::new("player-floating-lift"),
-        if state.player.controls_visible() {
-            OSD_BOTTOM - OSD_CONTROLS_TOP + 16.0
-        } else {
-            40.0
-        },
-        0.22,
-    );
     let painter = ui.painter().clone();
-    if let Some(up_next) = state.player.up_next.clone() {
-        let width = 340.0;
-        let inner = width - 32.0;
-        let title = widgets::elided(
-            ui,
-            &up_next.title,
-            theme::bold(theme::FONT_TITLE),
-            theme::TEXT_BRIGHT,
-            inner,
-        );
-        let subtitle = (!up_next.subtitle.is_empty()).then(|| {
-            widgets::elided(
-                ui,
-                &up_next.subtitle,
-                theme::regular(theme::FONT_BODY),
-                theme::TEXT_SECONDARY,
-                inner,
-            )
-        });
-        let countdown = if up_next.countdown > 0 {
-            format!("Starting in {} s", up_next.countdown)
-        } else {
-            "Starting…".to_owned()
-        };
-        let height = 16.0
-            + 15.0
-            + 6.0
-            + title.size().y
-            + subtitle.as_ref().map_or(0.0, |line| 6.0 + line.size().y)
-            + 6.0
-            + 15.0
-            + 6.0
-            + 6.0
-            + 36.0
-            + 16.0;
-        let card = Rect::from_min_size(
-            pos2(
-                screen.right() - width - 32.0,
-                screen.bottom() - height - lift,
-            ),
-            vec2(width, height),
-        );
-        ui.interact(card, Id::new("player-up-next"), Sense::click());
-        widgets::drop_shadow(
-            &painter,
-            card,
-            theme::RADIUS_LARGE,
-            16.0,
-            0.0,
-            theme::with_alpha(theme::SCRIM, 0.5),
-        );
-        painter.rect_filled(card, theme::RADIUS_LARGE, theme::OVERLAY);
-        let mut y = card.top() + 16.0;
-        let left = card.left() + 16.0;
-        painter.text(
-            pos2(left, y),
-            Align2::LEFT_TOP,
-            "Up Next",
-            theme::bold(theme::FONT_BODY),
-            theme::ACCENT_BRIGHT,
-        );
-        y += 15.0 + 6.0;
-        y = widgets::galley_at(&painter, pos2(left, y), title).bottom() + 6.0;
-        if let Some(subtitle) = subtitle {
-            y = widgets::galley_at(&painter, pos2(left, y), subtitle).bottom() + 6.0;
-        }
-        painter.text(
-            pos2(left, y),
-            Align2::LEFT_TOP,
-            countdown,
-            theme::regular(theme::FONT_BODY),
-            theme::TEXT_MUTED,
-        );
-        y += 15.0 + 12.0;
-        let half = (inner - 8.0) / 2.0;
-        let play_now = Rect::from_min_size(pos2(left, y), vec2(half, 36.0));
-        let hide = Rect::from_min_size(pos2(left + half + 8.0, y), vec2(half, 36.0));
-        let play_response = ui.interact(play_now, Id::new("up-next-play"), Sense::click());
-        widgets::describe_button(&play_response, true, "Play now");
-        painter.rect_filled(
-            play_now,
-            theme::RADIUS_SMALL,
-            if play_response.hovered() {
-                theme::ACCENT_BRIGHT
-            } else {
-                theme::ACCENT
-            },
-        );
-        painter.text(
-            play_now.center(),
-            Align2::CENTER_CENTER,
-            "Play now",
-            theme::bold(theme::FONT_BODY_LARGE),
-            theme::TEXT_BRIGHT,
-        );
-        widgets::pointer_on_hover(&play_response);
-        let hide_response = ui.interact(hide, Id::new("up-next-hide"), Sense::click());
-        widgets::describe_button(&hide_response, true, "Hide");
-        painter.rect_filled(
-            hide,
-            theme::RADIUS_SMALL,
-            if hide_response.hovered() {
-                theme::SURFACE_HOVER
-            } else {
-                theme::SURFACE_RAISED
-            },
-        );
-        painter.text(
-            hide.center(),
-            Align2::CENTER_CENTER,
-            "Hide",
-            theme::regular(theme::FONT_BODY_LARGE),
-            theme::TEXT_PRIMARY,
-        );
-        widgets::pointer_on_hover(&hide_response);
-        if play_response.clicked() {
-            state.player.activity(now);
-            actions.push(UiAction::PlayNext);
-        }
-        if hide_response.clicked() {
-            state.player.activity(now);
-            actions.push(UiAction::DismissUpNext);
-        }
-    } else if !state.player.skip_label.is_empty() {
-        let label = widgets::elided(
-            ui,
-            &state.player.skip_label,
-            theme::bold(theme::FONT_SUBTITLE),
-            theme::BG,
-            300.0,
-        );
-        let width = label.size().x + 40.0;
+    // The skip button: shown as its segment starts, for 8 s or while the
+    // controls are up, fading in and out over 0.2 s.
+    let skip_visible = !state.player.skip_label.is_empty()
+        && (state.player.controls_visible()
+            || state.player.skip_since.is_some_and(|since| now - since < 8.0));
+    if let Some(since) = state.player.skip_since
+        && !state.player.controls_visible()
+        && now - since < 8.0
+    {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(8.0 - (now - since)));
+    }
+    let skip_opacity = ui.ctx().animate_bool_with_time(Id::new("player-skip-fade"), skip_visible, 0.2);
+    if skip_opacity > 0.0 && !state.player.skip_label.is_empty() {
+        let font = 1.2 * OSD_FONT;
+        let color = theme::with_alpha(Color32::WHITE, 0.87 * skip_opacity);
+        let galley = painter.layout_no_wrap(state.player.skip_label.clone(), theme::bold(font), color);
+        let size = vec2(20.0 + galley.size().x + 3.0 + 24.0 + 20.0, 24.0 + 1.35 * font);
         let button = Rect::from_min_size(
-            pos2(screen.right() - width - 32.0, screen.bottom() - 44.0 - lift),
-            vec2(width, 44.0),
+            pos2(screen.right() - 96.0 - size.x, screen.bottom() - 128.0 - 0.3 * font - size.y),
+            size,
         );
         let response = ui.interact(button, Id::new("player-skip"), Sense::click());
         widgets::describe_button(&response, true, &state.player.skip_label);
-        widgets::drop_shadow(
+        painter.rect_filled(button, 0.2 * font, Color32::from_gray(48).gamma_multiply(skip_opacity));
+        let text_width = galley.size().x;
+        widgets::galley_on_baseline(
             &painter,
-            button,
-            22.0,
-            12.0,
-            0.0,
-            theme::with_alpha(theme::SCRIM, 0.5),
+            button.left() + 20.0,
+            jf::baseline(button.top() + 12.0, font, 1.35 * font),
+            galley,
         );
-        let fill = if response.hovered() {
-            theme::TEXT_BRIGHT
-        } else {
-            theme::with_alpha(theme::TEXT_BRIGHT, 0.9)
-        };
-        painter.rect_filled(button, 22.0, fill);
-        widgets::galley_centered(&painter, button, label);
+        icons::paint_centered(
+            &painter,
+            Icon::SkipNext,
+            pos2(button.left() + 20.0 + text_width + 3.0 + 12.0, button.center().y),
+            24.0,
+            color,
+        );
         widgets::pointer_on_hover(&response);
-        if response.clicked() {
+        if response.clicked() && skip_visible {
             state.player.activity(now);
             actions.push(UiAction::SeekAbsolute(state.player.skip_target));
         }
     }
+
+    // Up Next: a translucent card at the bottom right, fading over 0.3 s.
+    let up_next = state.player.up_next.clone();
+    let opacity = ui.ctx().animate_bool_with_time(Id::new("player-up-next-fade"), up_next.is_some(), 0.3);
+    let Some(up_next) = up_next else { return };
+    let em = OSD_FONT;
+    let content = 30.0 * em;
+    let h2 = 1.5 * em;
+    let h3 = 1.17 * em;
+    let misc = super::detail::misc_layout(ui, &up_next.info);
+    let misc_height = misc.as_ref().map_or(0.0, |(_, height)| *height);
+    let button_height = 46.87;
+    let height = em
+        + 0.25 * h2 + 30.13 + 0.25 * h2
+        + 0.25 * h3 + 23.5 + 0.5 * h3
+        + misc_height
+        + em + 0.3 * em + button_height + 0.3 * em
+        + em;
+    let card = Rect::from_min_size(
+        pos2(screen.right() - 2.0 * em - content - 2.0 * em, screen.bottom() - 2.0 * em - height),
+        vec2(content + 2.0 * em, height),
+    );
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(screen));
+    ui.multiply_opacity(opacity);
+    let painter = ui.painter().clone();
+    ui.interact(card, Id::new("player-up-next"), Sense::click());
+    painter.rect_filled(card, 0.0, Color32::from_black_alpha(179));
+    let left = card.left() + em;
+    let mut y = card.top() + em + 0.25 * h2;
+    // "Next Episode Playing in 12 Seconds", the count in the accent; a
+    // static "Next Episode" when it will not play by itself.
+    let noun = if up_next.episode { "Episode" } else { "Video" };
+    let mut job = egui::text::LayoutJob::default();
+    let format = |color| egui::TextFormat::simple(theme::regular(h2), color);
+    if up_next.autoplay {
+        job.append(&format!("Next {noun} Playing in "), 0.0, format(Color32::WHITE));
+        job.append(&format!("{} Seconds", up_next.countdown.max(0)), 0.0, format(theme::JF_ACCENT));
+    } else {
+        job.append(&format!("Next {noun}"), 0.0, format(Color32::WHITE));
+    }
+    let heading = painter.layout_job(job);
+    widgets::galley_on_baseline(&painter, left, jf::baseline(y, h2, 30.13), heading);
+    y += 30.13 + 0.25 * h2 + 0.25 * h3;
+    let title = widgets::elided(&ui, &up_next.title, theme::regular(h3), Color32::WHITE, 25.5 * em);
+    widgets::galley_on_baseline(&painter, left, jf::baseline(y, h3, 23.5), title);
+    y += 23.5 + 0.5 * h3;
+    if let Some((pieces, misc_height)) = misc {
+        super::detail::draw_misc(&painter, pieces, pos2(left, y), misc_height, left + content);
+        y += misc_height;
+    }
+    y += em + 0.3 * em;
+    // The buttons sit at the right of a 29.75em row.
+    let mut right = left + 29.75 * em - 0.3 * em;
+    let mut clicked = [false; 2];
+    for (index, label) in ["Hide", "Start Now"].into_iter().enumerate() {
+        let galley = painter.layout_no_wrap(label.to_owned(), theme::bold(em), Color32::WHITE);
+        let width = galley.size().x + 2.0 * em;
+        let rect = Rect::from_min_size(pos2(right - width, y), vec2(width, button_height));
+        right = rect.left() - 0.6 * em;
+        let response = ui.interact(rect, Id::new(("up-next-button", label)), Sense::click());
+        widgets::describe_button(&response, true, label);
+        let fill = if response.hovered() { Color32::from_gray(0x50) } else { Color32::from_gray(0x40) };
+        painter.rect_filled(rect, 0.2 * em, fill);
+        widgets::galley_on_baseline(
+            &painter,
+            rect.left() + em,
+            jf::baseline(rect.top() + 0.9 * em, em, 1.35 * em),
+            galley,
+        );
+        widgets::pointer_on_hover(&response);
+        clicked[index] = response.clicked();
+    }
+    if clicked[1] {
+        state.player.activity(now);
+        actions.push(UiAction::PlayNext);
+    }
+    if clicked[0] {
+        state.player.activity(now);
+        actions.push(UiAction::DismissUpNext);
+    }
 }
 
-/// The open pop-up menu, over a full-window catcher that closes it.
 /// The OSD's menus, as jellyfin-web's action sheets on the button that
 /// opened them: Settings (with each setting's value), its speed, aspect and
 /// repeat lists, and the titled audio and subtitle lists.

@@ -337,17 +337,19 @@ fn detail_vm(page: &DetailPageData, tracks: &crate::app::DetailTrackSelection) -
         subtitle_options,
         audio_index: tracks.audio_index,
         subtitle_index: tracks.subtitle_index,
-        misc: misc_items(page),
+        misc: misc_items(&page.item, true),
         has_trailer: item.local_trailers > 0 || !item.trailer_urls.is_empty(),
     }
 }
 
-/// The info row jellyfin-web shows under a detail page's title.
-fn misc_items(page: &DetailPageData) -> Vec<MiscItem> {
-    let item = &page.item;
+/// The info row jellyfin-web shows under a detail page's title (its
+/// getPrimaryMediaInfoHtml); `air_date` false leaves an episode's air date
+/// out, as the Up Next card asks.
+pub(crate) fn misc_items(item: &DetailItemData, air_date: bool) -> Vec<MiscItem> {
     let mut misc = Vec::new();
     match item.kind {
         DetailKind::Season => return misc,
+        DetailKind::Episode if !air_date => {}
         DetailKind::Episode => {
             if let Some(date) = item.premiere_date.map(format_air_date) {
                 misc.push(MiscItem::Text(date));
@@ -960,7 +962,7 @@ fn draw_ribbon(
 }
 
 /// One laid-out item of the info row.
-enum MiscPiece {
+pub(crate) enum MiscPiece {
     Text(std::sync::Arc<egui::Galley>),
     Badge(std::sync::Arc<egui::Galley>),
     Stars(std::sync::Arc<egui::Galley>),
@@ -969,7 +971,7 @@ enum MiscPiece {
 
 /// The info row's items and its height (the tallest item: text 1.35em,
 /// the rating badge 0.92em text padded 0.22em, a 1.4em star).
-fn misc_layout(ui: &Ui, misc: &[MiscItem]) -> Option<(Vec<MiscPiece>, f32)> {
+pub(crate) fn misc_layout(ui: &Ui, misc: &[MiscItem]) -> Option<(Vec<MiscPiece>, f32)> {
     if misc.is_empty() {
         return None;
     }
@@ -1012,7 +1014,7 @@ fn misc_layout(ui: &Ui, misc: &[MiscItem]) -> Option<(Vec<MiscPiece>, f32)> {
 
 /// `.itemMiscInfo`: items 1em apart (the badge 1em of its own size),
 /// vertically centred in the row.
-fn draw_misc(
+pub(crate) fn draw_misc(
     painter: &egui::Painter,
     pieces: Vec<MiscPiece>,
     origin: egui::Pos2,
@@ -2652,17 +2654,6 @@ fn format_air_date((year, month, day): (i32, u32, u32)) -> String {
 mod tests {
     use super::*;
 
-    fn page(item: DetailItemData) -> DetailPageData {
-        DetailPageData {
-            item,
-            seasons: Vec::new(),
-            episodes: Vec::new(),
-            similar: Vec::new(),
-            sections: Vec::new(),
-            children_error: None,
-        }
-    }
-
     #[test]
     fn an_episode_info_row_leads_with_the_air_date_like_jellyfin() {
         let mut episode = DetailItemData::fixture("episode", DetailKind::Episode);
@@ -2673,7 +2664,7 @@ mod tests {
         episode.community_rating = Some(8.24);
         episode.playable = false;
         assert_eq!(
-            misc_items(&page(episode.clone())),
+            misc_items(&episode.clone(), true),
             [
                 MiscItem::Text("1/31/2026".into()),
                 MiscItem::Text("45m".into()),
@@ -2682,7 +2673,7 @@ mod tests {
             ]
         );
         episode.premiere_date = None;
-        assert_eq!(misc_items(&page(episode))[0], MiscItem::Text("2026".into()));
+        assert_eq!(misc_items(&episode, true)[0], MiscItem::Text("2026".into()));
     }
 
     #[test]
@@ -2693,7 +2684,7 @@ mod tests {
         series.series_continuing = true;
         series.critic_rating = Some(91.4);
         assert_eq!(
-            misc_items(&page(series.clone())),
+            misc_items(&series.clone(), true),
             [
                 MiscItem::Text("2019 - Present".into()),
                 MiscItem::Critic(91)
@@ -2702,18 +2693,18 @@ mod tests {
         series.series_continuing = false;
         series.end_year = Some(2022);
         assert_eq!(
-            misc_items(&page(series.clone()))[0],
+            misc_items(&series.clone(), true)[0],
             MiscItem::Text("2019 - 2022".into())
         );
         series.end_year = Some(2019);
-        assert_eq!(misc_items(&page(series))[0], MiscItem::Text("2019".into()));
+        assert_eq!(misc_items(&series, true)[0], MiscItem::Text("2019".into()));
     }
 
     #[test]
     fn a_season_has_no_info_row() {
         let mut season = DetailItemData::fixture("season", DetailKind::Season);
         season.production_year = Some(2025);
-        assert!(misc_items(&page(season)).is_empty());
+        assert!(misc_items(&season, true).is_empty());
     }
 
     #[test]
