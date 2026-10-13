@@ -8,7 +8,6 @@ const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
 }
 
-
 // jellyfin-web dark theme (see docs/jellyfin-web-reference.md)
 pub const JF_BG: Color32 = rgb(0x101010); // page ground
 pub const JF_HEADER: Color32 = rgb(0x202020); // header bar

@@ -91,7 +91,11 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         LoginStep::SignIn => false,
         LoginStep::ForgotPassword | LoginStep::ForgotPin => true,
     };
-    let height = if back { metrics.height } else { 2.0 * 0.8 * EM + LOGO_HEIGHT };
+    let height = if back {
+        metrics.height
+    } else {
+        2.0 * 0.8 * EM + LOGO_HEIGHT
+    };
     let header = Rect::from_min_size(screen.min, vec2(screen.width(), height));
     // "Please sign in" has a 40% black header over the page; the other
     // sign-in pages the usual one.
@@ -106,7 +110,10 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         && jf::round_icon_button(
             ui,
             Rect::from_min_size(
-                pos2(screen.left() + metrics.inset + jf::HEADER_MARGIN, header.center().y - jf::HEADER_BUTTON / 2.0),
+                pos2(
+                    screen.left() + metrics.inset + jf::HEADER_MARGIN,
+                    header.center().y - jf::HEADER_BUTTON / 2.0,
+                ),
                 vec2(jf::HEADER_BUTTON, jf::HEADER_BUTTON),
             ),
             Icon::ArrowBack,
@@ -131,7 +138,11 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             pos2(
                 screen.left()
                     + metrics.inset
-                    + if back { 2.0 * jf::HEADER_MARGIN + jf::HEADER_BUTTON } else { 0.0 }
+                    + if back {
+                        2.0 * jf::HEADER_MARGIN + jf::HEADER_BUTTON
+                    } else {
+                        0.0
+                    }
                     + 0.5 * 17.41,
                 header.center().y - height / 2.0,
             ),
@@ -171,8 +182,24 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
 
     match form.step {
         LoginStep::AddServer => {
-            let host = input(ui, left, &mut y, width, "Host", &mut form.server, false, busy, "server");
-            y += help(ui, left, y, width, "192.168.1.100:8096 or https://myserver.com");
+            let host = input(
+                ui,
+                left,
+                &mut y,
+                width,
+                "Host",
+                &mut form.server,
+                false,
+                busy,
+                "server",
+            );
+            y += help(
+                ui,
+                left,
+                y,
+                width,
+                "192.168.1.100:8096 or https://myserver.com",
+            );
             let enter = host.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             y += 50.57;
             if (button(ui, left, y, width, "Connect", true, "connect") || enter)
@@ -191,9 +218,29 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             }
         }
         LoginStep::SignIn => {
-            let user = input(ui, left, &mut y, width, "User", &mut form.username, false, busy, "username");
+            let user = input(
+                ui,
+                left,
+                &mut y,
+                width,
+                "User",
+                &mut form.username,
+                false,
+                busy,
+                "username",
+            );
             y += lu(1.8 * EM);
-            let password = input(ui, left, &mut y, width, "Password", &mut form.password, true, busy, "password");
+            let password = input(
+                ui,
+                left,
+                &mut y,
+                width,
+                "Password",
+                &mut form.password,
+                true,
+                busy,
+                "password",
+            );
             y += lu(1.8 * EM);
             // "Remember Me".
             let row = Rect::from_min_size(pos2(left, y), vec2(width, 34.95));
@@ -202,14 +249,27 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             let check = Rect::from_min_size(pos2(left, y + 3.0), vec2(27.22, 27.22));
             if form.remember {
                 ui.painter().rect_filled(check, 2.08, theme::JF_ACCENT);
-                icons::paint_centered(ui.painter(), Icon::Check, check.center(), 23.8, Color32::WHITE);
+                icons::paint_centered(
+                    ui.painter(),
+                    Icon::Check,
+                    check.center(),
+                    23.8,
+                    Color32::WHITE,
+                );
             } else {
                 widgets::border(ui.painter(), check, 2.08, 2.0, jf::TEXT_80);
             }
-            let label = ui
-                .painter()
-                .layout_no_wrap("Remember Me".to_owned(), theme::regular(EM), jf::TEXT_80);
-            widgets::galley_on_baseline(ui.painter(), left + lu(2.4 * EM), jf::baseline(y + 7.43, EM, lu(1.35 * EM)), label);
+            let label = ui.painter().layout_no_wrap(
+                "Remember Me".to_owned(),
+                theme::regular(EM),
+                jf::TEXT_80,
+            );
+            widgets::galley_on_baseline(
+                ui.painter(),
+                left + lu(2.4 * EM),
+                jf::baseline(y + 7.43, EM, lu(1.35 * EM)),
+                label,
+            );
             widgets::pointer_on_hover(&response);
             if response.clicked() {
                 form.remember = !form.remember;
@@ -227,7 +287,16 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
                 });
             }
             y += BUTTON + 7.43;
-            if button(ui, left, y, width, "Use Quick Connect", false, "quick-connect") && !busy {
+            if button(
+                ui,
+                left,
+                y,
+                width,
+                "Use Quick Connect",
+                false,
+                "quick-connect",
+            ) && !busy
+            {
                 actions.push(UiAction::QuickConnect {
                     server: form.server.clone(),
                     remember: form.remember,
@@ -247,8 +316,24 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             }
         }
         LoginStep::ForgotPassword => {
-            let user = input(ui, left, &mut y, width, "User", &mut form.forgot_user, false, busy, "forgot-user");
-            y += help(ui, left, y, width, "Enter your username, if you remember it.");
+            let user = input(
+                ui,
+                left,
+                &mut y,
+                width,
+                "User",
+                &mut form.forgot_user,
+                false,
+                busy,
+                "forgot-user",
+            );
+            y += help(
+                ui,
+                left,
+                y,
+                width,
+                "Enter your username, if you remember it.",
+            );
             let enter = user.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             y += lu(1.8 * EM);
             if button(ui, left, y, width, "Submit", false, "forgot-submit") || enter {
@@ -263,8 +348,24 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             }
         }
         LoginStep::ForgotPin => {
-            let pin = input(ui, left, &mut y, width, "PIN code", &mut form.pin, false, busy, "pin");
-            y += help(ui, left, y, width, "Enter PIN here to finish Password reset");
+            let pin = input(
+                ui,
+                left,
+                &mut y,
+                width,
+                "PIN code",
+                &mut form.pin,
+                false,
+                busy,
+                "pin",
+            );
+            y += help(
+                ui,
+                left,
+                y,
+                width,
+                "Enter PIN here to finish Password reset",
+            );
             let enter = pin.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             y += lu(1.8 * EM);
             if (button(ui, left, y, width, "Submit", false, "pin-submit") || enter)
@@ -308,12 +409,22 @@ fn input(
     let id = Id::new(("login", id));
     let focused = ui.ctx().memory(|memory| memory.has_focus(id));
     let line = lu(1.35 * EM);
-    let color = if focused { theme::JF_ACCENT } else { theme::with_alpha(Color32::WHITE, 0.7) };
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), theme::regular(EM), color);
+    let color = if focused {
+        theme::JF_ACCENT
+    } else {
+        theme::with_alpha(Color32::WHITE, 0.7)
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::regular(EM), color);
     widgets::galley_on_baseline(ui.painter(), left, jf::baseline(*y, EM, line), galley);
-    let rect = Rect::from_min_size(pos2(left, *y + line + lu(0.25 * EM)), vec2(width, INPUT_HEIGHT));
+    let rect = Rect::from_min_size(
+        pos2(left, *y + line + lu(0.25 * EM)),
+        vec2(width, INPUT_HEIGHT),
+    );
     let radius = 0.2 * INPUT_FONT;
-    ui.painter().rect_filled(rect, radius, Color32::from_gray(41));
+    ui.painter()
+        .rect_filled(rect, radius, Color32::from_gray(41));
     if focused {
         widgets::border(ui.painter(), rect, radius, 2.0, theme::JF_ACCENT);
     }
@@ -359,13 +470,27 @@ fn button(ui: &Ui, left: f32, top: f32, width: f32, label: &str, primary: bool, 
     let (fill, text) = if primary {
         (theme::JF_ACCENT, Color32::WHITE)
     } else {
-        (Color32::from_gray(48), theme::with_alpha(Color32::WHITE, 0.87))
+        (
+            Color32::from_gray(48),
+            theme::with_alpha(Color32::WHITE, 0.87),
+        )
     };
-    let fill = if response.hovered() { theme::with_alpha(fill, 0.85) } else { fill };
+    let fill = if response.hovered() {
+        theme::with_alpha(fill, 0.85)
+    } else {
+        fill
+    };
     ui.painter().rect_filled(rect, 0.2 * EM, fill);
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), theme::bold(EM), text);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::bold(EM), text);
     let x = rect.center().x - galley.size().x / 2.0;
-    widgets::galley_on_baseline(ui.painter(), x, jf::baseline(rect.top() + 13.39, EM, 20.0), galley);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        x,
+        jf::baseline(rect.top() + 13.39, EM, 20.0),
+        galley,
+    );
     widgets::pointer_on_hover(&response);
     response.clicked()
 }
@@ -373,9 +498,17 @@ fn button(ui: &Ui, left: f32, top: f32, width: f32, label: &str, primary: bool, 
 /// The Quick Connect wait: jellyfin-web's dialog with the code. "Got It"
 /// stops waiting, as it does there.
 fn draw_quick_connect(ui: &Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
-    let Some(code) = state.login.quick_code.clone() else { return };
+    let Some(code) = state.login.quick_code.clone() else {
+        return;
+    };
     let text = format!("Enter code {code} to login");
-    if dialogs::message_box(ui.ctx(), Id::new("quick-connect-wait"), "Quick Connect", &text, "Got It") {
+    if dialogs::message_box(
+        ui.ctx(),
+        Id::new("quick-connect-wait"),
+        "Quick Connect",
+        &text,
+        "Got It",
+    ) {
         state.login.quick_code = None;
         actions.push(UiAction::CancelQuickConnect);
     }
@@ -383,7 +516,9 @@ fn draw_quick_connect(ui: &Ui, state: &mut UiState, actions: &mut Vec<UiAction>)
 
 /// jellyfin-web's alert: a title, the text, and Got It.
 fn draw_alert(ui: &Ui, state: &mut UiState) {
-    let Some((title, body)) = state.login.alert.clone() else { return };
+    let Some((title, body)) = state.login.alert.clone() else {
+        return;
+    };
     if dialogs::message_box(ui.ctx(), Id::new("login-alert"), &title, &body, "Got It") {
         state.login.alert = None;
     }

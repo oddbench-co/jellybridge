@@ -265,7 +265,11 @@ fn display_name(item: &DetailItemData) -> String {
         _ => String::new(),
     };
     let name = format!("{number}{}", item.title);
-    match item.series_name.as_deref().filter(|series| !series.is_empty()) {
+    match item
+        .series_name
+        .as_deref()
+        .filter(|series| !series.is_empty())
+    {
         Some(series) => format!("{series} - {name}"),
         None => name,
     }
@@ -372,7 +376,9 @@ mod tests {
         // Credits that stop before the end are skippable either way.
         let early = vec![segment(SegmentKind::Outro, 1300.0, 1400.0)];
         assert_eq!(
-            overlay_at(&playing(early, true), 1310.0, 1500.0).skip.map(|skip| skip.label),
+            overlay_at(&playing(early, true), 1310.0, 1500.0)
+                .skip
+                .map(|skip| skip.label),
             Some("Skip Outro")
         );
         let with_next = overlay_at(&playing(outro, true), 1410.0, 1500.0);

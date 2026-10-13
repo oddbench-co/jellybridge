@@ -1593,11 +1593,18 @@ fn track_select(
             .map(|(option, label)| super::dialogs::SheetItem {
                 label,
                 icon: None,
-                checked: option == selected, aside: None,
+                checked: option == selected,
+                aside: None,
             })
             .collect::<Vec<_>>();
-        let (choice, close) =
-            super::dialogs::action_sheet(ui.ctx(), id.with("sheet"), field, None, &items, Some(selected));
+        let (choice, close) = super::dialogs::action_sheet(
+            ui.ctx(),
+            id.with("sheet"),
+            field,
+            None,
+            &items,
+            Some(selected),
+        );
         if let Some(choice) = choice {
             picked = (choice != selected).then(|| i32::try_from(choice).unwrap_or(0));
             open = false;

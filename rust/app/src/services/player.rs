@@ -695,8 +695,14 @@ fn worker_loop(
             }
             if stats {
                 event_sink(PlayerEvent::Stats {
-                    width: mpv.get_i64("video-params/w").or_else(|_| mpv.get_i64("width")).unwrap_or(0),
-                    height: mpv.get_i64("video-params/h").or_else(|_| mpv.get_i64("height")).unwrap_or(0),
+                    width: mpv
+                        .get_i64("video-params/w")
+                        .or_else(|_| mpv.get_i64("width"))
+                        .unwrap_or(0),
+                    height: mpv
+                        .get_i64("video-params/h")
+                        .or_else(|_| mpv.get_i64("height"))
+                        .unwrap_or(0),
                     dropped_frames: mpv.get_i64("frame-drop-count").unwrap_or(0)
                         + mpv.get_i64("decoder-frame-drop-count").unwrap_or(0),
                 });

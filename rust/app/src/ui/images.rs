@@ -166,7 +166,9 @@ impl ImageCache {
             }
             first = false;
             budget = budget.saturating_sub(bytes);
-            let Some((key, image, mipmaps)) = self.ready.pop_front() else { break };
+            let Some((key, image, mipmaps)) = self.ready.pop_front() else {
+                break;
+            };
             self.pending.remove(&key);
             self.upload(ctx, key, image, mipmaps);
         }
@@ -518,12 +520,20 @@ mod tests {
         let mut cache = ImageCache::default();
         // Three 600 KB images: one fits a frame's budget, two do not.
         for key in ["a", "b", "c"] {
-            cache.finish(&ctx, key.to_owned(), Some(ColorImage::filled([300, 500], egui::Color32::WHITE)), true);
+            cache.finish(
+                &ctx,
+                key.to_owned(),
+                Some(ColorImage::filled([300, 500], egui::Color32::WHITE)),
+                true,
+            );
         }
         assert!(cache.upload_ready(&ctx), "more wait after the first frame");
         assert!(cache.size("a").is_some() && cache.size("b").is_none());
         assert!(cache.upload_ready(&ctx));
-        assert!(!cache.upload_ready(&ctx), "the third frame empties the queue");
+        assert!(
+            !cache.upload_ready(&ctx),
+            "the third frame empties the queue"
+        );
         assert!(cache.size("c").is_some());
     }
 }

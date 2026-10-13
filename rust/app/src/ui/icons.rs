@@ -137,7 +137,9 @@ impl Icon {
             }
             Icon::FastRewind => "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z",
             Icon::FastForward => "M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z",
-            Icon::PlaylistAdd => "M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z",
+            Icon::PlaylistAdd => {
+                "M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z"
+            }
             Icon::ContentCopy => {
                 "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
             }

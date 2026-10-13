@@ -1276,7 +1276,8 @@ fn draw_dialog(
                 .map(|view| dialogs::SheetItem {
                     label: view.label(),
                     icon: None,
-                    checked: *view == grid.settings.view, aside: None,
+                    checked: *view == grid.settings.view,
+                    aside: None,
                 })
                 .collect::<Vec<_>>();
             let anchor = buttons.view.unwrap_or(Rect::from_min_size(
@@ -1300,44 +1301,77 @@ fn draw_dialog(
             let orders = [("Ascending", false), ("Descending", true)];
             let widest = dialogs::widest_label(
                 &ctx,
-                sorts.iter().map(|sort| sort.label).chain(orders.iter().map(|order| order.0)),
+                sorts
+                    .iter()
+                    .map(|sort| sort.label)
+                    .chain(orders.iter().map(|order| order.0)),
             );
             let content_width = dialogs::FORM_LABEL_LEFT + widest;
             let pitch = dialogs::FORM_ROW + dialogs::FORM_ROW_MARGIN;
-            let section = |rows: usize| dialogs::FORM_HEADING + 11.16 + rows as f32 * pitch - dialogs::FORM_ROW_MARGIN;
-            let height = 18.6 + section(sorts.len()) + 22.32 + section(orders.len()) + dialogs::FORM_ROW_MARGIN + 22.32;
+            let section = |rows: usize| {
+                dialogs::FORM_HEADING + 11.16 + rows as f32 * pitch - dialogs::FORM_ROW_MARGIN
+            };
+            let height = 18.6
+                + section(sorts.len())
+                + 22.32
+                + section(orders.len())
+                + dialogs::FORM_ROW_MARGIN
+                + 22.32;
             let id = Id::new("grid-sort");
             dialogs::autofocus(&ctx, id, id.with(("sort-by", 0)), true);
-            let (next, close) = dialogs::panel(&ctx, id, vec2(content_width + 44.64, height), None, 0.2 * theme::JF_FONT, |ui, rect| {
-                let left = rect.left() + 22.32;
-                let row = |top: f32| Rect::from_min_size(pos2(left, top), vec2(content_width, dialogs::FORM_ROW));
-                let mut next = None;
-                let mut y = rect.top() + 18.6;
-                dialogs::form_heading(ui, left, y, "Sort By");
-                y += dialogs::FORM_HEADING + 11.16;
-                for (index, sort) in sorts.iter().enumerate() {
-                    let selected = sort.value == grid.settings.sort;
-                    if dialogs::form_radio(ui, row(y), sort.label, selected, id.with(("sort-by", index))) && !selected {
-                        let mut settings = grid.settings.clone();
-                        settings.sort = sort.value.to_owned();
-                        next = Some(settings);
+            let (next, close) = dialogs::panel(
+                &ctx,
+                id,
+                vec2(content_width + 44.64, height),
+                None,
+                0.2 * theme::JF_FONT,
+                |ui, rect| {
+                    let left = rect.left() + 22.32;
+                    let row = |top: f32| {
+                        Rect::from_min_size(pos2(left, top), vec2(content_width, dialogs::FORM_ROW))
+                    };
+                    let mut next = None;
+                    let mut y = rect.top() + 18.6;
+                    dialogs::form_heading(ui, left, y, "Sort By");
+                    y += dialogs::FORM_HEADING + 11.16;
+                    for (index, sort) in sorts.iter().enumerate() {
+                        let selected = sort.value == grid.settings.sort;
+                        if dialogs::form_radio(
+                            ui,
+                            row(y),
+                            sort.label,
+                            selected,
+                            id.with(("sort-by", index)),
+                        ) && !selected
+                        {
+                            let mut settings = grid.settings.clone();
+                            settings.sort = sort.value.to_owned();
+                            next = Some(settings);
+                        }
+                        y += pitch;
                     }
-                    y += pitch;
-                }
-                y += 22.32 - dialogs::FORM_ROW_MARGIN;
-                dialogs::form_heading(ui, left, y, "Sort Order");
-                y += dialogs::FORM_HEADING + 11.16;
-                for (label, descending) in orders {
-                    let selected = grid.settings.descending == descending;
-                    if dialogs::form_radio(ui, row(y), label, selected, id.with(("sort-order", label))) && !selected {
-                        let mut settings = grid.settings.clone();
-                        settings.descending = descending;
-                        next = Some(settings);
+                    y += 22.32 - dialogs::FORM_ROW_MARGIN;
+                    dialogs::form_heading(ui, left, y, "Sort Order");
+                    y += dialogs::FORM_HEADING + 11.16;
+                    for (label, descending) in orders {
+                        let selected = grid.settings.descending == descending;
+                        if dialogs::form_radio(
+                            ui,
+                            row(y),
+                            label,
+                            selected,
+                            id.with(("sort-order", label)),
+                        ) && !selected
+                        {
+                            let mut settings = grid.settings.clone();
+                            settings.descending = descending;
+                            next = Some(settings);
+                        }
+                        y += pitch;
                     }
-                    y += pitch;
-                }
-                next
-            });
+                    next
+                },
+            );
             if let Some(next) = next {
                 actions.push(UiAction::GridSettings(next));
             }

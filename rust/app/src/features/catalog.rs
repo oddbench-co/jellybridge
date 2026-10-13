@@ -87,7 +87,12 @@ pub fn install_home(context: &AppContext, api: JellyfinApi, account_name: String
 
 /// Shows a saved Home at launch; [`refresh_home`] follows with the server's
 /// (and the deferred shelves).
-pub fn install_saved_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
+pub fn install_saved_home(
+    context: &AppContext,
+    api: JellyfinApi,
+    account_name: String,
+    home: HomeData,
+) {
     show_home(context, api, account_name, home);
 }
 
@@ -117,7 +122,11 @@ fn show_home(context: &AppContext, api: JellyfinApi, account_name: String, home:
 /// Keeps `home` for the next launch, off the UI thread.
 fn save_home_snapshot(context: &AppContext, api: &JellyfinApi, home: &HomeData) {
     let session = api.session();
-    let (server, user, home) = (session.server_url.clone(), session.user_id.clone(), home.clone());
+    let (server, user, home) = (
+        session.server_url.clone(),
+        session.user_id.clone(),
+        home.clone(),
+    );
     context
         .runtime
         .spawn_blocking(move || crate::services::home_snapshot::save(&server, &user, &home));
@@ -148,7 +157,11 @@ pub fn refresh_home(context: &AppContext, home: HomeData) {
     if on_home {
         ui::catalog::present_refresh(context);
     }
-    tracing::debug!(ms = crate::ui::startup::elapsed_ms(), stage = "home_refreshed", "startup_stage");
+    tracing::debug!(
+        ms = crate::ui::startup::elapsed_ms(),
+        stage = "home_refreshed",
+        "startup_stage"
+    );
     load_deferred_home(context);
 }
 

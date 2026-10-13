@@ -239,7 +239,12 @@ pub fn stepped_speed(current: f64, steps: i32) -> f64 {
 /// before it (so a press early in a chapter reaches the one before), never
 /// before the start on the queue's first item. `None` moves to the next or
 /// previous item instead.
-pub fn chapter_target(chapters: &[f64], position: f64, forward: bool, first_in_queue: bool) -> Option<f64> {
+pub fn chapter_target(
+    chapters: &[f64],
+    position: f64,
+    forward: bool,
+    first_in_queue: bool,
+) -> Option<f64> {
     if forward {
         chapters.iter().copied().find(|time| *time > position)
     } else {

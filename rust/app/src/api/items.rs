@@ -434,10 +434,20 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
     for source in item["MediaSources"].as_array().into_iter().flatten() {
         let mut rows = Vec::new();
         if truthy(&source["Container"]) {
-            rows.push(("Container".to_owned(), text(&source["Container"]).unwrap_or_default()));
+            rows.push((
+                "Container".to_owned(),
+                text(&source["Container"]).unwrap_or_default(),
+            ));
         }
-        if let Some(formats) = source["Formats"].as_array().filter(|formats| !formats.is_empty()) {
-            let joined = formats.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",");
+        if let Some(formats) = source["Formats"]
+            .as_array()
+            .filter(|formats| !formats.is_empty())
+        {
+            let joined = formats
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(",");
             rows.push(("Format".to_owned(), joined));
         }
         if admin && truthy(&source["Path"]) {
@@ -451,7 +461,11 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
             rows,
             stream: false,
         });
-        let mut streams: Vec<&Value> = source["MediaStreams"].as_array().into_iter().flatten().collect();
+        let mut streams: Vec<&Value> = source["MediaStreams"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .collect();
         // jellyfin's sortTracks: embedded first, then forced, then default,
         // then by index.
         let flag = |stream: &Value, key: &str| i64::from(stream[key].as_bool().unwrap_or(false));
@@ -481,7 +495,10 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
                 add("Language", text(field("Language")).unwrap_or_default());
             }
             if truthy(field("Codec")) {
-                add("Codec", text(field("Codec")).unwrap_or_default().to_uppercase());
+                add(
+                    "Codec",
+                    text(field("Codec")).unwrap_or_default().to_uppercase(),
+                );
             }
             if truthy(field("CodecTag")) {
                 add("Codec tag", text(field("CodecTag")).unwrap_or_default());
@@ -497,18 +514,31 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
             }
             if truthy(field("Width")) || truthy(field("Height")) {
                 let side = |key: &str| text(field(key)).unwrap_or_else(|| "undefined".to_owned());
-                add("Resolution", format!("{}x{}", side("Width"), side("Height")));
+                add(
+                    "Resolution",
+                    format!("{}x{}", side("Width"), side("Height")),
+                );
             }
             if truthy(field("AspectRatio")) && field("Codec").as_str() != Some("mjpeg") {
-                add("Aspect ratio", text(field("AspectRatio")).unwrap_or_default());
+                add(
+                    "Aspect ratio",
+                    text(field("AspectRatio")).unwrap_or_default(),
+                );
             }
             if video {
                 if let Some(anamorphic) = field("IsAnamorphic").as_bool() {
                     add("Anamorphic", yes_no(anamorphic));
                 }
-                add("Interlaced", yes_no(field("IsInterlaced").as_bool().unwrap_or(false)));
+                add(
+                    "Interlaced",
+                    yes_no(field("IsInterlaced").as_bool().unwrap_or(false)),
+                );
             }
-            let frame_rate = if truthy(field("AverageFrameRate")) { field("AverageFrameRate") } else { field("RealFrameRate") };
+            let frame_rate = if truthy(field("AverageFrameRate")) {
+                field("AverageFrameRate")
+            } else {
+                field("RealFrameRate")
+            };
             if truthy(frame_rate) && video {
                 add("Framerate", text(frame_rate).unwrap_or_default());
             }
@@ -516,25 +546,40 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
                 add("Layout", text(field("ChannelLayout")).unwrap_or_default());
             }
             if truthy(field("Channels")) {
-                add("Channels", format!("{} ch", text(field("Channels")).unwrap_or_default()));
+                add(
+                    "Channels",
+                    format!("{} ch", text(field("Channels")).unwrap_or_default()),
+                );
             }
             if let Some(bitrate) = field("BitRate").as_f64().filter(|bitrate| *bitrate != 0.0) {
                 add("Bitrate", format!("{} kbps", (bitrate / 1000.0).trunc()));
             }
             if truthy(field("SampleRate")) {
-                add("Sample rate", format!("{} Hz", text(field("SampleRate")).unwrap_or_default()));
+                add(
+                    "Sample rate",
+                    format!("{} Hz", text(field("SampleRate")).unwrap_or_default()),
+                );
             }
             if truthy(field("BitDepth")) {
-                add("Bit depth", format!("{} bit", text(field("BitDepth")).unwrap_or_default()));
+                add(
+                    "Bit depth",
+                    format!("{} bit", text(field("BitDepth")).unwrap_or_default()),
+                );
             }
             if video && truthy(field("VideoRange")) {
                 add("Video range", text(field("VideoRange")).unwrap_or_default());
             }
             if video && truthy(field("VideoRangeType")) {
-                add("Video range type", text(field("VideoRangeType")).unwrap_or_default());
+                add(
+                    "Video range type",
+                    text(field("VideoRangeType")).unwrap_or_default(),
+                );
             }
             if truthy(field("VideoDoViTitle")) {
-                add("DV title", text(field("VideoDoViTitle")).unwrap_or_default());
+                add(
+                    "DV title",
+                    text(field("VideoDoViTitle")).unwrap_or_default(),
+                );
                 for (label, key) in [
                     ("DV version major", "DvVersionMajor"),
                     ("DV version minor", "DvVersionMinor"),
@@ -568,9 +613,18 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
                 add("NAL", text(field("NalLengthSize")).unwrap_or_default());
             }
             if matches!(kind, "Subtitle" | "Audio") {
-                add("Default", yes_no(field("IsDefault").as_bool().unwrap_or(false)));
-                add("Forced", yes_no(field("IsForced").as_bool().unwrap_or(false)));
-                add("External", yes_no(field("IsExternal").as_bool().unwrap_or(false)));
+                add(
+                    "Default",
+                    yes_no(field("IsDefault").as_bool().unwrap_or(false)),
+                );
+                add(
+                    "Forced",
+                    yes_no(field("IsForced").as_bool().unwrap_or(false)),
+                );
+                add(
+                    "External",
+                    yes_no(field("IsExternal").as_bool().unwrap_or(false)),
+                );
             }
             if video && truthy(&source["Timestamp"]) {
                 add("Timestamp", text(&source["Timestamp"]).unwrap_or_default());
@@ -586,10 +640,16 @@ fn media_info_blocks(item: &serde_json::Value, admin: bool) -> Vec<InfoBlock> {
 }
 
 /// jellyfin-web's playerstats "Original Media Info" rows.
-fn original_media_rows(source: &serde_json::Value, audio_index: Option<i64>) -> Vec<(String, String)> {
+fn original_media_rows(
+    source: &serde_json::Value,
+    audio_index: Option<i64>,
+) -> Vec<(String, String)> {
     let mut rows = Vec::new();
     let mut add = |label: &str, value: String| rows.push((label.to_owned(), value));
-    if let Some(container) = source["Container"].as_str().filter(|value| !value.is_empty()) {
+    if let Some(container) = source["Container"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+    {
         add("Container", container.to_owned());
     }
     if let Some(size) = source["Size"].as_f64().filter(|size| *size > 0.0) {
@@ -598,8 +658,14 @@ fn original_media_rows(source: &serde_json::Value, audio_index: Option<i64>) -> 
     if let Some(bitrate) = source["Bitrate"].as_f64().filter(|rate| *rate > 0.0) {
         add("Bitrate", stats_bitrate(bitrate));
     }
-    let streams = source["MediaStreams"].as_array().map(Vec::as_slice).unwrap_or_default();
-    fn of_type<'a>(streams: &'a [serde_json::Value], kind: &'a str) -> impl Iterator<Item = &'a serde_json::Value> {
+    let streams = source["MediaStreams"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    fn of_type<'a>(
+        streams: &'a [serde_json::Value],
+        kind: &'a str,
+    ) -> impl Iterator<Item = &'a serde_json::Value> {
         streams.iter().filter(move |stream| stream["Type"] == kind)
     }
     let codec_line = |stream: &serde_json::Value| {
@@ -631,7 +697,9 @@ fn original_media_rows(source: &serde_json::Value, audio_index: Option<i64>) -> 
     }
     let audio = of_type(streams, "Audio")
         .find(|stream| audio_index.is_some_and(|index| stream["Index"].as_i64() == Some(index)))
-        .or_else(|| of_type(streams, "Audio").find(|stream| stream["IsDefault"].as_bool() == Some(true)))
+        .or_else(|| {
+            of_type(streams, "Audio").find(|stream| stream["IsDefault"].as_bool() == Some(true))
+        })
         .or_else(|| of_type(streams, "Audio").next());
     if let Some(audio) = audio {
         let codec = codec_line(audio);
@@ -678,7 +746,10 @@ fn readable_size(bytes: f64) -> String {
     let value = bytes / 1024f64.powi(power);
     let unit = match power {
         0 => "Bytes".to_owned(),
-        power => format!("{}iB", "KMGTPEZY".chars().nth(power as usize - 1).unwrap_or('Y')),
+        power => format!(
+            "{}iB",
+            "KMGTPEZY".chars().nth(power as usize - 1).unwrap_or('Y')
+        ),
     };
     format!("{value:.1} {unit}")
 }
@@ -720,10 +791,16 @@ mod tests {
         assert_eq!(blocks.len(), 4);
         assert_eq!(
             blocks[0].rows,
-            vec![("Container".into(), "mkv".into()), ("Size".into(), "33.1 GiB".into())]
+            vec![
+                ("Container".into(), "mkv".into()),
+                ("Size".into(), "33.1 GiB".into())
+            ]
         );
         assert_eq!(
-            blocks.iter().map(|block| block.heading.as_str()).collect::<Vec<_>>(),
+            blocks
+                .iter()
+                .map(|block| block.heading.as_str())
+                .collect::<Vec<_>>(),
             ["Film", "Video", "Audio", "Subtitle"]
         );
         assert_eq!(
@@ -737,10 +814,18 @@ mod tests {
                 ("Framerate".into(), "23.976".into()),
             ]
         );
-        assert!(blocks[2].rows.contains(&("Bitrate".into(), "640 kbps".into())));
+        assert!(
+            blocks[2]
+                .rows
+                .contains(&("Bitrate".into(), "640 kbps".into()))
+        );
         assert!(blocks[2].rows.contains(&("Channels".into(), "6 ch".into())));
         assert!(blocks[3].rows.contains(&("External".into(), "Yes".into())));
-        assert!(media_info_blocks(&item, true)[0].rows.contains(&("Path".into(), "/movies/film.mkv".into())));
+        assert!(
+            media_info_blocks(&item, true)[0]
+                .rows
+                .contains(&("Path".into(), "/movies/film.mkv".into()))
+        );
     }
 
     #[test]
@@ -754,14 +839,24 @@ mod tests {
             ]
         });
         let rows = original_media_rows(&source, Some(2));
-        let value = |label: &str| rows.iter().find(|(name, _)| name == label).map(|(_, value)| value.as_str());
+        let value = |label: &str| {
+            rows.iter()
+                .find(|(name, _)| name == label)
+                .map(|(_, value)| value.as_str())
+        };
         assert_eq!(value("Size"), Some("5.3 GiB"));
         assert_eq!(value("Bitrate"), Some("15.5 Mbps"));
         assert_eq!(value("Video codec"), Some("HEVC Main 10"));
         // The audio row follows the stream being played, not the default.
         assert_eq!(value("Audio codec"), Some("AAC"));
         assert_eq!(value("Audio bitrate"), Some("640 kbps"));
-        assert_eq!(original_media_rows(&source, None).iter().find(|(name, _)| name == "Audio codec").map(|(_, v)| v.as_str()), Some("EAC3"));
+        assert_eq!(
+            original_media_rows(&source, None)
+                .iter()
+                .find(|(name, _)| name == "Audio codec")
+                .map(|(_, v)| v.as_str()),
+            Some("EAC3")
+        );
     }
 
     #[test]

@@ -420,8 +420,15 @@ impl JellyBridgeApp {
             UiAction::ToggleMute => send(PlayerCommand::ToggleMuted),
             UiAction::SetRepeat(mode) => {
                 // Repeat one loops the file in mpv, so it never ends.
-                let looped = if mode == super::player::RepeatMode::One { "inf" } else { "no" };
-                send(PlayerCommand::Configure(vec![("loop-file", looped.to_owned())]));
+                let looped = if mode == super::player::RepeatMode::One {
+                    "inf"
+                } else {
+                    "no"
+                };
+                send(PlayerCommand::Configure(vec![(
+                    "loop-file",
+                    looped.to_owned(),
+                )]));
             }
             UiAction::ReplayCurrent => features::playback::replay_current(context),
             UiAction::TogglePlaybackInfo => {
@@ -433,9 +440,19 @@ impl JellyBridgeApp {
                     send(PlayerCommand::Stats(true));
                     // The playing audio stream's Jellyfin index, for its row.
                     let audio_index = usize::try_from(player.audio_index).ok().and_then(|index| {
-                        context.player_tracks.lock().ok()?.audio.get(index)?.source_index
+                        context
+                            .player_tracks
+                            .lock()
+                            .ok()?
+                            .audio
+                            .get(index)?
+                            .source_index
                     });
-                    features::playback::load_playback_info(context, player.item_id.clone(), audio_index);
+                    features::playback::load_playback_info(
+                        context,
+                        player.item_id.clone(),
+                        audio_index,
+                    );
                 }
             }
             UiAction::SetSpeed(index) => {

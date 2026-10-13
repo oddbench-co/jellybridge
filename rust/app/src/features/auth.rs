@@ -7,8 +7,8 @@ use crate::app::{
     AppContext, AppState, RetryAction, cancel_catalog_request, replace_catalog_request,
 };
 use crate::features::{catalog, playback};
-use crate::services::player::PlayerCommand;
 use crate::services::home_snapshot;
+use crate::services::player::PlayerCommand;
 use crate::services::session::SessionStore;
 use crate::ui;
 
@@ -39,7 +39,9 @@ pub enum PrefetchedHome {
 /// Alongside, the last Home saved for this session is read from disk and
 /// handed over at once (see [`HomeSnapshot`]); the request's result then
 /// replaces it.
-pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> (JoinHandle<PrefetchedHome>, HomeSnapshot) {
+pub fn prefetch_home(
+    runtime: &tokio::runtime::Handle,
+) -> (JoinHandle<PrefetchedHome>, HomeSnapshot) {
     let (snapshot_sender, snapshot) = tokio::sync::oneshot::channel();
     let task = runtime.spawn(async move {
         let loaded = tokio::task::spawn_blocking(|| {
@@ -81,7 +83,11 @@ pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> (JoinHandle<Prefetched
 
 /// Shows whatever the prefetch found. Called once, from `main`, after the
 /// window is up: the saved Home first, if there is one, then the server's.
-pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome>, snapshot: HomeSnapshot) {
+pub fn restore_session(
+    context: &AppContext,
+    prefetch: JoinHandle<PrefetchedHome>,
+    snapshot: HomeSnapshot,
+) {
     let generation = context.next_generation();
     ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     if let Ok(mut state) = context.state.lock() {
@@ -122,7 +128,11 @@ pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome
                 // Usually nothing changed since the last launch: then there
                 // is nothing to redraw or save, only the deferred shelves.
                 Ok(home) if shown.as_ref() == Some(&home) => {
-                    tracing::debug!(ms = crate::ui::startup::elapsed_ms(), stage = "home_unchanged", "startup_stage");
+                    tracing::debug!(
+                        ms = crate::ui::startup::elapsed_ms(),
+                        stage = "home_unchanged",
+                        "startup_stage"
+                    );
                     catalog::load_deferred_home(&ctx);
                 }
                 Ok(home) => catalog::refresh_home(&ctx, home),
@@ -198,7 +208,9 @@ async fn finish_sign_in(
 ) {
     let result = async {
         if remember {
-            ctx.store.save(api.session()).map_err(|error| error.to_string())?;
+            ctx.store
+                .save(api.session())
+                .map_err(|error| error.to_string())?;
         } else {
             ctx.store.clear().map_err(|error| error.to_string())?;
         }
@@ -368,11 +380,12 @@ pub fn forgot_password_pin(context: &AppContext, server: String, pin: String) {
 pub fn logout(context: &AppContext) {
     // Like jellyfin-web, signing out lands on "Please sign in" for the
     // same server.
-    let server = context
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| state.api.as_ref().map(|api| api.session().server_url.clone()));
+    let server = context.state.lock().ok().and_then(|state| {
+        state
+            .api
+            .as_ref()
+            .map(|api| api.session().server_url.clone())
+    });
     if let Some(server) = server {
         context.ui.update(move |state| {
             state.login.server = server;

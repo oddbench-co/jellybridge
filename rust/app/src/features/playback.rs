@@ -899,7 +899,10 @@ mod tests {
         episode.parent_index_number = Some(1);
         episode.index_number = Some(3);
         episode.premiere_date = Some((2025, 3, 1));
-        assert_eq!(player_title(&episode).title, "The Show - S1:E3 - Pilot (2025)");
+        assert_eq!(
+            player_title(&episode).title,
+            "The Show - S1:E3 - Pilot (2025)"
+        );
 
         let mut movie = DetailItemData::fixture("movie-1", DetailKind::Movie);
         movie.title = "Alien".into();

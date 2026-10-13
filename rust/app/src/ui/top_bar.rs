@@ -266,8 +266,11 @@ fn drawer(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         .fixed_pos(screen.min)
         .show(&ctx, |ui| {
             let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
-            ui.painter()
-                .rect_filled(rect, 0.0, Color32::from_black_alpha((255.0 * 0.3 * shown) as u8));
+            ui.painter().rect_filled(
+                rect,
+                0.0,
+                Color32::from_black_alpha((255.0 * 0.3 * shown) as u8),
+            );
             response.clicked()
         });
     if backdrop.inner || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {

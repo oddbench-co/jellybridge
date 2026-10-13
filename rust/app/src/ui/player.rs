@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use egui::{Color32, CursorIcon, Id, Rect, Sense, Ui, pos2, vec2};
 
 use super::app::UiAction;
-use super::jf;
 use super::icons::{self, Icon};
+use super::jf;
 use super::player_hotkeys::{
     PLAYBACK_SPEEDS, PlayerHotkeyAction, PlayerUiState, chapter_target, key_text, next_track_index,
     resolve_player_hotkey, speed_index, stepped_speed,
@@ -224,18 +224,23 @@ impl PlayerVm {
 /// streams, the embedded track with its index, else the downloaded copy
 /// (titled with Jellyfin's label), relabelled with Jellyfin's display title.
 /// Without any match (no stream list yet) mpv's tracks are kept as they are.
-fn jellyfin_tracks(streams: &[(i64, String, String)], kind: &str, tracks: Vec<PlayerTrack>) -> Vec<PlayerTrack> {
+fn jellyfin_tracks(
+    streams: &[(i64, String, String)],
+    kind: &str,
+    tracks: Vec<PlayerTrack>,
+) -> Vec<PlayerTrack> {
     let mapped: Vec<PlayerTrack> = streams
         .iter()
         .filter(|(_, stream_kind, _)| stream_kind == kind)
         .filter_map(|(index, _, label)| {
-            let embedded = tracks
-                .iter()
-                .find(|track| track.external_filename.is_none() && track.source_index == Some(*index));
+            let embedded = tracks.iter().find(|track| {
+                track.external_filename.is_none() && track.source_index == Some(*index)
+            });
             let external = || {
-                tracks
-                    .iter()
-                    .find(|track| track.external_filename.is_some() && track.title.as_deref() == Some(label.as_str()))
+                tracks.iter().find(|track| {
+                    track.external_filename.is_some()
+                        && track.title.as_deref() == Some(label.as_str())
+                })
             };
             let mut track = embedded.or_else(external)?.clone();
             track.label.clone_from(label);
@@ -795,7 +800,14 @@ fn draw_top_chrome(
         theme::with_alpha(OSD_SCRIM, 0.0),
     );
     let header_text = Color32::from_gray(238);
-    if osd_button(&mut ui, rect.left() + 16.2, rect.top() + 17.23, Icon::ArrowBack, "Back", header_text) {
+    if osd_button(
+        &mut ui,
+        rect.left() + 16.2,
+        rect.top() + 17.23,
+        Icon::ArrowBack,
+        "Back",
+        header_text,
+    ) {
         state.player.activity(ui.input(|input| input.time));
         actions.push(UiAction::LeavePlayer);
     }
@@ -828,7 +840,10 @@ fn draw_bottom_chrome(
     now: f64,
     actions: &mut Vec<UiAction>,
 ) -> bool {
-    let rect = Rect::from_min_max(pos2(screen.left(), screen.bottom() - OSD_BOTTOM), screen.max);
+    let rect = Rect::from_min_max(
+        pos2(screen.left(), screen.bottom() - OSD_BOTTOM),
+        screen.max,
+    );
     let backing = ui.interact(rect, Id::new("player-bottom-chrome"), Sense::click());
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(screen));
     ui.multiply_opacity(opacity);
@@ -845,19 +860,35 @@ fn draw_bottom_chrome(
 
     // The time row.
     let player = &state.player;
-    let shown_position = if player.scrubbing { player.timeline_position } else { player.position };
+    let shown_position = if player.scrubbing {
+        player.timeline_position
+    } else {
+        player.position
+    };
     let position_text = format_playback_time(shown_position);
     let end_text = if player.show_remaining {
-        format!("-{}", format_playback_time(player.duration - shown_position))
+        format!(
+            "-{}",
+            format_playback_time(player.duration - shown_position)
+        )
     } else {
         format_playback_time(player.duration)
     };
     let text_top = row + 4.82;
-    let start = osd_text(ui, rect.left() + OSD_PADDING + 7.44, text_top, &position_text, white);
+    let start = osd_text(
+        ui,
+        rect.left() + OSD_PADDING + 7.44,
+        text_top,
+        &position_text,
+        white,
+    );
     let end_width = text_width(ui, &end_text, OSD_FONT);
     let end_left = rect.right() - OSD_PADDING - end_width;
     osd_text(ui, end_left, text_top, &end_text, white);
-    let end_box = Rect::from_min_size(pos2(end_left - 7.44, text_top), vec2(end_width + 7.44, OSD_LINE));
+    let end_box = Rect::from_min_size(
+        pos2(end_left - 7.44, text_top),
+        vec2(end_width + 7.44, OSD_LINE),
+    );
     let end_response = ui.interact(end_box, Id::new("player-duration"), Sense::click());
     widgets::pointer_on_hover(&end_response);
     if end_response.clicked() {
@@ -887,13 +918,21 @@ fn draw_bottom_chrome(
         clicked.push(UiAction::PlayPrevious(player.position));
     }
     if chapters && button(ui, Icon::Undo, "Previous chapter") {
-        let times = player.chapters.iter().map(|chapter| chapter.time).collect::<Vec<_>>();
+        let times = player
+            .chapters
+            .iter()
+            .map(|chapter| chapter.time)
+            .collect::<Vec<_>>();
         clicked.push(chapter_action(&times, player, false));
     }
     if button(ui, Icon::FastRewind, "Rewind") {
         clicked.push(UiAction::SeekRelative(-player.skip_back));
     }
-    let (icon, label) = if player.paused { (Icon::Play, "Play") } else { (Icon::Pause, "Pause") };
+    let (icon, label) = if player.paused {
+        (Icon::Play, "Play")
+    } else {
+        (Icon::Pause, "Pause")
+    };
     if button(ui, icon, label) {
         clicked.push(UiAction::TogglePlayback);
     }
@@ -901,7 +940,11 @@ fn draw_bottom_chrome(
         clicked.push(UiAction::SeekRelative(player.skip_forward));
     }
     if chapters && button(ui, Icon::Redo, "Next chapter") {
-        let times = player.chapters.iter().map(|chapter| chapter.time).collect::<Vec<_>>();
+        let times = player
+            .chapters
+            .iter()
+            .map(|chapter| chapter.time)
+            .collect::<Vec<_>>();
         clicked.push(chapter_action(&times, player, true));
     }
     if player.has_next && button(ui, Icon::SkipNext, "Next track") {
@@ -939,8 +982,19 @@ fn draw_bottom_chrome(
     );
     draw_volume(ui, state, volume_rect, now, actions);
     let mute_left = volume_rect.left() - OSD_BUTTON_MARGIN - OSD_BUTTON;
-    let mute_icon = if muted { Icon::VolumeOff } else { Icon::VolumeUp };
-    let mute = osd_button(ui, mute_left, top, mute_icon, if muted { "Unmute" } else { "Mute" }, white);
+    let mute_icon = if muted {
+        Icon::VolumeOff
+    } else {
+        Icon::VolumeUp
+    };
+    let mute = osd_button(
+        ui,
+        mute_left,
+        top,
+        mute_icon,
+        if muted { "Unmute" } else { "Mute" },
+        white,
+    );
     let mut right = mute_left - 3.0 * OSD_BUTTON_MARGIN;
     // Each returns its rect when pressed, for the menu it opens.
     let mut next = |ui: &mut Ui, icon: Icon, label: &str, color: Color32| {
@@ -950,21 +1004,31 @@ fn draw_bottom_chrome(
             .then(|| Rect::from_min_size(pos2(left, top), vec2(OSD_BUTTON, OSD_BUTTON)))
     };
     let player = &state.player;
-    let audio = if player.audio_options.len() > 1 { next(ui, Icon::Audiotrack, "Audio", white) } else { None };
+    let audio = if player.audio_options.len() > 1 {
+        next(ui, Icon::Audiotrack, "Audio", white)
+    } else {
+        None
+    };
     let subtitles = if player.subtitle_options.len() > 1 {
         next(ui, Icon::ClosedCaption, "Subtitles", white)
     } else {
         None
     };
-    let favorite_color = if player.favorite { theme::JF_PLAYED_RED } else { white };
-    let favorite = !player.item_id.is_empty() && next(ui, Icon::Favorite, "Favorite", favorite_color).is_some();
+    let favorite_color = if player.favorite {
+        theme::JF_PLAYED_RED
+    } else {
+        white
+    };
+    let favorite = !player.item_id.is_empty()
+        && next(ui, Icon::Favorite, "Favorite", favorite_color).is_some();
 
     if toggle_full {
         toggle_fullscreen(state, now);
     }
     if settings {
         state.player.menu = PlayerMenu::Settings;
-        state.player.menu_anchor = Rect::from_min_size(pos2(settings_left, top), vec2(OSD_BUTTON, OSD_BUTTON));
+        state.player.menu_anchor =
+            Rect::from_min_size(pos2(settings_left, top), vec2(OSD_BUTTON, OSD_BUTTON));
     }
     if let Some(anchor) = subtitles {
         state.player.menu = PlayerMenu::Subtitles;
@@ -985,7 +1049,13 @@ fn draw_bottom_chrome(
             favorite: player.favorite,
         });
     }
-    if toggle_full || settings || subtitles.is_some() || audio.is_some() || favorite || !clicked.is_empty() {
+    if toggle_full
+        || settings
+        || subtitles.is_some()
+        || audio.is_some()
+        || favorite
+        || !clicked.is_empty()
+    {
         state.player.activity(now);
     }
     actions.extend(clicked);
@@ -995,11 +1065,20 @@ fn draw_bottom_chrome(
 /// A jellyfin-web slider in its 1.25em container: the 0.2em track inset by
 /// half a thumb, filled to `ratio` in the accent, and the thumb. Returns the
 /// track's ends.
-fn paint_slider(painter: &egui::Painter, rect: Rect, ratio: f32, buffered: Option<(f32, f32)>, thumb_scale: f32) -> (f32, f32) {
+fn paint_slider(
+    painter: &egui::Painter,
+    rect: Rect,
+    ratio: f32,
+    buffered: Option<(f32, f32)>,
+    thumb_scale: f32,
+) -> (f32, f32) {
     let x0 = rect.left() + SLIDER_THUMB / 2.0;
     let x1 = rect.right() - SLIDER_THUMB / 2.0;
     let center = rect.top() + SLIDER_HEIGHT / 2.0;
-    let track = Rect::from_min_max(pos2(x0, center - SLIDER_TRACK / 2.0), pos2(x1, center + SLIDER_TRACK / 2.0));
+    let track = Rect::from_min_max(
+        pos2(x0, center - SLIDER_TRACK / 2.0),
+        pos2(x1, center + SLIDER_TRACK / 2.0),
+    );
     painter.rect_filled(track, 0.0, theme::with_alpha(Color32::WHITE, 0.3));
     if let Some((from, to)) = buffered {
         let from = x0 + (x1 - x0) * from.clamp(0.0, 1.0);
@@ -1011,8 +1090,16 @@ fn paint_slider(painter: &egui::Painter, rect: Rect, ratio: f32, buffered: Optio
         );
     }
     let head = x0 + (x1 - x0) * ratio.clamp(0.0, 1.0);
-    painter.rect_filled(Rect::from_min_max(track.min, pos2(head, track.bottom())), 0.0, theme::JF_ACCENT);
-    painter.circle_filled(pos2(head, center), SLIDER_THUMB * thumb_scale / 2.0, theme::JF_ACCENT);
+    painter.rect_filled(
+        Rect::from_min_max(track.min, pos2(head, track.bottom())),
+        0.0,
+        theme::JF_ACCENT,
+    );
+    painter.circle_filled(
+        pos2(head, center),
+        SLIDER_THUMB * thumb_scale / 2.0,
+        theme::JF_ACCENT,
+    );
     (x0, x1)
 }
 
@@ -1031,7 +1118,9 @@ fn draw_timeline(
     let x1 = rect.right() - SLIDER_THUMB / 2.0;
     let player = &mut state.player;
     let pointer = response.hover_pos().or(response.interact_pointer_pos());
-    let hover_ratio = pointer.map_or(0.0, |pointer| ((pointer.x - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0));
+    let hover_ratio = pointer.map_or(0.0, |pointer| {
+        ((pointer.x - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0)
+    });
     let hover_time = f64::from(hover_ratio) * player.duration.max(1.0);
     let pressed = response.is_pointer_button_down_on() || response.dragged();
 
@@ -1059,7 +1148,11 @@ fn draw_timeline(
 
     let painter = ui.painter().clone();
     let played = player.played_ratio();
-    let scale = if response.hovered() || pressed { 1.3 } else { 1.0 };
+    let scale = if response.hovered() || pressed {
+        1.3
+    } else {
+        1.0
+    };
     // Chapter markers sit under the thumb: 2×12 px, accent once passed.
     let duration = player.duration.max(1.0);
     for chapter in &player.chapters {
@@ -1073,7 +1166,10 @@ fn draw_timeline(
             theme::with_alpha(Color32::WHITE, 0.3)
         };
         painter.rect_filled(
-            Rect::from_min_size(pos2(x0 + (x1 - x0) * ratio - 1.0, rect.top() + 3.0), vec2(2.0, 12.0)),
+            Rect::from_min_size(
+                pos2(x0 + (x1 - x0) * ratio - 1.0, rect.top() + 3.0),
+                vec2(2.0, 12.0),
+            ),
             0.0,
             color,
         );
@@ -1087,16 +1183,24 @@ fn draw_timeline(
             Color32::WHITE,
         );
         let line = 36.14;
-        let size = vec2(galley.size().x + 1.5 * SLIDER_BUBBLE_FONT, line + SLIDER_BUBBLE_FONT);
+        let size = vec2(
+            galley.size().x + 1.5 * SLIDER_BUBBLE_FONT,
+            line + SLIDER_BUBBLE_FONT,
+        );
         let center = x0 + (x1 - x0) * hover_ratio;
-        let bubble = Rect::from_min_size(pos2(center - size.x / 2.0, rect.top() - 1.2 * size.y), size);
+        let bubble =
+            Rect::from_min_size(pos2(center - size.x / 2.0, rect.top() - 1.2 * size.y), size);
         let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("player-bubble"));
         let top_painter = ui.ctx().layer_painter(layer);
         top_painter.rect_filled(bubble, 0.0, Color32::from_gray(40));
         widgets::galley_on_baseline(
             &top_painter,
             bubble.left() + 0.75 * SLIDER_BUBBLE_FONT,
-            jf::baseline(bubble.top() + 0.5 * SLIDER_BUBBLE_FONT, SLIDER_BUBBLE_FONT, line),
+            jf::baseline(
+                bubble.top() + 0.5 * SLIDER_BUBBLE_FONT,
+                SLIDER_BUBBLE_FONT,
+                line,
+            ),
             galley,
         );
     }
@@ -1130,8 +1234,16 @@ fn draw_volume(
             actions.push(UiAction::SetVolume(volume));
         }
     }
-    let shown = if player.muted { 0.0 } else { player.volume.clamp(0.0, 100.0) / 100.0 };
-    let scale = if response.hovered() || response.dragged() { 1.3 } else { 1.0 };
+    let shown = if player.muted {
+        0.0
+    } else {
+        player.volume.clamp(0.0, 100.0) / 100.0
+    };
+    let scale = if response.hovered() || response.dragged() {
+        1.3
+    } else {
+        1.0
+    };
     paint_slider(ui.painter(), rect, shown, None, scale);
     widgets::pointer_on_hover(&response);
 }
@@ -1143,7 +1255,9 @@ type StatsSection<'a> = (Option<&'a str>, Vec<(String, String)>);
 /// top left listing the player, the play method, the video's live numbers
 /// and the original media, with a close button.
 fn draw_playback_info(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &mut Vec<UiAction>) {
-    let Some(stats) = &state.player.stats else { return };
+    let Some(stats) = &state.player.stats else {
+        return;
+    };
     // 84% type; sizes in its em.
     let font = 0.84 * OSD_FONT;
     let line = 17.0;
@@ -1166,20 +1280,37 @@ fn draw_playback_info(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &
     ];
     let mut video = vec![(
         "Player dimensions".to_owned(),
-        format!("{}x{}", (screen.width() * pixels).round(), (screen.height() * pixels).round()),
+        format!(
+            "{}x{}",
+            (screen.width() * pixels).round(),
+            (screen.height() * pixels).round()
+        ),
     )];
     if stats.video_size.0 > 0 && stats.video_size.1 > 0 {
-        video.push(("Video resolution".to_owned(), format!("{}x{}", stats.video_size.0, stats.video_size.1)));
+        video.push((
+            "Video resolution".to_owned(),
+            format!("{}x{}", stats.video_size.0, stats.video_size.1),
+        ));
     }
-    video.push(("Dropped frames".to_owned(), stats.dropped_frames.to_string()));
+    video.push((
+        "Dropped frames".to_owned(),
+        stats.dropped_frames.to_string(),
+    ));
     sections.push((Some("Video Info"), video));
     if !stats.original.is_empty() {
         sections.push((Some("Original Media Info"), stats.original.clone()));
     }
     let label_font = theme::regular(font);
     let value_color = Color32::from_gray(0xdd);
-    let width_of = |text: &str| ui.painter().layout_no_wrap(text.to_owned(), label_font.clone(), Color32::WHITE).size().x;
-    let row_width = |indent: f32, (label, value): &(String, String)| indent + width_of(label) + 0.5 * font + width_of(value);
+    let width_of = |text: &str| {
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), label_font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    let row_width = |indent: f32, (label, value): &(String, String)| {
+        indent + width_of(label) + 0.5 * font + width_of(value)
+    };
     let content = sections
         .iter()
         .flat_map(|(name, rows)| {
@@ -1195,35 +1326,62 @@ fn draw_playback_info(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &
         .sum::<f32>()
         + font;
     let rect = Rect::from_min_size(
-        pos2(screen.left() + 1.5 * OSD_FONT, screen.top() + 5.0 * OSD_FONT),
+        pos2(
+            screen.left() + 1.5 * OSD_FONT,
+            screen.top() + 5.0 * OSD_FONT,
+        ),
         vec2(font + content + 3.0 * font, height),
     );
     let layer = egui::LayerId::new(egui::Order::Foreground, Id::new("player-stats"));
     let painter = ui.ctx().layer_painter(layer);
-    painter.rect_filled(rect, 0.3 * OSD_FONT, Color32::from_rgba_unmultiplied(28, 28, 28, 204));
+    painter.rect_filled(
+        rect,
+        0.3 * OSD_FONT,
+        Color32::from_rgba_unmultiplied(28, 28, 28, 204),
+    );
     let mut y = rect.top();
     let left = rect.left() + font;
     for (name, rows) in &sections {
         if let Some(name) = name {
             y += font;
-            let galley = painter.layout_no_wrap((*name).to_owned(), label_font.clone(), Color32::WHITE);
+            let galley =
+                painter.layout_no_wrap((*name).to_owned(), label_font.clone(), Color32::WHITE);
             widgets::galley_on_baseline(&painter, left, jf::baseline(y, font, line), galley);
             y += line;
         }
         for (label, value) in rows {
             let baseline = jf::baseline(y, font, line);
-            let label_galley = painter.layout_no_wrap(label.clone(), label_font.clone(), Color32::WHITE);
+            let label_galley =
+                painter.layout_no_wrap(label.clone(), label_font.clone(), Color32::WHITE);
             let label_width = label_galley.size().x;
             widgets::galley_on_baseline(&painter, left + font, baseline, label_galley);
-            let value_galley = painter.layout_no_wrap(value.clone(), label_font.clone(), value_color);
-            widgets::galley_on_baseline(&painter, left + font + label_width + 0.5 * font, baseline, value_galley);
+            let value_galley =
+                painter.layout_no_wrap(value.clone(), label_font.clone(), value_color);
+            widgets::galley_on_baseline(
+                &painter,
+                left + font + label_width + 0.5 * font,
+                baseline,
+                value_galley,
+            );
             y += line;
         }
     }
-    let close = Rect::from_min_size(pos2(rect.right() - 6.72 - 34.73, rect.top() + 3.11), vec2(34.73, 34.73));
+    let close = Rect::from_min_size(
+        pos2(rect.right() - 6.72 - 34.73, rect.top() + 3.11),
+        vec2(34.73, 34.73),
+    );
     let mut child = ui.new_child(egui::UiBuilder::new().layer_id(layer).max_rect(screen));
-    if jf::round_icon_button(&mut child, close, Icon::Close, Color32::from_gray(0xcc), 20.87, "Close", true, Id::new("player-stats-close"))
-        .clicked()
+    if jf::round_icon_button(
+        &mut child,
+        close,
+        Icon::Close,
+        Color32::from_gray(0xcc),
+        20.87,
+        "Close",
+        true,
+        Id::new("player-stats-close"),
+    )
+    .clicked()
     {
         actions.push(UiAction::TogglePlaybackInfo);
     }
@@ -1242,26 +1400,43 @@ fn draw_floating(
     // controls are up, fading in and out over 0.2 s.
     let skip_visible = !state.player.skip_label.is_empty()
         && (state.player.controls_visible()
-            || state.player.skip_since.is_some_and(|since| now - since < 8.0));
+            || state
+                .player
+                .skip_since
+                .is_some_and(|since| now - since < 8.0));
     if let Some(since) = state.player.skip_since
         && !state.player.controls_visible()
         && now - since < 8.0
     {
-        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(8.0 - (now - since)));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(8.0 - (now - since)));
     }
-    let skip_opacity = ui.ctx().animate_bool_with_time(Id::new("player-skip-fade"), skip_visible, 0.2);
+    let skip_opacity =
+        ui.ctx()
+            .animate_bool_with_time(Id::new("player-skip-fade"), skip_visible, 0.2);
     if skip_opacity > 0.0 && !state.player.skip_label.is_empty() {
         let font = 1.2 * OSD_FONT;
         let color = theme::with_alpha(Color32::WHITE, 0.87 * skip_opacity);
-        let galley = painter.layout_no_wrap(state.player.skip_label.clone(), theme::bold(font), color);
-        let size = vec2(20.0 + galley.size().x + 3.0 + 24.0 + 20.0, 24.0 + 1.35 * font);
+        let galley =
+            painter.layout_no_wrap(state.player.skip_label.clone(), theme::bold(font), color);
+        let size = vec2(
+            20.0 + galley.size().x + 3.0 + 24.0 + 20.0,
+            24.0 + 1.35 * font,
+        );
         let button = Rect::from_min_size(
-            pos2(screen.right() - 96.0 - size.x, screen.bottom() - 128.0 - 0.3 * font - size.y),
+            pos2(
+                screen.right() - 96.0 - size.x,
+                screen.bottom() - 128.0 - 0.3 * font - size.y,
+            ),
             size,
         );
         let response = ui.interact(button, Id::new("player-skip"), Sense::click());
         widgets::describe_button(&response, true, &state.player.skip_label);
-        painter.rect_filled(button, 0.2 * font, Color32::from_gray(48).gamma_multiply(skip_opacity));
+        painter.rect_filled(
+            button,
+            0.2 * font,
+            Color32::from_gray(48).gamma_multiply(skip_opacity),
+        );
         let text_width = galley.size().x;
         widgets::galley_on_baseline(
             &painter,
@@ -1272,7 +1447,10 @@ fn draw_floating(
         icons::paint_centered(
             &painter,
             Icon::SkipNext,
-            pos2(button.left() + 20.0 + text_width + 3.0 + 12.0, button.center().y),
+            pos2(
+                button.left() + 20.0 + text_width + 3.0 + 12.0,
+                button.center().y,
+            ),
             24.0,
             color,
         );
@@ -1285,7 +1463,9 @@ fn draw_floating(
 
     // Up Next: a translucent card at the bottom right, fading over 0.3 s.
     let up_next = state.player.up_next.clone();
-    let opacity = ui.ctx().animate_bool_with_time(Id::new("player-up-next-fade"), up_next.is_some(), 0.3);
+    let opacity =
+        ui.ctx()
+            .animate_bool_with_time(Id::new("player-up-next-fade"), up_next.is_some(), 0.3);
     let Some(up_next) = up_next else { return };
     let em = OSD_FONT;
     let content = 30.0 * em;
@@ -1295,13 +1475,23 @@ fn draw_floating(
     let misc_height = misc.as_ref().map_or(0.0, |(_, height)| *height);
     let button_height = 46.87;
     let height = em
-        + 0.25 * h2 + 30.13 + 0.25 * h2
-        + 0.25 * h3 + 23.5 + 0.5 * h3
+        + 0.25 * h2
+        + 30.13
+        + 0.25 * h2
+        + 0.25 * h3
+        + 23.5
+        + 0.5 * h3
         + misc_height
-        + em + 0.3 * em + button_height + 0.3 * em
+        + em
+        + 0.3 * em
+        + button_height
+        + 0.3 * em
         + em;
     let card = Rect::from_min_size(
-        pos2(screen.right() - 2.0 * em - content - 2.0 * em, screen.bottom() - 2.0 * em - height),
+        pos2(
+            screen.right() - 2.0 * em - content - 2.0 * em,
+            screen.bottom() - 2.0 * em - height,
+        ),
         vec2(content + 2.0 * em, height),
     );
     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(screen));
@@ -1317,15 +1507,29 @@ fn draw_floating(
     let mut job = egui::text::LayoutJob::default();
     let format = |color| egui::TextFormat::simple(theme::regular(h2), color);
     if up_next.autoplay {
-        job.append(&format!("Next {noun} Playing in "), 0.0, format(Color32::WHITE));
-        job.append(&format!("{} Seconds", up_next.countdown.max(0)), 0.0, format(theme::JF_ACCENT));
+        job.append(
+            &format!("Next {noun} Playing in "),
+            0.0,
+            format(Color32::WHITE),
+        );
+        job.append(
+            &format!("{} Seconds", up_next.countdown.max(0)),
+            0.0,
+            format(theme::JF_ACCENT),
+        );
     } else {
         job.append(&format!("Next {noun}"), 0.0, format(Color32::WHITE));
     }
     let heading = painter.layout_job(job);
     widgets::galley_on_baseline(&painter, left, jf::baseline(y, h2, 30.13), heading);
     y += 30.13 + 0.25 * h2 + 0.25 * h3;
-    let title = widgets::elided(&ui, &up_next.title, theme::regular(h3), Color32::WHITE, 25.5 * em);
+    let title = widgets::elided(
+        &ui,
+        &up_next.title,
+        theme::regular(h3),
+        Color32::WHITE,
+        25.5 * em,
+    );
     widgets::galley_on_baseline(&painter, left, jf::baseline(y, h3, 23.5), title);
     y += 23.5 + 0.5 * h3;
     if let Some((pieces, misc_height)) = misc {
@@ -1343,7 +1547,11 @@ fn draw_floating(
         right = rect.left() - 0.6 * em;
         let response = ui.interact(rect, Id::new(("up-next-button", label)), Sense::click());
         widgets::describe_button(&response, true, label);
-        let fill = if response.hovered() { Color32::from_gray(0x50) } else { Color32::from_gray(0x40) };
+        let fill = if response.hovered() {
+            Color32::from_gray(0x50)
+        } else {
+            Color32::from_gray(0x40)
+        };
         painter.rect_filled(rect, 0.2 * em, fill);
         widgets::galley_on_baseline(
             &painter,
@@ -1375,28 +1583,59 @@ fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec
     }
     let speed = SPEED_LABELS[player.speed_index.min(SPEED_LABELS.len() - 1)];
     let aspect = ASPECT_LABELS[player.aspect_index.min(ASPECT_LABELS.len() - 1)];
-    let item = |label, checked: bool| SheetItem { label, icon: None, checked, aside: None };
+    let item = |label, checked: bool| SheetItem {
+        label,
+        icon: None,
+        checked,
+        aside: None,
+    };
     let (title, items): (Option<&str>, Vec<SheetItem<'_>>) = match player.menu {
         PlayerMenu::Settings => (
             None,
             vec![
-                SheetItem { label: "Aspect Ratio", icon: None, checked: false, aside: Some(aspect) },
-                SheetItem { label: "Playback Speed", icon: None, checked: false, aside: Some(speed) },
-                SheetItem { label: "Repeat Mode", icon: None, checked: false, aside: Some(player.repeat.label()) },
+                SheetItem {
+                    label: "Aspect Ratio",
+                    icon: None,
+                    checked: false,
+                    aside: Some(aspect),
+                },
+                SheetItem {
+                    label: "Playback Speed",
+                    icon: None,
+                    checked: false,
+                    aside: Some(speed),
+                },
+                SheetItem {
+                    label: "Repeat Mode",
+                    icon: None,
+                    checked: false,
+                    aside: Some(player.repeat.label()),
+                },
                 item("Playback Info", false),
             ],
         ),
         PlayerMenu::Speed => (
             None,
-            SPEED_LABELS.iter().enumerate().map(|(index, label)| item(label, index == player.speed_index)).collect(),
+            SPEED_LABELS
+                .iter()
+                .enumerate()
+                .map(|(index, label)| item(label, index == player.speed_index))
+                .collect(),
         ),
         PlayerMenu::Aspect => (
             None,
-            ASPECT_LABELS.iter().enumerate().map(|(index, label)| item(label, index == player.aspect_index)).collect(),
+            ASPECT_LABELS
+                .iter()
+                .enumerate()
+                .map(|(index, label)| item(label, index == player.aspect_index))
+                .collect(),
         ),
         PlayerMenu::Repeat => (
             None,
-            RepeatMode::ALL.iter().map(|mode| item(mode.label(), *mode == player.repeat)).collect(),
+            RepeatMode::ALL
+                .iter()
+                .map(|mode| item(mode.label(), *mode == player.repeat))
+                .collect(),
         ),
         PlayerMenu::Audio => (
             Some("Audio"),
@@ -1404,7 +1643,9 @@ fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec
                 .audio_options
                 .iter()
                 .enumerate()
-                .map(|(index, label)| item(label, i32::try_from(index).ok() == Some(player.audio_index)))
+                .map(|(index, label)| {
+                    item(label, i32::try_from(index).ok() == Some(player.audio_index))
+                })
                 .collect(),
         ),
         PlayerMenu::Subtitles => (
@@ -1413,13 +1654,19 @@ fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec
                 .subtitle_options
                 .iter()
                 .enumerate()
-                .map(|(index, label)| item(label, i32::try_from(index).ok() == Some(player.subtitle_index)))
+                .map(|(index, label)| {
+                    item(
+                        label,
+                        i32::try_from(index).ok() == Some(player.subtitle_index),
+                    )
+                })
                 .collect(),
         ),
         PlayerMenu::None => unreachable!("returned above"),
     };
     let id = Id::new(("player-menu", player.menu as u8));
-    let (picked, close) = dialogs::action_sheet(ui.ctx(), id, player.menu_anchor, title, &items, None);
+    let (picked, close) =
+        dialogs::action_sheet(ui.ctx(), id, player.menu_anchor, title, &items, None);
     drop(items);
     let player = &mut state.player;
     let menu = player.menu;
@@ -1518,9 +1765,15 @@ mod tests {
         ];
         let listed = jellyfin_tracks(&streams, "Subtitle", tracks);
         // Stream 3 plays from the file itself, stream 4 from its copy.
-        assert_eq!(listed.iter().map(|track| track.id).collect::<Vec<_>>(), [1, 4]);
+        assert_eq!(
+            listed.iter().map(|track| track.id).collect::<Vec<_>>(),
+            [1, 4]
+        );
         assert_eq!(listed[0].label, "French SDH - SubRip");
         // No stream list: mpv's tracks as they are.
-        assert_eq!(jellyfin_tracks(&[], "Audio", vec![track(7, Some(1), "x", false)]).len(), 1);
+        assert_eq!(
+            jellyfin_tracks(&[], "Audio", vec![track(7, Some(1), "x", false)]).len(),
+            1
+        );
     }
 }

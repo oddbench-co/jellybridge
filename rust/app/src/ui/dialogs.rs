@@ -83,11 +83,17 @@ pub fn action_sheet(
     let screen = ctx.content_rect();
     let any_icon = items.iter().any(|item| item.icon.is_some() || item.checked);
     let font = theme::regular(theme::JF_FONT);
-    let text_left = if any_icon { SHEET_TEXT_LEFT_ICON } else { SHEET_TEXT_LEFT };
+    let text_left = if any_icon {
+        SHEET_TEXT_LEFT_ICON
+    } else {
+        SHEET_TEXT_LEFT
+    };
     let galleys: Vec<_> = items
         .iter()
         .map(|item| {
-            ctx.fonts_mut(|fonts| fonts.layout_no_wrap(item.label.to_owned(), font.clone(), theme::JF_TEXT))
+            ctx.fonts_mut(|fonts| {
+                fonts.layout_no_wrap(item.label.to_owned(), font.clone(), theme::JF_TEXT)
+            })
         })
         .collect();
     let aside_font = theme::regular(SHEET_ASIDE);
@@ -95,30 +101,56 @@ pub fn action_sheet(
         .iter()
         .map(|item| {
             item.aside.map(|aside| {
-                ctx.fonts_mut(|fonts| fonts.layout_no_wrap(aside.to_owned(), aside_font.clone(), SHEET_ASIDE_COLOR))
+                ctx.fonts_mut(|fonts| {
+                    fonts.layout_no_wrap(aside.to_owned(), aside_font.clone(), SHEET_ASIDE_COLOR)
+                })
             })
         })
         .collect();
     let title_galley = title.map(|title| {
-        ctx.fonts_mut(|fonts| fonts.layout_no_wrap(title.to_owned(), theme::regular(SHEET_TITLE), theme::JF_TEXT))
+        ctx.fonts_mut(|fonts| {
+            fonts.layout_no_wrap(
+                title.to_owned(),
+                theme::regular(SHEET_TITLE),
+                theme::JF_TEXT,
+            )
+        })
     });
     let widest = galleys
         .iter()
         .zip(&asides)
         .map(|(galley, aside)| {
             galley.size().x
-                + aside.as_ref().map_or(0.0, |aside| SHEET_ASIDE_GAP + aside.size().x + SHEET_ASIDE_RIGHT)
+                + aside.as_ref().map_or(0.0, |aside| {
+                    SHEET_ASIDE_GAP + aside.size().x + SHEET_ASIDE_RIGHT
+                })
         })
         .fold(0.0, f32::max);
     let width = (text_left + widest + SHEET_TEXT_RIGHT)
-        .max(title_galley.as_ref().map_or(0.0, |title| title.size().x + 2.0 * SHEET_TITLE_SIDE))
+        .max(
+            title_galley
+                .as_ref()
+                .map_or(0.0, |title| title.size().x + 2.0 * SHEET_TITLE_SIDE),
+        )
         .min(screen.width() * 0.9);
-    let heading = if title.is_some() { SHEET_TITLE_TOP + SHEET_TITLE_LINE + SHEET_TITLE_BOTTOM } else { 0.0 };
-    let height = (heading + items.len() as f32 * SHEET_ROW + 2.0 * SHEET_PADDING).min(screen.height() * 0.9);
+    let heading = if title.is_some() {
+        SHEET_TITLE_TOP + SHEET_TITLE_LINE + SHEET_TITLE_BOTTOM
+    } else {
+        0.0
+    };
+    let height =
+        (heading + items.len() as f32 * SHEET_ROW + 2.0 * SHEET_PADDING).min(screen.height() * 0.9);
     let (left, top) = match selected {
         Some(selected) => {
-            let top = anchor.center().y - SHEET_PADDING - heading - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
-            let top = top.clamp(screen.top() + 8.0, (screen.bottom() - height - 8.0).max(8.0));
+            let top = anchor.center().y
+                - SHEET_PADDING
+                - heading
+                - selected as f32 * SHEET_ROW
+                - SHEET_ROW / 2.0;
+            let top = top.clamp(
+                screen.top() + 8.0,
+                (screen.bottom() - height - 8.0).max(8.0),
+            );
             let left = anchor
                 .left()
                 .clamp(screen.left() + 8.0, (screen.right() - width - 8.0).max(8.0));
@@ -154,13 +186,23 @@ pub fn action_sheet(
                 widgets::galley_on_baseline(
                     ui.painter(),
                     rect.left() + SHEET_TITLE_SIDE,
-                    layer_baseline(ui, rect.top() + SHEET_PADDING + SHEET_TITLE_TOP, SHEET_TITLE, SHEET_TITLE_LINE),
+                    layer_baseline(
+                        ui,
+                        rect.top() + SHEET_PADDING + SHEET_TITLE_TOP,
+                        SHEET_TITLE,
+                        SHEET_TITLE_LINE,
+                    ),
                     title,
                 );
             }
-            for (index, ((item, galley), aside)) in items.iter().zip(galleys).zip(asides).enumerate() {
+            for (index, ((item, galley), aside)) in
+                items.iter().zip(galleys).zip(asides).enumerate()
+            {
                 let row = Rect::from_min_size(
-                    pos2(rect.left(), rect.top() + SHEET_PADDING + heading + index as f32 * SHEET_ROW),
+                    pos2(
+                        rect.left(),
+                        rect.top() + SHEET_PADDING + heading + index as f32 * SHEET_ROW,
+                    ),
                     vec2(width, SHEET_ROW),
                 );
                 if row.bottom() > rect.bottom() {
@@ -169,11 +211,16 @@ pub fn action_sheet(
                 let response = ui.interact(row, id.with(("row", index)), Sense::click());
                 widgets::describe_button(&response, true, item.label);
                 if response.has_focus() {
-                    ui.painter().rect_filled(row, 0.2 * theme::JF_FONT, Color32::from_gray(0x33));
+                    ui.painter()
+                        .rect_filled(row, 0.2 * theme::JF_FONT, Color32::from_gray(0x33));
                 } else if response.hovered() {
                     ui.painter().rect_filled(row, 0.0, Color32::from_gray(0x24));
                 }
-                let icon = if item.checked { Some(Icon::Check) } else { item.icon };
+                let icon = if item.checked {
+                    Some(Icon::Check)
+                } else {
+                    item.icon
+                };
                 if let Some(icon) = icon {
                     icons::paint_centered(
                         ui.painter(),
@@ -193,7 +240,11 @@ pub fn action_sheet(
                 widgets::galley_on_baseline(
                     &ui.painter().with_clip_rect(clip),
                     row.left() + text_left,
-                    super::jf::baseline(row.top() + SHEET_TEXT_TOP, theme::JF_FONT, SHEET_TEXT_LINE),
+                    super::jf::baseline(
+                        row.top() + SHEET_TEXT_TOP,
+                        theme::JF_FONT,
+                        SHEET_TEXT_LINE,
+                    ),
                     galley,
                 );
                 if let Some(aside) = aside {
@@ -217,7 +268,9 @@ pub fn action_sheet(
 
 /// jellyfin-web's `.dialog` box shadow, all three layers.
 fn paint_dialog_shadow(painter: &egui::Painter, rect: Rect, radius: f32) {
-    for (offset, blur, spread, alpha) in [(16, 24, 2.0, 0.14), (6, 30, 5.0, 0.12), (8, 10, -5.0, 0.4)] {
+    for (offset, blur, spread, alpha) in
+        [(16, 24, 2.0, 0.14), (6, 30, 5.0, 0.12), (8, 10, -5.0, 0.4)]
+    {
         let shadow = egui::Shadow {
             offset: [0, offset],
             blur,
@@ -250,15 +303,17 @@ pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button:
     let close = backdrop(ctx, id);
     let screen = ctx.content_rect();
     let layout = |text: &str, font: egui::FontId, wrap: f32| {
-        ctx.fonts_mut(|fonts| {
-            fonts.layout(text.to_owned(), font, theme::JF_TEXT, wrap)
-        })
+        ctx.fonts_mut(|fonts| fonts.layout(text.to_owned(), font, theme::JF_TEXT, wrap))
     };
     let title_galley = layout(title, theme::regular(ALERT_TITLE), f32::INFINITY);
     let max_text = (screen.width() * 0.8 - 2.0 * ALERT_PADDING).max(100.0);
     let text_galley = layout(text, theme::regular(theme::JF_FONT), max_text);
     let button_galley = ctx.fonts_mut(|fonts| {
-        fonts.layout_no_wrap(button.to_owned(), theme::bold(theme::JF_FONT), Color32::WHITE)
+        fonts.layout_no_wrap(
+            button.to_owned(),
+            theme::bold(theme::JF_FONT),
+            Color32::WHITE,
+        )
     });
     let button_width = button_galley.size().x + 2.0 * ALERT_PADDING;
     // The dialog shrinks to its widest part: in practice the title.
@@ -304,13 +359,17 @@ pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button:
                 );
             }
             let button_rect = Rect::from_min_size(
-                pos2(rect.center().x - button_width / 2.0, rect.top() + button_top),
+                pos2(
+                    rect.center().x - button_width / 2.0,
+                    rect.top() + button_top,
+                ),
                 vec2(button_width, ALERT_BUTTON),
             );
             let response = ui.interact(button_rect, id.with("button"), Sense::click());
             widgets::describe_button(&response, true, button);
             // jellyfin focuses the button on open: `.button-submit:focus`.
-            ui.painter().rect_filled(button_rect, radius, Color32::from_rgb(0x0c, 0xb0, 0xe8));
+            ui.painter()
+                .rect_filled(button_rect, radius, Color32::from_rgb(0x0c, 0xb0, 0xe8));
             let x = button_rect.center().x - button_galley.size().x / 2.0;
             widgets::galley_on_baseline(
                 ui.painter(),
@@ -342,7 +401,10 @@ pub fn panel<R>(
     let close = backdrop(ctx, id);
     let screen = ctx.content_rect();
     let page_width = screen.width() - super::scrollbar::reserved(ctx);
-    let size = vec2(size.x.min(page_width - 16.0), size.y.min(screen.height() - 16.0));
+    let size = vec2(
+        size.x.min(page_width - 16.0),
+        size.y.min(screen.height() - 16.0),
+    );
     let rect = Rect::from_min_size(
         pos2(
             screen.left() + (page_width - size.x) / 2.0,
@@ -391,9 +453,11 @@ pub fn layer_baseline(ui: &Ui, top: f32, size: f32, line_height: f32) -> f32 {
 
 /// A dialog `h2` whose line box starts at `top`.
 pub fn form_heading(ui: &Ui, left: f32, top: f32, text: &str) {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(text.to_owned(), theme::regular(FORM_HEADING_FONT), theme::JF_TEXT);
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        theme::regular(FORM_HEADING_FONT),
+        theme::JF_TEXT,
+    );
     widgets::galley_on_baseline(
         ui.painter(),
         left,
@@ -410,7 +474,11 @@ pub fn form_radio(ui: &Ui, row: Rect, label: &str, selected: bool, id: Id) -> bo
     widgets::describe_button(&response, true, label);
     let center = pos2(row.left() + RADIO / 2.0, row.top() + 3.97 + RADIO / 2.0);
     let focused = response.has_focus();
-    let color = if focused { theme::JF_ACCENT } else { theme::JF_TEXT };
+    let color = if focused {
+        theme::JF_ACCENT
+    } else {
+        theme::JF_TEXT
+    };
     if focused {
         ui.painter().circle_filled(
             center,
@@ -426,9 +494,11 @@ pub fn form_radio(ui: &Ui, row: Rect, label: &str, selected: bool, id: Id) -> bo
     if selected {
         ui.painter().circle_filled(center, RADIO / 4.0, color);
     }
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), theme::regular(theme::JF_FONT), theme::JF_TEXT);
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        theme::regular(theme::JF_FONT),
+        theme::JF_TEXT,
+    );
     widgets::galley_on_baseline(
         ui.painter(),
         row.left() + FORM_LABEL_LEFT,
@@ -458,7 +528,10 @@ pub fn autofocus(ctx: &egui::Context, dialog: Id, first: Id, open: bool) {
 }
 
 /// The width of the widest label, for dialogs that shrink to fit.
-pub fn widest_label(ctx: &egui::Context, labels: impl IntoIterator<Item = impl Into<String>>) -> f32 {
+pub fn widest_label(
+    ctx: &egui::Context,
+    labels: impl IntoIterator<Item = impl Into<String>>,
+) -> f32 {
     labels
         .into_iter()
         .map(|label| {
@@ -486,23 +559,39 @@ const COLLAPSE_BODY_PADDING: f32 = 1.25 * theme::JF_FONT;
 /// margin (margins between rows collapse to one). Returns true when clicked.
 pub fn checkbox(ui: &mut Ui, label: &str, checked: bool, id: Id) -> bool {
     ui.add_space(FORM_ROW_MARGIN);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), CHECKBOX_ROW), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), CHECKBOX_ROW), Sense::hover());
     let response = ui.interact(rect, id, Sense::click());
     widgets::describe_button(&response, true, label);
-    let boxed = Rect::from_min_size(pos2(rect.left(), rect.top() + 3.0), vec2(CHECKBOX, CHECKBOX));
+    let boxed = Rect::from_min_size(
+        pos2(rect.left(), rect.top() + 3.0),
+        vec2(CHECKBOX, CHECKBOX),
+    );
     let radius = 0.14 * theme::JF_FONT;
     let focused = response.has_focus();
     if checked {
         ui.painter().rect_filled(boxed, radius, theme::JF_ACCENT);
         widgets::border(ui.painter(), boxed, radius, 2.0, Color32::WHITE);
-        icons::paint_centered(ui.painter(), Icon::Check, boxed.center(), 1.6 * theme::JF_FONT, Color32::WHITE);
+        icons::paint_centered(
+            ui.painter(),
+            Icon::Check,
+            boxed.center(),
+            1.6 * theme::JF_FONT,
+            Color32::WHITE,
+        );
     } else {
-        let color = if focused { theme::JF_ACCENT } else { theme::JF_TEXT };
+        let color = if focused {
+            theme::JF_ACCENT
+        } else {
+            theme::JF_TEXT
+        };
         widgets::border(ui.painter(), boxed, radius, 2.0, color);
     }
-    let galley = ui
-        .painter()
-        .layout_no_wrap(label.to_owned(), theme::regular(theme::JF_FONT), theme::JF_TEXT);
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        theme::regular(theme::JF_FONT),
+        theme::JF_TEXT,
+    );
     widgets::galley_on_baseline(
         ui.painter(),
         rect.left() + CHECKBOX_LABEL_LEFT,
@@ -518,25 +607,33 @@ pub fn checkbox(ui: &mut Ui, label: &str, checked: bool, id: Id) -> bool {
 /// Returns whether it was clicked.
 pub fn collapsible(ui: &mut Ui, title: &str, open: bool, id: Id) -> bool {
     ui.add_space(FORM_ROW_MARGIN);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), COLLAPSE_BUTTON), Sense::hover());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), COLLAPSE_BUTTON), Sense::hover());
     let response = ui.interact(rect, id, Sense::click());
     widgets::describe_button(&response, true, title);
     let size = 1.17 * theme::JF_FONT;
-    let galley = ui
-        .painter()
-        .layout_no_wrap(title.to_owned(), theme::regular(size), theme::JF_TEXT);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(title.to_owned(), theme::regular(size), theme::JF_TEXT);
     widgets::galley_on_baseline(
         ui.painter(),
         rect.left() + 0.1 * theme::JF_FONT,
         layer_baseline(ui, rect.top() + 0.9 * theme::JF_FONT, size, 23.48),
         galley,
     );
-    let icon = if open { Icon::ExpandLess } else { Icon::ExpandMore };
+    let icon = if open {
+        Icon::ExpandLess
+    } else {
+        Icon::ExpandMore
+    };
     let icon_size = 1.36 * theme::JF_FONT;
     icons::paint_centered(
         ui.painter(),
         icon,
-        pos2(rect.right() - 30.33 + icon_size / 2.0, rect.top() + 15.0 + icon_size / 2.0),
+        pos2(
+            rect.right() - 30.33 + icon_size / 2.0,
+            rect.top() + 15.0 + icon_size / 2.0,
+        ),
         icon_size,
         theme::JF_TEXT,
     );
@@ -554,25 +651,32 @@ pub fn collapse_body<R>(ui: &mut Ui, content: impl FnOnce(&mut Ui) -> R) -> R {
     let background = ui.painter().add(egui::Shape::Noop);
     let top = ui.cursor().top();
     ui.add_space(COLLAPSE_BODY_PADDING);
-    let inner = ui
-        .scope_builder(
-            egui::UiBuilder::new().max_rect(Rect::from_min_max(
-                pos2(ui.max_rect().left() + COLLAPSE_BODY_PADDING, ui.cursor().top()),
-                pos2(ui.max_rect().right() - COLLAPSE_BODY_PADDING, f32::INFINITY),
-            )),
-            |ui| {
-                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                let inner = content(ui);
-                ui.add_space(FORM_ROW_MARGIN);
-                inner
-            },
-        );
+    let inner = ui.scope_builder(
+        egui::UiBuilder::new().max_rect(Rect::from_min_max(
+            pos2(
+                ui.max_rect().left() + COLLAPSE_BODY_PADDING,
+                ui.cursor().top(),
+            ),
+            pos2(ui.max_rect().right() - COLLAPSE_BODY_PADDING, f32::INFINITY),
+        )),
+        |ui| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            let inner = content(ui);
+            ui.add_space(FORM_ROW_MARGIN);
+            inner
+        },
+    );
     ui.add_space(COLLAPSE_BODY_PADDING);
     let rect = Rect::from_min_max(
         pos2(ui.max_rect().left(), top),
-        pos2(ui.max_rect().right(), inner.response.rect.bottom() + COLLAPSE_BODY_PADDING),
+        pos2(
+            ui.max_rect().right(),
+            inner.response.rect.bottom() + COLLAPSE_BODY_PADDING,
+        ),
     );
-    ui.painter().set(background, egui::Shape::rect_filled(rect, 0.0, Color32::from_gray(32)));
+    ui.painter().set(
+        background,
+        egui::Shape::rect_filled(rect, 0.0, Color32::from_gray(32)),
+    );
     inner.inner
 }
-

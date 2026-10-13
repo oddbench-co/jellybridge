@@ -938,7 +938,8 @@ fn draw_select_sheet(ui: &Ui, vm: &mut SettingsVm) {
         .map(|(value, name)| dialogs::SheetItem {
             label: name,
             icon: None,
-            checked: *value == current, aside: None,
+            checked: *value == current,
+            aside: None,
         })
         .collect::<Vec<_>>();
     let anchor = Rect::from_center_size(ui.ctx().content_rect().center(), vec2(1.0, 1.0));
@@ -946,7 +947,8 @@ fn draw_select_sheet(ui: &Ui, vm: &mut SettingsVm) {
         ui.ctx(),
         Id::new("settings-select-sheet"),
         anchor,
-        None, &items,
+        None,
+        &items,
         Some(selected),
     );
     if let Some(index) = picked {

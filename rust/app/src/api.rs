@@ -310,12 +310,10 @@ impl JellyfinApi {
             )
             .await?;
         let field = |name: &str| state[name].as_str().map(str::to_owned);
-        field("Secret")
-            .zip(field("Code"))
-            .ok_or(ApiError::Status {
-                status: reqwest::StatusCode::BAD_GATEWAY,
-                operation: "starting Quick Connect",
-            })
+        field("Secret").zip(field("Code")).ok_or(ApiError::Status {
+            status: reqwest::StatusCode::BAD_GATEWAY,
+            operation: "starting Quick Connect",
+        })
     }
 
     /// Whether the code was entered on a signed-in device yet.
@@ -354,7 +352,10 @@ impl JellyfinApi {
     }
 
     /// Starts a password reset for `username`: what the server says to do.
-    pub async fn forgot_password(server: &str, username: &str) -> Result<serde_json::Value, ApiError> {
+    pub async fn forgot_password(
+        server: &str,
+        username: &str,
+    ) -> Result<serde_json::Value, ApiError> {
         let api = Self::anonymous(server)?;
         api.send_json(
             api.request(Method::POST, "Users/ForgotPassword")?
@@ -365,7 +366,10 @@ impl JellyfinApi {
     }
 
     /// Finishes a password reset with the PIN from the server's file.
-    pub async fn forgot_password_pin(server: &str, pin: &str) -> Result<serde_json::Value, ApiError> {
+    pub async fn forgot_password_pin(
+        server: &str,
+        pin: &str,
+    ) -> Result<serde_json::Value, ApiError> {
         let api = Self::anonymous(server)?;
         api.send_json(
             api.request(Method::POST, "Users/ForgotPassword/Pin")?
@@ -445,7 +449,10 @@ impl JellyfinApi {
                 // A library tile shows no count, and the server's count for
                 // a library varies from one request to the next, which
                 // would make every saved Home look stale.
-                .map(|library| CatalogItemData { child_count: 0, ..library })
+                .map(|library| CatalogItemData {
+                    child_count: 0,
+                    ..library
+                })
                 .collect::<Vec<_>>(),
         );
         let mut sections = Vec::new();
