@@ -24,6 +24,19 @@ const CLIENT_NAME: &str = "JellyBridge";
 const CLIENT_VERSION: &str = "0.1.0-rust";
 const DEVICE_NAME: &str = "Desktop";
 const DEVICE_ID: &str = "jellybridge-rust-desktop";
+
+/// The device id this client reports: `JELLYBRIDGE_DEVICE_ID` when set, so
+/// a test instance signing in never takes over (and signs out) the user's
+/// own app, which Jellyfin would do for a second sign-in from one device.
+fn device_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        std::env::var("JELLYBRIDGE_DEVICE_ID")
+            .ok()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| DEVICE_ID.to_owned())
+    })
+}
 // Fields for list queries. `RecursiveItemCount` is deliberately absent: it
 // makes the server recursively count the contents of every folder-typed row,
 // which measured 17.8-18.1 s against a 323-item music library versus 0.37 s
@@ -263,6 +276,102 @@ impl JellyfinApi {
             Err(ApiError::Unauthorized) => Ok(false),
             Err(error) => Err(error),
         }
+    }
+
+    /// A client for `server` before anyone has signed in.
+    fn anonymous(server: &str) -> Result<Self, ApiError> {
+        let server = normalize_server_url(server)?;
+        Self::from_session(StoredSession {
+            server_url: server.as_str().trim_end_matches('/').to_owned(),
+            token: String::new(),
+            user_id: String::new(),
+        })
+    }
+
+    /// Whether `server` lets devices sign in with Quick Connect.
+    pub async fn quick_connect_enabled(server: &str) -> Result<bool, ApiError> {
+        let api = Self::anonymous(server)?;
+        api.send_json(
+            api.request(Method::GET, "QuickConnect/Enabled")?,
+            "checking Quick Connect",
+        )
+        .await
+    }
+
+    /// Starts a Quick Connect sign-in: the secret to poll with and the
+    /// code the user enters on a signed-in device.
+    pub async fn quick_connect_initiate(server: &str) -> Result<(String, String), ApiError> {
+        let api = Self::anonymous(server)?;
+        let state: serde_json::Value = api
+            .send_json(
+                api.request(Method::POST, "QuickConnect/Initiate")?,
+                "starting Quick Connect",
+            )
+            .await?;
+        let field = |name: &str| state[name].as_str().map(str::to_owned);
+        field("Secret")
+            .zip(field("Code"))
+            .ok_or(ApiError::Status {
+                status: reqwest::StatusCode::BAD_GATEWAY,
+                operation: "starting Quick Connect",
+            })
+    }
+
+    /// Whether the code was entered on a signed-in device yet.
+    pub async fn quick_connect_approved(server: &str, secret: &str) -> Result<bool, ApiError> {
+        let api = Self::anonymous(server)?;
+        let state: serde_json::Value = api
+            .send_json(
+                api.request(Method::GET, "QuickConnect/Connect")?
+                    .query(&[("secret", secret)]),
+                "checking Quick Connect",
+            )
+            .await?;
+        Ok(state["Authenticated"].as_bool().unwrap_or(false))
+    }
+
+    /// Signs in with an approved Quick Connect secret.
+    pub async fn authenticate_with_quick_connect(
+        server: &str,
+        secret: &str,
+    ) -> Result<(Self, String), ApiError> {
+        let api = Self::anonymous(server)?;
+        let response: AuthResponse = api
+            .send_json(
+                api.request(Method::POST, "Users/AuthenticateWithQuickConnect")?
+                    .json(&serde_json::json!({ "Secret": secret })),
+                "authenticating",
+            )
+            .await?;
+        let session = StoredSession {
+            server_url: api.session.server_url,
+            token: response.access_token,
+            user_id: response.user.id,
+        };
+        let account_name = response.user.name;
+        Ok((Self::from_session_with(session, api.http)?, account_name))
+    }
+
+    /// Starts a password reset for `username`: what the server says to do.
+    pub async fn forgot_password(server: &str, username: &str) -> Result<serde_json::Value, ApiError> {
+        let api = Self::anonymous(server)?;
+        api.send_json(
+            api.request(Method::POST, "Users/ForgotPassword")?
+                .json(&serde_json::json!({ "EnteredUsername": username })),
+            "requesting a password reset",
+        )
+        .await
+    }
+
+    /// Finishes a password reset with the PIN from the server's file.
+    pub async fn forgot_password_pin(server: &str, pin: &str) -> Result<serde_json::Value, ApiError> {
+        let api = Self::anonymous(server)?;
+        api.send_json(
+            api.request(Method::POST, "Users/ForgotPassword/Pin")?
+                .json(&serde_json::json!({ "Pin": pin })),
+            "resetting the password",
+        )
+        .await
     }
 
     pub fn session(&self) -> &StoredSession {
@@ -1318,11 +1427,13 @@ pub fn authorization_value(token: &str) -> Result<HeaderValue, InvalidHeaderValu
     let token = token.replace(['\\', '"'], "");
     let value = if token.is_empty() {
         format!(
-            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\""
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{}\", Version=\"{CLIENT_VERSION}\"",
+            device_id()
         )
     } else {
         format!(
-            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{DEVICE_ID}\", Version=\"{CLIENT_VERSION}\", Token=\"{token}\""
+            "MediaBrowser Client=\"{CLIENT_NAME}\", Device=\"{DEVICE_NAME}\", DeviceId=\"{}\", Version=\"{CLIENT_VERSION}\", Token=\"{token}\"",
+            device_id()
         )
     };
     HeaderValue::from_str(&value)

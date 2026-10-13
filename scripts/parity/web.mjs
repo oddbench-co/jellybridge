@@ -28,7 +28,9 @@ await send('Emulation.setDeviceMetricsOverride', { width: +width, height: +heigh
 await send('Page.enable');
 await send('Page.navigate', { url: server + '/web/' });
 await sleep(1500);
-const creds = { Servers: [{ ManualAddress: server, LocalAddress: server, Id: info.Id, Name: info.ServerName, UserId: userId, AccessToken: token, DateLastAccessed: Date.now(), LastConnectionMode: 2, manualAddressOnly: true }] };
+// NO_CREDENTIALS=1: a signed-out browser (the server is still known, so
+// jellyfin-web opens its sign-in page for it).
+const creds = { Servers: [{ ManualAddress: server, LocalAddress: server, Id: info.Id, Name: info.ServerName, ...(process.env.NO_CREDENTIALS ? {} : { UserId: userId, AccessToken: token }), DateLastAccessed: Date.now(), LastConnectionMode: 2, manualAddressOnly: true }] };
 await send('Runtime.evaluate', { expression: `localStorage.setItem('jellyfin_credentials', ${JSON.stringify(JSON.stringify(creds))}); localStorage.setItem('enableAutoLogin','true'); localStorage.setItem('_deviceId2','jellybridge-rust-desktop');` });
 await send('Page.navigate', { url: server + '/web/index.html#/home' });
 await sleep(500);

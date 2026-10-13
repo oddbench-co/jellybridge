@@ -31,6 +31,20 @@ pub enum UiAction {
         server: String,
         username: String,
         password: String,
+        remember: bool,
+    },
+    QuickConnect {
+        server: String,
+        remember: bool,
+    },
+    CancelQuickConnect,
+    ForgotPassword {
+        server: String,
+        username: String,
+    },
+    ForgotPasswordPin {
+        server: String,
+        pin: String,
     },
     Logout,
     GoBack,
@@ -281,7 +295,18 @@ impl JellyBridgeApp {
                 server,
                 username,
                 password,
-            } => features::auth::start_login(context, server, username, password),
+                remember,
+            } => features::auth::start_login(context, server, username, password, remember),
+            UiAction::QuickConnect { server, remember } => {
+                features::auth::start_quick_connect(context, server, remember);
+            }
+            UiAction::CancelQuickConnect => features::auth::cancel_quick_connect(context),
+            UiAction::ForgotPassword { server, username } => {
+                features::auth::forgot_password(context, server, username);
+            }
+            UiAction::ForgotPasswordPin { server, pin } => {
+                features::auth::forgot_password_pin(context, server, pin);
+            }
             UiAction::Logout => {
                 self.state.login.password.clear();
                 features::auth::logout(context);

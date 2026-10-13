@@ -171,6 +171,115 @@ pub fn action_sheet(
     (picked, close || picked.is_some())
 }
 
+/// jellyfin-web's `.dialog` box shadow, all three layers.
+fn paint_dialog_shadow(painter: &egui::Painter, rect: Rect, radius: f32) {
+    for (offset, blur, spread, alpha) in [(16, 24, 2.0, 0.14), (6, 30, 5.0, 0.12), (8, 10, -5.0, 0.4)] {
+        let shadow = egui::Shadow {
+            offset: [0, offset],
+            blur,
+            spread: 0,
+            color: Color32::from_black_alpha((alpha * 255.0f32).round() as u8),
+        };
+        // egui's spread is unsigned; grow or shrink the box instead.
+        painter.add(shadow.as_shape(rect.expand(spread), radius));
+    }
+}
+
+// jellyfin-web's alert `formDialog` metrics, measured at 1em = 14.88 px.
+const ALERT_TITLE: f32 = 1.8 * theme::JF_FONT;
+const ALERT_TITLE_LINE: f32 = 36.14;
+/// Header padding plus the title's own side padding.
+const ALERT_TITLE_LEFT: f32 = 7.44 + 26.77 + 26.784;
+const ALERT_TITLE_TOP: f32 = 28.26;
+const ALERT_TEXT_TOP: f32 = 94.15;
+const ALERT_TEXT_LINE: f32 = 1.35 * theme::JF_FONT;
+const ALERT_PADDING: f32 = 29.76;
+/// Content padding, footer margin and padding, button margin.
+const ALERT_BUTTON_GAP: f32 = 14.88 + 14.88 + 22.32;
+const ALERT_BOTTOM: f32 = 22.32 + 14.88;
+const ALERT_BUTTON: f32 = 46.86;
+
+/// jellyfin-web's alert: a title, centred text and one focused submit
+/// button, centred in the window over a 50% dim. Returns true once it is
+/// dismissed: the button, Enter, Escape or a click on the dim.
+pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button: &str) -> bool {
+    let close = backdrop(ctx, id);
+    let screen = ctx.content_rect();
+    let layout = |text: &str, font: egui::FontId, wrap: f32| {
+        ctx.fonts_mut(|fonts| {
+            fonts.layout(text.to_owned(), font, theme::JF_TEXT, wrap)
+        })
+    };
+    let title_galley = layout(title, theme::regular(ALERT_TITLE), f32::INFINITY);
+    let max_text = (screen.width() * 0.8 - 2.0 * ALERT_PADDING).max(100.0);
+    let text_galley = layout(text, theme::regular(theme::JF_FONT), max_text);
+    let button_galley = ctx.fonts_mut(|fonts| {
+        fonts.layout_no_wrap(button.to_owned(), theme::bold(theme::JF_FONT), Color32::WHITE)
+    });
+    let button_width = button_galley.size().x + 2.0 * ALERT_PADDING;
+    // The dialog shrinks to its widest part: in practice the title.
+    let width = (title_galley.size().x + 2.0 * ALERT_TITLE_LEFT - 26.77)
+        .max(text_galley.size().x + 2.0 * ALERT_PADDING + 31.02)
+        .max(button_width + 2.0 * 22.32)
+        .min(screen.width() - 32.0);
+    let lines = text_galley.rows.len().max(1) as f32;
+    let text_bottom = ALERT_TEXT_TOP + lines * ALERT_TEXT_LINE;
+    let button_top = text_bottom + ALERT_BUTTON_GAP;
+    let height = button_top + ALERT_BUTTON + ALERT_BOTTOM;
+    let rect = Rect::from_min_size(
+        pos2(
+            screen.center().x - width / 2.0,
+            screen.center().y - height / 2.0,
+        ),
+        vec2(width, height),
+    );
+    let radius = 0.2 * theme::JF_FONT;
+    let area = egui::Area::new(id)
+        .order(Order::Tooltip)
+        .fixed_pos(rect.min)
+        .show(ctx, |ui| {
+            let painter = ui.painter();
+            paint_dialog_shadow(painter, rect, radius);
+            painter.rect_filled(rect, radius, theme::JF_BG);
+            widgets::galley_on_baseline(
+                painter,
+                rect.left() + ALERT_TITLE_LEFT,
+                super::jf::baseline(rect.top() + ALERT_TITLE_TOP, ALERT_TITLE, ALERT_TITLE_LINE),
+                title_galley,
+            );
+            for (index, row) in text_galley.rows.iter().enumerate() {
+                let galley = layout(&row.text(), theme::regular(theme::JF_FONT), f32::INFINITY);
+                let x = rect.center().x - galley.size().x / 2.0;
+                let top = rect.top() + ALERT_TEXT_TOP + index as f32 * ALERT_TEXT_LINE;
+                widgets::galley_on_baseline(
+                    painter,
+                    x,
+                    super::jf::baseline(top, theme::JF_FONT, ALERT_TEXT_LINE),
+                    galley,
+                );
+            }
+            let button_rect = Rect::from_min_size(
+                pos2(rect.center().x - button_width / 2.0, rect.top() + button_top),
+                vec2(button_width, ALERT_BUTTON),
+            );
+            let response = ui.interact(button_rect, id.with("button"), Sense::click());
+            widgets::describe_button(&response, true, button);
+            // jellyfin focuses the button on open: `.button-submit:focus`.
+            ui.painter().rect_filled(button_rect, radius, Color32::from_rgb(0x0c, 0xb0, 0xe8));
+            let x = button_rect.center().x - button_galley.size().x / 2.0;
+            widgets::galley_on_baseline(
+                ui.painter(),
+                x,
+                super::jf::baseline(button_rect.top() + 13.392, theme::JF_FONT, 20.08),
+                button_galley,
+            );
+            widgets::pointer_on_hover(&response);
+            response.clicked()
+        });
+    let enter = ctx.input(|input| input.key_pressed(egui::Key::Enter));
+    close || area.inner || enter
+}
+
 /// A dialog section heading, 22.3 px like jellyfin-web's `h2`.
 pub fn heading(ui: &mut Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
