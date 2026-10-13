@@ -1,23 +1,72 @@
-//! The desktop's own file chooser, through xdg-desktop-portal: the dialog
-//! the user's desktop draws (GNOME, KDE, Hyprland's), no toolkit of ours.
+//! The desktop's own file chooser: on Linux through xdg-desktop-portal (the
+//! dialog the user's desktop draws: GNOME, KDE, Hyprland's), on Windows the
+//! system open-file dialog. No toolkit of ours either way.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-
-use zbus::blocking::{Connection, Proxy};
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PortalError {
+    #[cfg(target_os = "linux")]
     #[error("the desktop file chooser is unavailable: {0}")]
     Bus(#[from] zbus::Error),
+    #[cfg(target_os = "linux")]
     #[error("the desktop file chooser gave an unreadable answer")]
     Answer,
+    #[allow(dead_code)]
+    #[error("this system has no file chooser the app can use")]
+    Unsupported,
 }
 
 /// Asks the user for one image file. `None` when they cancel. Blocks until
 /// the dialog closes, so it runs on a blocking thread.
+#[cfg(windows)]
 pub fn pick_image(title: &str) -> Result<Option<PathBuf>, PortalError> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OPENFILENAMEW,
+    };
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    // Pairs of description and pattern, each nul-terminated, the list ended
+    // by an extra nul.
+    let filter: Vec<u16> = "Images\0*.png;*.jpg;*.jpeg;*.webp\0\0"
+        .encode_utf16()
+        .collect();
+    let title = wide(title);
+    let mut file = vec![0u16; 32 * 1024];
+    // SAFETY: OPENFILENAMEW is plain data; zeroed is its documented
+    // starting state.
+    let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+    dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+    dialog.lpstrFilter = filter.as_ptr();
+    dialog.lpstrFile = file.as_mut_ptr();
+    dialog.nMaxFile = file.len() as u32;
+    dialog.lpstrTitle = title.as_ptr();
+    dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    // SAFETY: every pointer in `dialog` outlives the call.
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        // Cancelled (or failed, which the user sees as nothing happening).
+        return Ok(None);
+    }
+    let length = file
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(file.len());
+    Ok(Some(PathBuf::from(std::ffi::OsString::from_wide(
+        &file[..length],
+    ))))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn pick_image(_title: &str) -> Result<Option<PathBuf>, PortalError> {
+    Err(PortalError::Unsupported)
+}
+
+#[cfg(target_os = "linux")]
+pub fn pick_image(title: &str) -> Result<Option<PathBuf>, PortalError> {
+    use std::collections::HashMap;
+    use zbus::blocking::{Connection, Proxy};
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
     let connection = Connection::session()?;
     // The portal answers on a request object whose path is derived from our
     // bus name and a token we choose; subscribe before asking so the
@@ -69,12 +118,13 @@ pub fn pick_image(title: &str) -> Result<Option<PathBuf>, PortalError> {
 }
 
 /// A `file://` URI as a path, percent escapes decoded.
+#[cfg(target_os = "linux")]
 fn file_path(uri: &str) -> Option<PathBuf> {
     let url = url::Url::parse(uri).ok()?;
     url.to_file_path().ok()
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

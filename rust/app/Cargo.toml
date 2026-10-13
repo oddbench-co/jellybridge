@@ -30,9 +30,16 @@ tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] 
 tracing = "=0.1.41"
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "env-filter"] }
 url = "=2.5.7"
+
 # The desktop portal's file chooser (Profile's "Add Image"); zbus already
 # comes in through the accessibility stack.
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+
+# Windows' own file dialog for "Add Image"; windows-sys already comes in
+# through winit.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"] }
 
 [package.metadata.packager]
 product-name = "JellyBridge"

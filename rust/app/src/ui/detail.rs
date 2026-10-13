@@ -496,12 +496,9 @@ fn today() -> (i32, u32, u32) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_secs() as i64);
-    // libc::localtime_r fills the struct from the epoch in local time.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let time: libc::time_t = now;
-    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+    let Some(tm) = super::local_time(now) else {
         return (1970, 1, 1);
-    }
+    };
     (tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32)
 }
 
@@ -2566,10 +2563,13 @@ fn open_in_browser(url: &str) {
         return;
     }
     #[cfg(target_os = "macos")]
-    let launcher = "open";
-    #[cfg(not(target_os = "macos"))]
-    let launcher = "xdg-open";
-    if let Err(error) = std::process::Command::new(launcher).arg(url).spawn() {
+    let mut command = std::process::Command::new("open");
+    // explorer.exe hands a URL to the default browser without a console.
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let mut command = std::process::Command::new("xdg-open");
+    if let Err(error) = command.arg(url).spawn() {
         tracing::warn!(%error, url, "external link could not be opened");
     }
 }

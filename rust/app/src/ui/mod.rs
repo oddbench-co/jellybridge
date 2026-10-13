@@ -262,19 +262,27 @@ pub(crate) fn format_playback_time(seconds: f64) -> String {
     }
 }
 
+/// `epoch` seconds as a calendar time in the local timezone.
+pub(crate) fn local_time(epoch: i64) -> Option<libc::tm> {
+    // SAFETY: tm is plain data, fully written by a successful call.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let time: libc::time_t = epoch as libc::time_t;
+    #[cfg(unix)]
+    let ok = !unsafe { libc::localtime_r(&time, &mut tm) }.is_null();
+    #[cfg(windows)]
+    let ok = unsafe { libc::localtime_s(&mut tm, &time) } == 0;
+    ok.then_some(tm)
+}
+
 /// "Ends at 4:47 PM" for `seconds_left` from now, in local time.
 pub(crate) fn ends_at_from_now(seconds_left: f64) -> String {
     let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
         return String::new();
     };
     let end_epoch = now.as_secs() as i64 + seconds_left.max(0.0).round() as i64;
-    // libc::localtime_r converts the epoch using the local timezone; the
-    // struct tm is fully written by the call.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    let time: libc::time_t = end_epoch;
-    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+    let Some(tm) = local_time(end_epoch) else {
         return String::new();
-    }
+    };
     let (hour, meridiem) = match tm.tm_hour {
         0 => (12, "AM"),
         1..=11 => (tm.tm_hour, "AM"),

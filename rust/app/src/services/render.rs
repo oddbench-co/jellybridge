@@ -841,7 +841,11 @@ impl GlProcResolver {
         let candidates = ["/System/Library/Frameworks/OpenGL.framework/OpenGL"];
         #[cfg(target_os = "linux")]
         let candidates = ["libEGL.so.1", "libGL.so.1"];
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        // opengl32 exports GL 1.1; everything newer comes from
+        // wglGetProcAddress below.
+        #[cfg(windows)]
+        let candidates = ["opengl32.dll"];
+        #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
         let candidates: [&str; 0] = [];
 
         let mut libraries = Vec::new();
@@ -855,7 +859,11 @@ impl GlProcResolver {
         }
         let mut fallbacks = Vec::new();
         for library in &libraries {
-            for symbol_name in [b"eglGetProcAddress\0".as_slice(), b"glXGetProcAddressARB\0"] {
+            for symbol_name in [
+                b"eglGetProcAddress\0".as_slice(),
+                b"glXGetProcAddressARB\0",
+                b"wglGetProcAddress\0",
+            ] {
                 if let Ok(symbol) = unsafe { library.get::<PlatformGetProc>(symbol_name) } {
                     fallbacks.push(*symbol);
                 }
@@ -877,7 +885,9 @@ impl GlProcResolver {
         }
         for get_proc in &self.fallbacks {
             let pointer = unsafe { get_proc(name.as_ptr()) };
-            if !pointer.is_null() {
+            // wglGetProcAddress answers "unknown" with 1, 2, 3 or -1 as well
+            // as null.
+            if !matches!(pointer as isize, -1..=3) {
                 return pointer.cast_mut();
             }
         }

@@ -286,6 +286,10 @@ impl SettingsStore {
 fn config_directory() -> Result<PathBuf, SessionError> {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
         Ok(PathBuf::from(path).join("jellybridge"))
+    } else if cfg!(windows) {
+        // %APPDATA%: settings roam with the user's profile.
+        let data = std::env::var_os("APPDATA").ok_or(SessionError::MissingConfigDirectory)?;
+        Ok(PathBuf::from(data).join("JellyBridge"))
     } else {
         let home = std::env::var_os("HOME").ok_or(SessionError::MissingConfigDirectory)?;
         Ok(PathBuf::from(home).join(".config/jellybridge"))
@@ -295,6 +299,10 @@ fn config_directory() -> Result<PathBuf, SessionError> {
 pub fn cache_directory() -> Result<PathBuf, SessionError> {
     let directory = if let Some(path) = std::env::var_os("XDG_CACHE_HOME") {
         PathBuf::from(path).join("jellybridge/images")
+    } else if cfg!(windows) {
+        // %LOCALAPPDATA%: a cache must not roam.
+        let local = std::env::var_os("LOCALAPPDATA").ok_or(SessionError::MissingConfigDirectory)?;
+        PathBuf::from(local).join("JellyBridge").join("images")
     } else {
         let home = std::env::var_os("HOME").ok_or(SessionError::MissingConfigDirectory)?;
         PathBuf::from(home).join(".cache/jellybridge/images")

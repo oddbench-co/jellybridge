@@ -47,6 +47,8 @@ installed to play, not to build. Performance work follows
 - `scripts/cargo-env.sh test --locked` — run the test suite.
 - `scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings` — lint.
 - `scripts/cargo-env.sh run` — launch the app.
+- `scripts/build-windows.sh` — cross-builds the Windows exe in a container
+  (podman or docker); ship it with `libmpv-2.dll` beside it.
 - `scripts/package-rust-app-personal.sh` — self-contained personal macOS
   package (see `docs/rust-port/packaging.md`).
 

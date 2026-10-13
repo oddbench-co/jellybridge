@@ -154,7 +154,11 @@ fn stats(values: &mut [f64]) -> serde_json::Value {
 
 fn ticks_per_second() -> f64 {
     // SAFETY: sysconf with a valid name is a pure read.
+    #[cfg(unix)]
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    // No /proc to read elsewhere; the CPU figures stay zero.
+    #[cfg(not(unix))]
+    let ticks = 100;
     if ticks > 0 { ticks as f64 } else { 100.0 }
 }
 

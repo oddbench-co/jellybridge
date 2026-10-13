@@ -285,12 +285,13 @@ fn downloads() -> &'static Mutex<HashMap<String, tokio::task::AbortHandle>> {
     DOWNLOADS.get_or_init(Default::default)
 }
 
-/// The folder downloads land in: `$XDG_DOWNLOAD_DIR`, else `~/Downloads`.
+/// The folder downloads land in: `$XDG_DOWNLOAD_DIR`, else `~/Downloads`
+/// (on Windows the profile's Downloads).
 fn download_directory() -> Option<std::path::PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_DOWNLOAD_DIR") {
         return Some(dir.into());
     }
-    let home = std::env::var_os("HOME")?;
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
     Some(std::path::PathBuf::from(home).join("Downloads"))
 }
 
