@@ -520,6 +520,9 @@ impl eframe::App for JellyBridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let layout_started = std::time::Instant::now();
         self.queue.drain(&mut self.state);
+        if self.state.images.upload_ready(ui.ctx()) {
+            ui.ctx().request_repaint();
+        }
         let mut actions = std::mem::take(&mut self.state.deferred);
         if let Some(script) = self.input_script.as_mut() {
             actions.extend(script.take_actions());

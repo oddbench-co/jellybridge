@@ -34,6 +34,7 @@ pub fn apply_home_result(
                 .lock()
                 .map(|state| state.account_name.clone())
                 .unwrap_or_default();
+            save_home_snapshot(context, &api, &home);
             install_home(context, api, account, home);
         }
         // One refused request does not prove the sign-in is gone (a server
@@ -77,8 +78,20 @@ pub fn apply_home_result(
     }
 }
 
-/// Shows a freshly signed-in or restored session's home page.
+/// Shows a freshly signed-in or restored session's home page, then fetches
+/// the shelves left off its first screen.
 pub fn install_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
+    show_home(context, api, account_name, home);
+    load_deferred_home(context);
+}
+
+/// Shows a saved Home at launch; [`refresh_home`] follows with the server's
+/// (and the deferred shelves).
+pub fn install_saved_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
+    show_home(context, api, account_name, home);
+}
+
+fn show_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
     // The user's Playback and Display settings the app follows.
     crate::features::pages::set_page_size(home.prefs.library_page_size());
     let (back, forward) = home.prefs.skip_lengths();
@@ -99,11 +112,48 @@ pub fn install_home(context: &AppContext, api: JellyfinApi, account_name: String
         state.retry = RetryAction::Page;
     }
     ui::catalog::present(context);
+}
+
+/// Keeps `home` for the next launch, off the UI thread.
+fn save_home_snapshot(context: &AppContext, api: &JellyfinApi, home: &HomeData) {
+    let session = api.session();
+    let (server, user, home) = (session.server_url.clone(), session.user_id.clone(), home.clone());
+    context
+        .runtime
+        .spawn_blocking(move || crate::services::home_snapshot::save(&server, &user, &home));
+}
+
+/// The server's Home after a saved one was shown: replaces the shelves in
+/// place (the page keeps its scroll), or only the data behind Home when the
+/// user has already moved on, and saves it for the next launch.
+pub fn refresh_home(context: &AppContext, home: HomeData) {
+    let Some(api) = context.api() else { return };
+    save_home_snapshot(context, &api, &home);
+    crate::features::pages::set_page_size(home.prefs.library_page_size());
+    let (back, forward) = home.prefs.skip_lengths();
+    crate::ui::player::present_skip_lengths(context, back, forward);
+    let shelves = crate::api::home_shelves(home.sections);
+    let on_home = if let Ok(mut state) = context.state.lock() {
+        state.prefs = home.prefs;
+        state.libraries = libraries_of(&shelves);
+        state.home = shelves.clone();
+        let on_home = state.page.route == PageRoute::home();
+        if on_home {
+            state.page.content = PageContent::Shelves(shelves);
+        }
+        on_home
+    } else {
+        false
+    };
+    if on_home {
+        ui::catalog::present_refresh(context);
+    }
+    tracing::debug!(ms = crate::ui::startup::elapsed_ms(), stage = "home_refreshed", "startup_stage");
     load_deferred_home(context);
 }
 
 /// Fetches the home shelves left out of the first screen and slots them in.
-fn load_deferred_home(context: &AppContext) {
+pub fn load_deferred_home(context: &AppContext) {
     let Some(api) = context.api() else { return };
     let libraries = context
         .state

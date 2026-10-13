@@ -75,7 +75,7 @@ impl DetailTarget {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageRef {
     pub item_id: String,
     pub image_type: ImageType,
@@ -83,7 +83,7 @@ pub struct ImageRef {
     pub tag: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImageType {
     Primary,
     Backdrop,

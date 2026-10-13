@@ -112,7 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // dashboard is the slowest thing in startup and it does not depend on the
     // window, so it runs while the window, the player and the renderer are
     // being built rather than after them. See auth::prefetch_home.
-    let prefetched_home = features::auth::prefetch_home(runtime.handle());
+    let (prefetched_home, home_snapshot) = features::auth::prefetch_home(runtime.handle());
     // The icon is needed when the window is created; decoding it meanwhile
     // keeps it off the critical path.
     let icon = runtime.spawn_blocking(decode_icon);
@@ -268,7 +268,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     runtime.spawn(features::refresh::run_refresh_loop(context.clone()));
     // Its updates queue up and land on the window's first frame.
-    features::auth::restore_session(&context, prefetched_home);
+    features::auth::restore_session(&context, prefetched_home, home_snapshot);
 
     let icon = runtime.block_on(icon).ok().flatten();
     let mut viewport = egui::ViewportBuilder::default()

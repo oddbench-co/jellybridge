@@ -61,6 +61,11 @@ pub enum ArtSource {
     },
 }
 
+/// How much decoded artwork goes to the GPU in one frame. An upload with its
+/// mipmap chain costs about 2 ms per megabyte here; this keeps a frame of
+/// uploads inside a 240 Hz refresh.
+const UPLOAD_BYTES_PER_FRAME: usize = 1024 * 1024;
+
 /// Decoded artwork as GPU textures, bounded by the bytes it holds.
 ///
 /// Entry counts do not describe this cache -- entries differ by an order of
@@ -82,6 +87,10 @@ pub struct ImageCache {
     failed: HashSet<String>,
     /// Misses drawn this frame, drained by the window after the frame.
     wanted: Vec<Art>,
+    /// Decoded images waiting for the GPU: [`ImageCache::upload_ready`]
+    /// takes them a few per frame, so a burst of arrivals (a shelf scrolled
+    /// into view) never stretches one frame past the refresh interval.
+    ready: std::collections::VecDeque<(String, ColorImage, bool)>,
 }
 
 struct Entry {
@@ -134,11 +143,37 @@ impl ImageCache {
         image: Option<ColorImage>,
         mipmaps: bool,
     ) {
-        self.pending.remove(&key);
         let Some(image) = image else {
+            self.pending.remove(&key);
             self.failed.insert(key);
             return;
         };
+        // Stays pending until uploaded, so it is not requested again.
+        self.ready.push_back((key, image, mipmaps));
+        ctx.request_repaint();
+    }
+
+    /// Uploads queued images, at most [`UPLOAD_BYTES_PER_FRAME`] of them a
+    /// frame (and always the first, whatever its size). Returns whether
+    /// more wait, so the window draws again for them.
+    pub fn upload_ready(&mut self, ctx: &egui::Context) -> bool {
+        let mut budget = UPLOAD_BYTES_PER_FRAME;
+        let mut first = true;
+        while let Some((_, image, _)) = self.ready.front() {
+            let bytes = image.width() * image.height() * 4;
+            if !first && bytes > budget {
+                break;
+            }
+            first = false;
+            budget = budget.saturating_sub(bytes);
+            let Some((key, image, mipmaps)) = self.ready.pop_front() else { break };
+            self.pending.remove(&key);
+            self.upload(ctx, key, image, mipmaps);
+        }
+        !self.ready.is_empty()
+    }
+
+    fn upload(&mut self, ctx: &egui::Context, key: String, image: ColorImage, mipmaps: bool) {
         let base = image.width() * image.height() * 4;
         let (bytes, options) = if mipmaps {
             // A mipmap chain adds a third on top of the base level.
@@ -197,6 +232,7 @@ impl ImageCache {
         self.entries.clear();
         self.bytes = 0;
         self.pending.clear();
+        self.ready.clear();
         self.failed.clear();
         self.wanted.clear();
     }
@@ -468,7 +504,26 @@ mod tests {
             Some(ColorImage::filled([2, 3], egui::Color32::WHITE)),
             true,
         );
+        // Decoded but not yet uploaded: still pending, not asked for again.
+        assert!(cache.texture(&art).is_none());
+        assert!(cache.take_wanted().is_empty());
+        assert!(!cache.upload_ready(&ctx));
         assert!(cache.texture(&art).is_some());
         assert_eq!(cache.size("poster"), Some([2, 3]));
+    }
+
+    #[test]
+    fn uploads_are_spread_over_frames() {
+        let ctx = egui::Context::default();
+        let mut cache = ImageCache::default();
+        // Three 600 KB images: one fits a frame's budget, two do not.
+        for key in ["a", "b", "c"] {
+            cache.finish(&ctx, key.to_owned(), Some(ColorImage::filled([300, 500], egui::Color32::WHITE)), true);
+        }
+        assert!(cache.upload_ready(&ctx), "more wait after the first frame");
+        assert!(cache.size("a").is_some() && cache.size("b").is_none());
+        assert!(cache.upload_ready(&ctx));
+        assert!(!cache.upload_ready(&ctx), "the third frame empties the queue");
+        assert!(cache.size("c").is_some());
     }
 }

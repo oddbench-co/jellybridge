@@ -52,7 +52,7 @@ const DEFAULT_HOME: [HomeSection; 10] = [
     HomeSection::None,
 ];
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct UserPrefs {
     /// The "emby" client's `CustomPrefs`.
     pub custom: HashMap<String, String>,

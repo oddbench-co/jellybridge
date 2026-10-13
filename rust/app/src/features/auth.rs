@@ -8,8 +8,12 @@ use crate::app::{
 };
 use crate::features::{catalog, playback};
 use crate::services::player::PlayerCommand;
+use crate::services::home_snapshot;
 use crate::services::session::SessionStore;
 use crate::ui;
+
+/// The saved session's last Home, read from disk while the window is built.
+pub type HomeSnapshot = tokio::sync::oneshot::Receiver<Option<(JellyfinApi, HomeData)>>;
 
 /// What the launch prefetch found, handed to [`restore_session`] once the
 /// window exists.
@@ -32,22 +36,35 @@ pub enum PrefetchedHome {
 /// client build, which loads and parses the system CA store -- runs on the
 /// runtime, so the main thread goes straight on to building the window.
 ///
-/// The result is authoritative: nothing is painted from disk, and the request
-/// is the same one `start_home_load` would have made.
-pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> JoinHandle<PrefetchedHome> {
-    runtime.spawn(async move {
+/// Alongside, the last Home saved for this session is read from disk and
+/// handed over at once (see [`HomeSnapshot`]); the request's result then
+/// replaces it.
+pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> (JoinHandle<PrefetchedHome>, HomeSnapshot) {
+    let (snapshot_sender, snapshot) = tokio::sync::oneshot::channel();
+    let task = runtime.spawn(async move {
         let loaded = tokio::task::spawn_blocking(|| {
             SessionStore::for_current_user().and_then(|store| store.load())
         })
         .await;
         let session = match loaded {
             Ok(Ok(Some(session))) => session,
-            Ok(Ok(None)) => return PrefetchedHome::NoSession,
+            Ok(Ok(None)) => {
+                let _ = snapshot_sender.send(None);
+                return PrefetchedHome::NoSession;
+            }
             Ok(Err(error)) => return PrefetchedHome::Unusable(error.to_string()),
             Err(error) => return PrefetchedHome::Unusable(error.to_string()),
         };
         match JellyfinApi::from_session(session) {
             Ok(api) => {
+                // The disk read races the request and always wins; it never
+                // delays it.
+                let disk_api = api.clone();
+                tokio::task::spawn_blocking(move || {
+                    let session = disk_api.session();
+                    let home = home_snapshot::load(&session.server_url, &session.user_id);
+                    let _ = snapshot_sender.send(home.map(|home| (disk_api, home)));
+                });
                 let home = api.home().await;
                 tracing::debug!(
                     ms = crate::ui::startup::elapsed_ms(),
@@ -58,12 +75,13 @@ pub fn prefetch_home(runtime: &tokio::runtime::Handle) -> JoinHandle<PrefetchedH
             }
             Err(error) => PrefetchedHome::Unusable(error.to_string()),
         }
-    })
+    });
+    (task, snapshot)
 }
 
 /// Shows whatever the prefetch found. Called once, from `main`, after the
-/// window is up.
-pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome>) {
+/// window is up: the saved Home first, if there is one, then the server's.
+pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome>, snapshot: HomeSnapshot) {
     let generation = context.next_generation();
     ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     if let Ok(mut state) = context.state.lock() {
@@ -71,6 +89,21 @@ pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome
     }
     let ctx = context.clone();
     let task = context.runtime.spawn(async move {
+        // The saved Home, kept to tell whether the server's differs at all.
+        let shown = match snapshot.await {
+            Ok(Some((api, home))) if ctx.is_current(generation) => {
+                tracing::debug!(
+                    ms = crate::ui::startup::elapsed_ms(),
+                    stage = "home_snapshot_shown",
+                    "startup_stage"
+                );
+                let saved = home.clone();
+                set_account(&ctx, &api);
+                catalog::install_saved_home(&ctx, api, account_of(&ctx), home);
+                Some(saved)
+            }
+            _ => None,
+        };
         let prefetched = match prefetch.await {
             Ok(prefetched) => prefetched,
             // The prefetch task itself failed; there is nothing to show but
@@ -83,23 +116,51 @@ pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome
         match prefetched {
             PrefetchedHome::NoSession => ui::show_login(&ctx, ""),
             PrefetchedHome::Unusable(error) => ui::show_login(&ctx, &error),
-            PrefetchedHome::Fetched(api, home) => {
-                let account = api
-                    .session()
-                    .server_url
-                    .split("//")
-                    .nth(1)
-                    .unwrap_or("Saved session")
-                    .trim_end_matches('/')
-                    .to_owned();
-                if let Ok(mut state) = ctx.state.lock() {
-                    state.account_name = account;
+            // The saved Home is up: the fresh one replaces it where it is,
+            // and a failed refresh leaves it showing.
+            PrefetchedHome::Fetched(api, home) if shown.is_some() => match *home {
+                // Usually nothing changed since the last launch: then there
+                // is nothing to redraw or save, only the deferred shelves.
+                Ok(home) if shown.as_ref() == Some(&home) => {
+                    tracing::debug!(ms = crate::ui::startup::elapsed_ms(), stage = "home_unchanged", "startup_stage");
+                    catalog::load_deferred_home(&ctx);
                 }
+                Ok(home) => catalog::refresh_home(&ctx, home),
+                Err(crate::api::ApiError::Unauthorized) => {
+                    catalog::apply_home_result(&ctx, api, Err(crate::api::ApiError::Unauthorized));
+                }
+                Err(error) => tracing::warn!(%error, "home refresh failed; showing the saved home"),
+            },
+            PrefetchedHome::Fetched(api, home) => {
+                set_account(&ctx, &api);
                 catalog::apply_home_result(&ctx, api, *home);
             }
         }
     });
     replace_catalog_request(context, task.abort_handle());
+}
+
+/// The account line: the server's host.
+fn set_account(context: &AppContext, api: &JellyfinApi) {
+    let account = api
+        .session()
+        .server_url
+        .split("//")
+        .nth(1)
+        .unwrap_or("Saved session")
+        .trim_end_matches('/')
+        .to_owned();
+    if let Ok(mut state) = context.state.lock() {
+        state.account_name = account;
+    }
+}
+
+fn account_of(context: &AppContext) -> String {
+    context
+        .state
+        .lock()
+        .map(|state| state.account_name.clone())
+        .unwrap_or_default()
 }
 
 pub fn start_login(
@@ -324,6 +385,8 @@ pub fn logout(context: &AppContext) {
     let _ = context.player_sender.send(PlayerCommand::Stop);
     playback::stop_remote_playback(context);
     let message = context.store.clear().err().map(|error| error.to_string());
+    // The next user must not see this one's Home.
+    context.runtime.spawn_blocking(home_snapshot::clear);
     if let Ok(mut state) = context.state.lock() {
         reset_session_state(&mut state);
     }

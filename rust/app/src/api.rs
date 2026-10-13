@@ -80,8 +80,9 @@ pub struct JellyfinApi {
     authorization: HeaderValue,
 }
 
-/// Home's sections and the user's settings they were built from.
-#[derive(Clone, Debug)]
+/// Home's sections and the user's settings they were built from (also kept
+/// on disk: see services::home_snapshot).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HomeData {
     pub sections: Vec<CatalogSectionData>,
     pub prefs: UserPrefs,
@@ -112,14 +113,14 @@ fn iso_days_ago(days: u32) -> String {
     )
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CatalogSectionData {
     pub id: String,
     pub title: String,
     pub items: Vec<CatalogItemData>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogItemData {
     pub id: String,
     pub title: String,
@@ -441,6 +442,10 @@ impl JellyfinApi {
                 .into_iter()
                 .filter(|library| !prefs.my_media_excludes.contains(&library.id))
                 .map(CatalogItemData::from)
+                // A library tile shows no count, and the server's count for
+                // a library varies from one request to the next, which
+                // would make every saved Home look stale.
+                .map(|library| CatalogItemData { child_count: 0, ..library })
                 .collect::<Vec<_>>(),
         );
         let mut sections = Vec::new();
@@ -1854,7 +1859,7 @@ fn media_summary(streams: &[ItemMediaStream]) -> String {
 
 /// The images a card can pick from, as jellyfin-web's card builder sees an
 /// item.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CardImages {
     pub primary: Option<ImageRef>,
     /// `PrimaryImageAspectRatio`: width over height.
