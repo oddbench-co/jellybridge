@@ -44,6 +44,9 @@ pub enum PlayerCommand {
         /// worker picks the same `sub-add` flag [`finish_load`] would have.
         preferred_source_index: Option<i64>,
     },
+    /// mpv properties from the user's settings (audio channels, subtitle
+    /// look), applied as they are.
+    Configure(Vec<(&'static str, String)>),
     TogglePaused,
     SeekRelative(f64),
     SeekAbsolute(f64),
@@ -703,6 +706,14 @@ fn apply_command(
 ) -> Result<(), libmpv::Error> {
     match command {
         PlayerCommand::Prepare => Ok(()),
+        PlayerCommand::Configure(options) => {
+            for (name, value) in options {
+                if let Err(error) = mpv.set_property(name, Value::Str(&value)) {
+                    tracing::warn!(name, value, %error, "mpv setting not applied");
+                }
+            }
+            Ok(())
+        }
         PlayerCommand::Load {
             uri,
             start_seconds,

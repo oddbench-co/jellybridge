@@ -59,6 +59,8 @@ pub struct UserPrefs {
     pub hide_played_in_latest: bool,
     pub my_media_excludes: Vec<String>,
     pub latest_excludes: Vec<String>,
+    /// `EnableNextEpisodeAutoPlay` of the user's configuration.
+    pub next_episode_autoplay: bool,
 }
 
 impl UserPrefs {
@@ -83,10 +85,50 @@ impl UserPrefs {
             .unwrap_or(365)
     }
 
+    /// jellyfin-web counts this on only when it is exactly "true".
     pub fn rewatching_in_next_up(&self) -> bool {
         self.custom
             .get("enableRewatchingInNextUp")
-            .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+            .is_some_and(|value| value == "true")
+    }
+
+    /// The Up Next card at the end of a video; on unless exactly "false".
+    pub fn next_video_overlay(&self) -> bool {
+        self.custom
+            .get("enableNextVideoInfoOverlay")
+            .is_none_or(|value| value != "false")
+    }
+
+    fn millis(&self, key: &str, default: f64) -> f64 {
+        self.custom
+            .get(key)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| *value > 0.0)
+            .map_or(default, |value| value / 1000.0)
+    }
+
+    /// Episode images in Next Up and Continue Watching; on only when
+    /// exactly "true", as jellyfin-web reads it.
+    pub fn use_episode_images(&self) -> bool {
+        self.custom
+            .get("useEpisodeImagesInNextUpAndResume")
+            .is_some_and(|value| value == "true")
+    }
+
+    /// Skip back and forward lengths, in seconds.
+    pub fn skip_lengths(&self) -> (f64, f64) {
+        (
+            self.millis("skipBackLength", 10.0),
+            self.millis("skipForwardLength", 30.0),
+        )
+    }
+
+    /// Items per library page; 0 turns paging off.
+    pub fn library_page_size(&self) -> usize {
+        self.custom
+            .get("libraryPageSize")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(100)
     }
 
     /// A library tab's saved sort: `SortBy` and whether it descends.

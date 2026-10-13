@@ -172,6 +172,19 @@ fn parse_line(line: &str) -> Option<(f64, Step)> {
         "tab" => Step::Action(Box::new(UiAction::SwitchTab(rest.parse().ok()?))),
         "back" => Step::Action(Box::new(UiAction::GoBack)),
         "search" if rest.is_empty() => Step::Action(Box::new(UiAction::OpenSearch)),
+        "settings" => {
+            use crate::features::settings::SettingsPage;
+            let page = match rest {
+                "profile" => SettingsPage::Profile,
+                "quickconnect" => SettingsPage::QuickConnect,
+                "display" => SettingsPage::Display,
+                "home" => SettingsPage::Home,
+                "playback" => SettingsPage::Playback,
+                "subtitles" => SettingsPage::Subtitles,
+                _ => SettingsPage::Menu,
+            };
+            Step::Action(Box::new(UiAction::OpenSettings(page)))
+        }
         "search" => Step::Action(Box::new(UiAction::Search(rest.to_owned()))),
         "detail" => {
             let (kind, id) = rest.split_once(char::is_whitespace)?;

@@ -34,6 +34,7 @@ pub mod menu;
 pub mod player;
 pub mod player_hotkeys;
 pub mod scrollbar;
+pub mod settings;
 pub mod startup;
 pub mod theme;
 pub mod top_bar;

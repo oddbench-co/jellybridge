@@ -22,8 +22,8 @@ use crate::api::CatalogItemData;
 use crate::app::AppContext;
 use crate::features::catalog::CardToggle;
 use crate::features::pages::{
-    CardShape, Feature, FilterOptions, GridKind, GridSettings, PAGE_SIZE, PageContent,
-    SeriesStatus, StatusFilter, TitleStyle, VideoType, ViewMode,
+    CardShape, Feature, FilterOptions, GridKind, GridSettings, PageContent, SeriesStatus,
+    StatusFilter, TitleStyle, VideoType, ViewMode, page_size,
 };
 
 /// What the catalog screen shows. Filled by the presenters below.
@@ -59,6 +59,7 @@ pub enum CatalogBody {
     Shelves(Vec<ShelfVm>),
     Grid(Box<GridVm>),
     Search(SearchVm),
+    Settings(Box<super::settings::SettingsVm>),
 }
 
 pub struct ShelfVm {
@@ -161,8 +162,17 @@ fn present_page(context: &AppContext, show: bool) {
         .as_ref()
         .filter(|(cached, _)| *cached == key)
         .map(|(_, options)| options.clone());
+    // jellyfin-web titles the Profile page with the user's name.
+    let title = match (&page.route, &page.content) {
+        (
+            crate::features::pages::PageRoute::Settings(
+                crate::features::settings::SettingsPage::Profile,
+            ),
+            PageContent::Settings(data),
+        ) => data.user_name.clone(),
+        _ => page.route.title(),
+    };
     drop(state);
-    let title = page.route.title();
     let (tabs, active_tab) = page.route.tabs();
     let home = page.route.is_home();
     let grid_kind = page.route.grid();
@@ -251,6 +261,13 @@ fn present_page(context: &AppContext, show: bool) {
                         .map(|shelf| shelf_vm(shelf, shelf_sizes))
                         .collect(),
                 })
+            }
+            PageContent::Settings(data) => {
+                let page = match &catalog.route {
+                    crate::features::pages::PageRoute::Settings(page) => *page,
+                    _ => crate::features::settings::SettingsPage::Menu,
+                };
+                CatalogBody::Settings(Box::new(super::settings::SettingsVm::new(page, *data)))
             }
         };
         super::startup::mark_content_ready("catalog");
@@ -510,6 +527,9 @@ pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         }
         CatalogBody::Grid(grid) => draw_grid(&mut body_ui, state, grid, actions),
         CatalogBody::Search(search) => draw_search(&mut body_ui, state, search, actions),
+        CatalogBody::Settings(settings) => {
+            super::settings::draw(&mut body_ui, &mut state.images, settings, actions);
+        }
     }
     state.catalog.body = catalog_body;
     // Drawn last so its menus and drawer sit above the page.
@@ -1018,7 +1038,7 @@ fn draw_toolbar(
     actions: &mut Vec<UiAction>,
 ) -> ToolbarButtons {
     let shown_end = (grid.start + grid.items.len()).min(grid.total);
-    let paged = grid.total > PAGE_SIZE;
+    let paged = grid.total > page_size();
     let mut icons_row: Vec<(Icon, &str, &str, bool)> = Vec::new();
     if paged {
         icons_row.push((Icon::ArrowBack, "Previous page", "prev", grid.start > 0));
@@ -1104,8 +1124,8 @@ fn draw_toolbar(
             }),
             "new-collection" => actions.push(UiAction::NewContainer { collection: true }),
             "new-playlist" => actions.push(UiAction::NewContainer { collection: false }),
-            "prev" => actions.push(UiAction::GridPage(grid.start.saturating_sub(PAGE_SIZE))),
-            "next" => actions.push(UiAction::GridPage(grid.start + PAGE_SIZE)),
+            "prev" => actions.push(UiAction::GridPage(grid.start.saturating_sub(page_size()))),
+            "next" => actions.push(UiAction::GridPage(grid.start + page_size())),
             "view" => actions.push(UiAction::GridDialog(Some(GridDialog::View))),
             "sort" => actions.push(UiAction::GridDialog(Some(GridDialog::Sort))),
             _ => {

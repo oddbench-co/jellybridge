@@ -45,6 +45,7 @@ for (const line of readFileSync(stepsPath, 'utf8').split('\n')) {
   else if (cmd === 'net') { await send('Network.enable'); requests.length = 0; }
   else if (cmd === 'requests') { for (const r of requests) if (!rest[0] || r.includes(rest[0])) console.log(r.replace(/api_key=[^&]+/, 'api_key=…')); requests.length = 0; }
   else if (cmd === 'size') { await send('Emulation.setDeviceMetricsOverride', { width: +rest[0], height: +rest[1], deviceScaleFactor: 1.5, mobile: false, screenWidth: +(process.env.SCREEN_W || 2560), screenHeight: +(process.env.SCREEN_H || 1440) }); }
+  else if (cmd === 'fullshot') { const m = await send('Runtime.evaluate', { expression: 'document.documentElement.scrollHeight', returnByValue: true }); const h = m.result.result.value; const r = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: +(process.env.VIEW_W || 2536), height: h, scale: 1 } }); writeFileSync(rest[0], Buffer.from(r.result.data, 'base64')); }
   else if (cmd === 'shot') { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(rest[0], Buffer.from(r.result.data, 'base64')); }
 }
 ws.close(); chrome.kill();

@@ -8,6 +8,7 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+base64 = "=0.22.1"
 eframe = { version = "=0.36.2", default-features = false, features = ["glow", "wayland", "x11", "accesskit", "default_fonts"] }
 egui = "=0.36.2"
 futures-util = "=0.3.31"
@@ -29,6 +30,9 @@ tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] 
 tracing = "=0.1.41"
 tracing-subscriber = { version = "=0.3.20", default-features = false, features = ["fmt", "env-filter"] }
 url = "=2.5.7"
+# The desktop portal's file chooser (Profile's "Add Image"); zbus already
+# comes in through the accessibility stack.
+zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [package.metadata.packager]
 product-name = "JellyBridge"

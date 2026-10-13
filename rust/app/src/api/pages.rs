@@ -14,7 +14,7 @@ use super::{
 };
 use crate::features::pages::{
     CardShape, FilterOptions, GridKind, GridPage, GridSettings, LibraryRef, LibraryTab, ListFilter,
-    ListQuery, PAGE_SIZE, PageContent, PageRoute, Shelf, TitleStyle,
+    ListQuery, PageContent, PageRoute, Shelf, TitleStyle, page_size,
 };
 
 /// Cards per Genres-tab section, as jellyfin-web shows them.
@@ -65,6 +65,10 @@ impl JellyfinApi {
                 results: Vec::new(),
             }),
             PageRoute::List(_) => Ok(PageContent::Shelves(Vec::new())),
+            PageRoute::Settings(_) => self
+                .settings_data()
+                .await
+                .map(|data| PageContent::Settings(Box::new(data))),
         }
     }
 
@@ -76,7 +80,7 @@ impl JellyfinApi {
         start: usize,
     ) -> Result<GridPage, ApiError> {
         let start_text = start.to_string();
-        let limit = PAGE_SIZE.to_string();
+        let limit = page_size().to_string();
         let order = if settings.descending {
             "Descending"
         } else {
@@ -127,7 +131,7 @@ impl JellyfinApi {
             }
             PageRoute::List(list) if list.filter == ListFilter::NextUp => {
                 let start_text = start.to_string();
-                let limit = PAGE_SIZE.to_string();
+                let limit = page_size().to_string();
                 let cutoff = super::iso_days_ago(365);
                 let response = self
                     .grid_request(
@@ -156,7 +160,9 @@ impl JellyfinApi {
                 list_query(list, &mut query);
                 format!("Users/{}/Items", encode_path_segment(&self.session.user_id))
             }
-            PageRoute::Home { .. } | PageRoute::Search => return Ok(GridPage::default()),
+            PageRoute::Home { .. } | PageRoute::Search | PageRoute::Settings(_) => {
+                return Ok(GridPage::default());
+            }
         };
         for (key, value) in settings.filters.query() {
             if key == "Filters" {
@@ -210,7 +216,7 @@ impl JellyfinApi {
             .and_then(|(_, value)| value.parse().ok())
             .unwrap_or(0);
         let start_text = start.to_string();
-        let limit = PAGE_SIZE.to_string();
+        let limit = page_size().to_string();
         let response = self
             .grid_request(
                 "Studios",

@@ -57,6 +57,8 @@ pub struct AppState {
     pub queue: Option<Vec<String>>,
     /// The user's jellyfin-web settings, from the server.
     pub prefs: crate::features::prefs::UserPrefs,
+    /// This device's own settings (jellyfin-web's browser-only ones).
+    pub device: HashMap<String, String>,
 }
 
 #[derive(Clone, Default)]
@@ -91,6 +93,7 @@ impl Default for AppState {
             now_playing: None,
             queue: None,
             prefs: Default::default(),
+            device: HashMap::new(),
         }
     }
 }

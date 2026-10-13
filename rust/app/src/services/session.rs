@@ -22,6 +22,10 @@ pub struct StoredSettings {
     pub grid_settings: HashMap<String, StoredGridSettings>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub playback_preferences: HashMap<String, StoredPlaybackPreference>,
+    /// Settings jellyfin-web keeps per device (its browser storage): the
+    /// settings pages' device-only fields, by jellyfin-web's own key.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub device: HashMap<String, String>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -214,6 +218,16 @@ impl SettingsStore {
     ) -> Result<(), SessionError> {
         let mut settings = self.load()?;
         settings.grid_settings = grids;
+        self.save(&settings)
+    }
+
+    /// Replaces the device-only settings with `device`.
+    pub fn save_device_settings(
+        &self,
+        device: HashMap<String, String>,
+    ) -> Result<(), SessionError> {
+        let mut settings = self.load()?;
+        settings.device = device;
         self.save(&settings)
     }
 

@@ -8,6 +8,7 @@ use url::Url;
 
 mod items;
 mod pages;
+mod settings;
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, DetailSection, ImageRef, ImageType, NamedId,
     PersonData, StreamData,
@@ -397,6 +398,19 @@ impl JellyfinApi {
                 HomeSection::ActiveRecordings | HomeSection::LiveTv | HomeSection::None => {}
             }
         }
+        // "Use episode images in 'Next Up' and 'Continue Watching'": the
+        // episode's own image instead of the show's (no `inheritThumb`).
+        if prefs.use_episode_images() {
+            for section in sections
+                .iter_mut()
+                .filter(|section| section.id == "continue" || section.id == "next-up")
+            {
+                for item in &mut section.items {
+                    item.images.series_thumb = None;
+                    item.images.parent_thumb = None;
+                }
+            }
+        }
         Ok(HomeData { sections, prefs })
     }
 
@@ -440,6 +454,9 @@ impl JellyfinApi {
             hide_played_in_latest: config["HidePlayedInLatest"].as_bool().unwrap_or(true),
             my_media_excludes: strings(&config["MyMediaExcludes"]),
             latest_excludes: strings(&config["LatestItemsExcludes"]),
+            next_episode_autoplay: config["EnableNextEpisodeAutoPlay"]
+                .as_bool()
+                .unwrap_or(true),
         })
     }
 

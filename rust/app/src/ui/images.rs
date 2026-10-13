@@ -44,6 +44,8 @@ pub struct Art {
 pub enum ArtSource {
     /// Detail-page artwork: hero images, shelves, cast photos.
     Detail { image: ImageRef, max_width: u32 },
+    /// The signed-in user's picture.
+    User { tag: String },
     /// An image asked for exactly as jellyfin-web asks (its detail page's
     /// backdrop and logo): an optional width cap and a quality, nothing else.
     Web {
@@ -243,6 +245,7 @@ pub fn fetch(context: &AppContext, art: Art) {
                 image.tag.clone(),
                 *max_width,
             ),
+            ArtSource::User { tag } => (format!("user-{tag}"), tag.clone(), 0),
             ArtSource::Web {
                 image,
                 max_width,
@@ -303,6 +306,7 @@ pub fn fetch(context: &AppContext, art: Art) {
                     max_width,
                     quality,
                 } => api.fetch_web_image(image, *max_width, *quality).await,
+                ArtSource::User { tag } => api.fetch_user_image(tag).await,
                 ArtSource::Card {
                     image,
                     fill_width,

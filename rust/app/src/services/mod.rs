@@ -6,6 +6,7 @@ pub mod dns;
 pub mod libmpv;
 pub mod playback;
 pub mod player;
+pub mod portal;
 pub mod proxy;
 pub mod render;
 pub mod session;

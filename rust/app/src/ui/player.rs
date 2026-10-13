@@ -65,6 +65,9 @@ pub struct PlayerVm {
     pub has_next: bool,
     pub skip_label: String,
     pub skip_target: f64,
+    /// The user's skip lengths (Playback settings), in seconds.
+    pub skip_back: f64,
+    pub skip_forward: f64,
     pub up_next: Option<UpNext>,
     pub speed_index: usize,
     pub aspect_index: usize,
@@ -108,6 +111,8 @@ impl Default for PlayerVm {
             has_next: false,
             skip_label: String::new(),
             skip_target: 0.0,
+            skip_back: 10.0,
+            skip_forward: 30.0,
             up_next: None,
             speed_index: 2,
             aspect_index: 0,
@@ -287,6 +292,14 @@ pub fn apply_player_overlay(state: &mut UiState, overlay: &PlayerOverlay) {
 }
 
 /// Enters the player screen after a stream was prepared and handed to mpv.
+/// The user's skip lengths, from their Playback settings.
+pub fn present_skip_lengths(context: &AppContext, back: f64, forward: f64) {
+    context.ui.update(move |state| {
+        state.player.skip_back = back;
+        state.player.skip_forward = forward;
+    });
+}
+
 pub fn present_playback_started(
     context: &AppContext,
     title: PlayerTitle,
@@ -419,7 +432,17 @@ fn apply_hotkey(
     let player = &mut state.player;
     match action {
         PlayerHotkeyAction::TogglePlayback => actions.push(UiAction::TogglePlayback),
-        PlayerHotkeyAction::SeekRelative(seconds) => actions.push(UiAction::SeekRelative(seconds)),
+        // The plain skip keys follow the user's skip lengths.
+        PlayerHotkeyAction::SeekRelative(seconds) => {
+            let seconds = if seconds == -super::player_hotkeys::REWIND_SECONDS {
+                -state.player.skip_back
+            } else if seconds == super::player_hotkeys::FAST_FORWARD_SECONDS {
+                state.player.skip_forward
+            } else {
+                seconds
+            };
+            actions.push(UiAction::SeekRelative(seconds));
+        }
         PlayerHotkeyAction::SeekToStart => actions.push(UiAction::SeekAbsolute(0.0)),
         PlayerHotkeyAction::SeekToFraction(fraction) => {
             if player.duration > 0.0 {
@@ -809,7 +832,7 @@ fn draw_bottom_chrome(
         "10",
         true,
     ) {
-        clicked.push(UiAction::SeekRelative(-10.0));
+        clicked.push(UiAction::SeekRelative(-state.player.skip_back));
     }
     let play_label = if paused { "Play" } else { "Pause" };
     if button(
@@ -832,7 +855,7 @@ fn draw_bottom_chrome(
         "30",
         true,
     ) {
-        clicked.push(UiAction::SeekRelative(30.0));
+        clicked.push(UiAction::SeekRelative(state.player.skip_forward));
     }
     if has_next && button(ui, &mut x, Icon::SkipNext, 26.0, "Next", "", true) {
         clicked.push(UiAction::PlayNext);

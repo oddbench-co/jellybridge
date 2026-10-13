@@ -138,6 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ))
             })
             .collect(),
+        device: stored_settings.device.clone(),
         ..AppState::default()
     };
     let image_cache = cache_directory()?;
@@ -207,6 +208,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui::player::apply_player_event(ui_state, event, &tracks);
             if let Some(overlay) = overlay {
                 ui::player::apply_player_overlay(ui_state, &overlay);
+                // A segment the user chose to skip is jumped over at once.
+                if let Some(target) = overlay.auto_skip {
+                    ui_state.deferred.push(UiAction::SeekAbsolute(target));
+                }
             }
             // At the natural end, roll into the next episode or, like
             // Jellyfin, return to where playback started.

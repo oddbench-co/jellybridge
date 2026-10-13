@@ -57,7 +57,10 @@ pub fn refresh_target(state: &AppState, playing: bool, loading: bool) -> Option<
         PageContent::Shelves(_) => 0,
         // Search results only change when the term does, and a loading or
         // failed page has its own request (or Retry).
-        PageContent::Search { .. } | PageContent::Loading | PageContent::Failed(_) => {
+        PageContent::Search { .. }
+        | PageContent::Loading
+        | PageContent::Failed(_)
+        | PageContent::Settings(_) => {
             return None;
         }
     };

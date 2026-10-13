@@ -210,7 +210,7 @@ fn tabs(
     clicked
 }
 
-/// The account button and its menu.
+/// The account button: jellyfin-web's opens the user's settings.
 fn account_menu(ui: &mut Ui, state: &UiState, account: Rect, actions: &mut Vec<UiAction>) {
     let account_response = jf::round_icon_button(
         ui,
@@ -222,30 +222,11 @@ fn account_menu(ui: &mut Ui, state: &UiState, account: Rect, actions: &mut Vec<U
         true,
         Id::new("header-account"),
     );
-    let menu_id = Id::new("header-account-menu");
-    let mut open = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(menu_id))
-        .unwrap_or(false);
     if account_response.clicked() {
-        open = !open;
+        actions.push(UiAction::OpenSettings(
+            crate::features::settings::SettingsPage::Menu,
+        ));
     }
-    if open {
-        let items = [super::dialogs::SheetItem {
-            label: "Sign Out",
-            icon: Some(Icon::ExitToApp),
-            checked: false,
-        }];
-        let (picked, close) =
-            super::dialogs::action_sheet(ui.ctx(), menu_id.with("sheet"), account, &items, 0);
-        if picked == Some(0) {
-            actions.push(UiAction::Logout);
-        }
-        if close {
-            open = false;
-        }
-    }
-    ui.ctx().data_mut(|data| data.insert_temp(menu_id, open));
 }
 
 /// The icon jellyfin-web gives a library in the drawer.
@@ -363,6 +344,13 @@ fn drawer(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
                 }
             }
             header(ui, &mut y, "User");
+            row(
+                ui,
+                &mut y,
+                Icon::Settings,
+                "Settings",
+                UiAction::OpenSettings(crate::features::settings::SettingsPage::Menu),
+            );
             row(ui, &mut y, Icon::ExitToApp, "Sign Out", UiAction::Logout);
             picked
         })

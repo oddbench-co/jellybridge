@@ -301,9 +301,19 @@ fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool
                 if let Ok(mut tracks) = ctx.player_tracks.lock() {
                     tracks.preference_key = Some(preference_key);
                 }
+                let mut options = Vec::new();
                 if let Ok(mut state) = ctx.state.lock() {
-                    state.now_playing = Some(NowPlaying::new(detail.clone()));
+                    let mut now = NowPlaying::new(detail.clone());
+                    now.behaviour = crate::features::now_playing::Behaviour::from_settings(
+                        &state.prefs,
+                        &state.device,
+                    );
+                    state.now_playing = Some(now);
+                    options = crate::features::settings::player_options(&state.device);
                 }
+                // The user's audio channels and subtitle look, before the
+                // file loads.
+                let _ = ctx.player_sender.send(PlayerCommand::Configure(options));
                 load_now_playing_context(&ctx, &detail);
                 let target = ReportTarget {
                     item_id: detail.id.clone(),

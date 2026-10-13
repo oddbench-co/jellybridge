@@ -107,6 +107,17 @@ pub enum UiAction {
     OpenExternalUrl(String),
     /// The detail item's trailer: a local one plays, an online one opens.
     PlayTrailer(String),
+    OpenSettings(crate::features::settings::SettingsPage),
+    ChangePassword {
+        current: String,
+        new: String,
+    },
+    AuthorizeQuickConnect(String),
+    AddUserImage,
+    DeleteUserImage,
+    /// A short message at the bottom of the window.
+    Toast(String),
+    SaveSettings(Box<crate::features::settings::SettingsSave>),
     TogglePlayback,
     SeekRelative(f64),
     SeekAbsolute(f64),
@@ -352,6 +363,24 @@ impl JellyBridgeApp {
             }
             UiAction::OpenExternalUrl(url) => detail::open_external_url(url),
             UiAction::PlayTrailer(id) => features::playback::play_trailer(context, &id),
+            UiAction::OpenSettings(page) => features::catalog::navigate(
+                context,
+                crate::features::pages::PageRoute::Settings(page),
+            ),
+            UiAction::SaveSettings(save) => features::settings::save(context, *save),
+            UiAction::ChangePassword { current, new } => {
+                features::settings::change_password(context, current, new);
+            }
+            UiAction::AuthorizeQuickConnect(code) => {
+                features::settings::authorize_quick_connect(context, code);
+            }
+            UiAction::AddUserImage => features::settings::add_user_image(context),
+            UiAction::DeleteUserImage => features::settings::delete_user_image(context),
+            UiAction::Toast(message) => {
+                context
+                    .ui
+                    .update(move |state| super::show_toast(state, &message));
+            }
             UiAction::TogglePlayback => send(PlayerCommand::TogglePaused),
             UiAction::SeekRelative(seconds) => send(PlayerCommand::SeekRelative(seconds)),
             UiAction::SeekAbsolute(seconds) => send(PlayerCommand::SeekAbsolute(seconds)),

@@ -79,6 +79,10 @@ pub fn apply_home_result(
 
 /// Shows a freshly signed-in or restored session's home page.
 pub fn install_home(context: &AppContext, api: JellyfinApi, account_name: String, home: HomeData) {
+    // The user's Playback and Display settings the app follows.
+    crate::features::pages::set_page_size(home.prefs.library_page_size());
+    let (back, forward) = home.prefs.skip_lengths();
+    crate::ui::player::present_skip_lengths(context, back, forward);
     let shelves = crate::api::home_shelves(home.sections);
     if let Ok(mut state) = context.state.lock() {
         state.prefs = home.prefs;
@@ -240,6 +244,17 @@ fn load_route(context: &AppContext, route: PageRoute, start: usize) {
             return;
         }
         let content = match result {
+            // The settings pages also show this device's own settings.
+            Ok(PageContent::Settings(mut data)) => {
+                let store = ctx.settings_store.clone();
+                data.device = tokio::task::spawn_blocking(move || store.load())
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+                    .device;
+                PageContent::Settings(data)
+            }
             Ok(content) => content,
             Err(ApiError::Unauthorized) => {
                 apply_home_result(&ctx, api, Err(ApiError::Unauthorized));
@@ -620,6 +635,17 @@ pub fn open_library(context: &AppContext, library: LibraryRef) {
         state.detail.update(DetailMessage::Reset);
     }
     load_route(context, PageRoute::Library { library, tab }, 0);
+}
+
+/// Loads the page on screen again (after it was changed elsewhere).
+pub fn reload(context: &AppContext) {
+    let route = context
+        .state
+        .lock()
+        .ok()
+        .map(|state| state.page.route.clone())
+        .unwrap_or_else(PageRoute::home);
+    load_route(context, route, 0);
 }
 
 pub fn retry(context: &AppContext) {

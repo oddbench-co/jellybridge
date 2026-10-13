@@ -10,3 +10,4 @@ pub mod playback;
 pub mod prefs;
 pub mod progress;
 pub mod refresh;
+pub mod settings;

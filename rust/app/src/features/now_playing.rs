@@ -45,8 +45,92 @@ pub struct MediaSegment {
     pub end: f64,
 }
 
+/// What the player does at a kind of segment (Playback settings, "Media
+/// Segment Actions").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentAction {
+    None,
+    Skip,
+    AskToSkip,
+}
+
+impl SegmentAction {
+    fn from_setting(value: &str) -> Self {
+        match value {
+            "Skip" => Self::Skip,
+            "AskToSkip" => Self::AskToSkip,
+            _ => Self::None,
+        }
+    }
+}
+
+/// The user's playback choices the player follows at segments and at the
+/// end of an item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Behaviour {
+    pub intro: SegmentAction,
+    pub outro: SegmentAction,
+    pub recap: SegmentAction,
+    pub preview: SegmentAction,
+    pub commercial: SegmentAction,
+    /// "Show next video info during playback".
+    pub up_next: bool,
+    /// "Play next episode automatically".
+    pub autoplay: bool,
+}
+
+impl Default for Behaviour {
+    /// jellyfin-web's defaults: ask to skip intros and credits.
+    fn default() -> Self {
+        Self {
+            intro: SegmentAction::AskToSkip,
+            outro: SegmentAction::AskToSkip,
+            recap: SegmentAction::None,
+            preview: SegmentAction::None,
+            commercial: SegmentAction::None,
+            up_next: true,
+            autoplay: true,
+        }
+    }
+}
+
+impl Behaviour {
+    pub fn from_settings(
+        prefs: &crate::features::prefs::UserPrefs,
+        device: &std::collections::HashMap<String, String>,
+    ) -> Self {
+        let defaults = Self::default();
+        let action = |kind: &str, default: SegmentAction| {
+            device
+                .get(crate::features::settings::segment_action_key(kind))
+                .map_or(default, |value| SegmentAction::from_setting(value))
+        };
+        Self {
+            intro: action("Intro", defaults.intro),
+            outro: action("Outro", defaults.outro),
+            recap: action("Recap", defaults.recap),
+            preview: action("Preview", defaults.preview),
+            commercial: action("Commercial", defaults.commercial),
+            up_next: prefs.next_video_overlay(),
+            autoplay: prefs.next_episode_autoplay,
+        }
+    }
+
+    fn action(&self, kind: SegmentKind) -> SegmentAction {
+        match kind {
+            SegmentKind::Intro => self.intro,
+            SegmentKind::Outro => self.outro,
+            SegmentKind::Recap => self.recap,
+            SegmentKind::Preview => self.preview,
+            SegmentKind::Commercial => self.commercial,
+            SegmentKind::Unknown => SegmentAction::None,
+        }
+    }
+}
+
 pub struct NowPlaying {
     pub item: DetailItemData,
+    pub behaviour: Behaviour,
     pub previous: Option<DetailItemData>,
     pub next: Option<DetailItemData>,
     pub segments: Vec<MediaSegment>,
@@ -58,6 +142,7 @@ impl NowPlaying {
     pub fn new(item: DetailItemData) -> Self {
         Self {
             item,
+            behaviour: Behaviour::default(),
             previous: None,
             next: None,
             segments: Vec::new(),
@@ -67,7 +152,7 @@ impl NowPlaying {
 
     /// Whether the end of this item should roll straight into the next.
     pub fn autoplays(&self) -> bool {
-        self.next.is_some() && !self.up_next_dismissed
+        self.behaviour.autoplay && self.next.is_some() && !self.up_next_dismissed
     }
 }
 
@@ -90,13 +175,20 @@ pub struct UpNext {
 pub struct PlayerOverlay {
     pub skip: Option<SkipPrompt>,
     pub up_next: Option<UpNext>,
+    /// A segment set to "Skip" is under the playhead: seek here.
+    pub auto_skip: Option<f64>,
 }
 
 pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverlay {
-    let skip = now
+    let current = now
         .segments
         .iter()
-        .find(|segment| position >= segment.start && position < segment.end - 1.0)
+        .find(|segment| position >= segment.start && position < segment.end - 1.0);
+    let auto_skip = current
+        .filter(|segment| now.behaviour.action(segment.kind) == SegmentAction::Skip)
+        .map(|segment| segment.end);
+    let skip = current
+        .filter(|segment| now.behaviour.action(segment.kind) == SegmentAction::AskToSkip)
         .and_then(|segment| {
             let label = match segment.kind {
                 SegmentKind::Intro => "Skip Intro",
@@ -115,14 +207,18 @@ pub fn overlay_at(now: &NowPlaying, position: f64, duration: f64) -> PlayerOverl
     let up_next = now
         .next
         .as_ref()
-        .filter(|_| !now.up_next_dismissed && duration > 0.0)
+        .filter(|_| now.behaviour.up_next && !now.up_next_dismissed && duration > 0.0)
         .filter(|_| up_next_start(now, duration).is_some_and(|start| position >= start))
         .map(|next| UpNext {
             title: next.title.clone(),
             subtitle: episode_number(next),
             seconds_left: (duration - position).max(0.0),
         });
-    PlayerOverlay { skip, up_next }
+    PlayerOverlay {
+        skip,
+        up_next,
+        auto_skip,
+    }
 }
 
 /// When the Up Next card appears: at the credits if the server knows where

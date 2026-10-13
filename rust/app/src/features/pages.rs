@@ -12,6 +12,22 @@ use crate::services::session::StoredGridSettings;
 /// Rows per grid page: jellyfin-web's default "Library page size".
 pub const PAGE_SIZE: usize = 100;
 
+/// Items per library page, from the user's Display settings (0 turns
+/// paging off). Read by the loaders and the toolbar from any thread.
+pub fn page_size() -> usize {
+    match PAGE_SIZE_SETTING.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => 1_000_000,
+        size => size,
+    }
+}
+
+pub fn set_page_size(size: usize) {
+    PAGE_SIZE_SETTING.store(size, std::sync::atomic::Ordering::Relaxed);
+}
+
+static PAGE_SIZE_SETTING: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PAGE_SIZE);
+
 /// A top-level library ("user view") as the drawer and My Media list it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryRef {
@@ -149,6 +165,8 @@ pub enum PageRoute {
     },
     List(ListQuery),
     Search,
+    /// A settings page.
+    Settings(crate::features::settings::SettingsPage),
 }
 
 impl Default for PageRoute {
@@ -173,6 +191,7 @@ impl PageRoute {
             Self::Library { library, .. } => library.name.clone(),
             Self::List(query) => query.title.clone(),
             Self::Search => "Search".to_owned(),
+            Self::Settings(page) => page.title().to_owned(),
         }
     }
 
@@ -191,7 +210,7 @@ impl PageRoute {
                     .unwrap_or(0);
                 (tabs.iter().map(|tab| tab.label()).collect(), active)
             }
-            Self::List(_) | Self::Search => (Vec::new(), 0),
+            Self::List(_) | Self::Search | Self::Settings(_) => (Vec::new(), 0),
         }
     }
 
@@ -205,7 +224,7 @@ impl PageRoute {
                 library: library.clone(),
                 tab: *tab,
             }),
-            Self::List(_) | Self::Search => None,
+            Self::List(_) | Self::Search | Self::Settings(_) => None,
         }
     }
 
@@ -232,7 +251,7 @@ impl PageRoute {
                 "Episode" => GridKind::Episodes,
                 _ => GridKind::Folder,
             }),
-            Self::Home { .. } | Self::Search => None,
+            Self::Home { .. } | Self::Search | Self::Settings(_) => None,
         }
     }
 
@@ -264,6 +283,7 @@ impl PageRoute {
             ),
             Self::Home { .. } => "home".to_owned(),
             Self::Search => "search".to_owned(),
+            Self::Settings(page) => format!("settings:{page:?}"),
         }
     }
 }
@@ -772,6 +792,7 @@ pub enum PageContent {
         term: String,
         results: Vec<Shelf>,
     },
+    Settings(Box<crate::features::settings::SettingsData>),
 }
 
 /// A page and what it holds.
@@ -809,7 +830,9 @@ impl Page {
                     .iter_mut()
                     .chain(results.iter_mut().flat_map(|shelf| shelf.items.iter_mut())),
             ),
-            PageContent::Loading | PageContent::Failed(_) => Box::new(std::iter::empty()),
+            PageContent::Loading | PageContent::Failed(_) | PageContent::Settings(_) => {
+                Box::new(std::iter::empty())
+            }
         }
     }
 
@@ -828,7 +851,7 @@ impl Page {
                 .iter()
                 .chain(results.iter().flat_map(|shelf| shelf.items.iter()))
                 .find(|item| item.id == id),
-            PageContent::Loading | PageContent::Failed(_) => None,
+            PageContent::Loading | PageContent::Failed(_) | PageContent::Settings(_) => None,
         }
     }
 }
