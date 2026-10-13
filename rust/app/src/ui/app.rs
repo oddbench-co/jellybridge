@@ -480,6 +480,7 @@ impl eframe::App for JellyBridgeApp {
             super::menu::draw_dialog(ui, &mut self.state.item_dialog, &mut actions);
         }
         super::menu::draw_toast(ui, &mut self.state.toast);
+        super::scrollbar::end_frame(ui.ctx());
         if self.state.screen != Screen::Player
             && let Some(pump) = self.pump_callback(ui.ctx(), pos2(screen.left(), screen.top()))
         {

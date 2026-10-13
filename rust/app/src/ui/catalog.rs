@@ -31,6 +31,8 @@ use crate::features::pages::{
 pub struct CatalogVm {
     /// Identifies the page, so each page keeps its own scroll position.
     pub page_key: String,
+    /// The search box took focus on this visit (it does once, on arrival).
+    pub search_focused: bool,
     /// The home page, whose header shows the logo instead of back/home.
     pub home: bool,
     pub tabs: Vec<&'static str>,
@@ -182,6 +184,7 @@ fn present_page(context: &AppContext, show: bool) {
         if catalog.page_key != page_key {
             catalog.dialog = None;
             catalog.search_edited_at = None;
+            catalog.search_focused = false;
         }
         catalog.page_key = page_key;
         catalog.home = home;
@@ -1494,33 +1497,54 @@ fn toggle<T: PartialEq>(values: &mut Vec<T>, value: T) {
 fn draw_search(ui: &mut Ui, state: &mut UiState, search: &SearchVm, actions: &mut Vec<UiAction>) {
     let body = ui.max_rect();
     let width = body.width();
-    let padding = jf::page_padding(width);
-    let field = Rect::from_min_size(
-        pos2(body.left() + padding, body.top() + 24.0),
-        vec2(width - 2.0 * padding, 41.0),
+    let em = jf::EM;
+    // `.searchFields` at 7em from the window top: a 60em row, centred, of
+    // a 2em #aaa search icon and the input (1.1em text on #292929 with a
+    // 2px border, accent when focused) under its label space.
+    let window_top = ui.ctx().content_rect().top();
+    let row_width = (60.0 * em).min(width - 2.0 * jf::page_padding(width));
+    let row_left = body.center().x - row_width / 2.0;
+    let fields_top = window_top + jf::layout_unit(7.0 * em);
+    let fields_height = jf::layout_unit(59.17);
+    let icon = 2.0 * em;
+    let field = Rect::from_min_max(
+        pos2(
+            row_left + icon + 0.5 * em,
+            fields_top + jf::layout_unit(20.07),
+        ),
+        pos2(row_left + row_width, fields_top + fields_height),
     );
-    ui.painter()
-        .rect_filled(field, theme::JF_RADIUS, theme::JF_INPUT);
     icons::paint_centered(
         ui.painter(),
         Icon::Search,
-        pos2(field.left() + 22.0, field.center().y),
-        24.0,
-        theme::JF_TEXT_SECONDARY,
+        pos2(
+            row_left + icon / 2.0,
+            field.bottom() - 0.2 * em - icon / 2.0,
+        ),
+        icon,
+        Color32::from_gray(170),
     );
-    let input = Rect::from_min_max(pos2(field.left() + 44.0, field.top()), field.max);
+    ui.painter()
+        .rect_filled(field, 0.2 * 1.1 * em, Color32::from_gray(41));
+    let input = field.shrink(2.0);
     let catalog = &mut state.catalog;
     let response = ui.put(
         input,
         TextEdit::singleline(&mut catalog.search_text)
             .id(Id::new("catalog-search"))
-            .hint_text("Search")
-            .font(theme::regular(16.37))
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 10)))
+            .hint_text(
+                egui::RichText::new("Search")
+                    .font(theme::regular(1.1 * em))
+                    .color(theme::JF_TEXT_SECONDARY),
+            )
+            .font(theme::regular(1.1 * em))
+            .text_color(jf::TEXT_80)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(4, 6)))
+            .vertical_align(egui::Align::Center)
             .desired_width(f32::INFINITY),
     );
     if response.has_focus() {
-        widgets::border(ui.painter(), field, theme::JF_RADIUS, 2.0, theme::JF_ACCENT);
+        widgets::border(ui.painter(), field, 0.2 * 1.1 * em, 2.0, theme::JF_ACCENT);
     }
     let now = ui.input(|input| input.time);
     if response.changed() {
@@ -1529,8 +1553,10 @@ fn draw_search(ui: &mut Ui, state: &mut UiState, search: &SearchVm, actions: &mu
     let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
     // The page exists to search: put the caret in the box on arrival. After
     // the Enter check, which focusing would hide (`lost_focus` is live).
-    if !enter && ui.ctx().memory(|memory| memory.focused().is_none()) && search.results.is_empty() {
+    // Once per visit, as jellyfin-web's search page autofocuses its box.
+    if !enter && !catalog.search_focused {
         response.request_focus();
+        catalog.search_focused = true;
     }
     if enter {
         catalog.search_edited_at = None;
@@ -1548,10 +1574,20 @@ fn draw_search(ui: &mut Ui, state: &mut UiState, search: &SearchVm, actions: &mu
         }
     }
 
-    let results = Rect::from_min_max(pos2(body.left(), field.bottom() + 16.0), body.max);
+    // Results start 1em under the fields (`.searchResults.padded-top`).
+    let results = Rect::from_min_max(
+        pos2(
+            body.left(),
+            fields_top + fields_height + jf::layout_unit(em),
+        ),
+        body.max,
+    );
     let mut results_ui = widgets::clipped_child(ui, results);
     if search.term.is_empty() {
-        draw_suggestions(&mut results_ui, results, &search.suggestions, actions);
+        // Suggestions follow the fields directly; only results are padded.
+        let area = Rect::from_min_max(pos2(body.left(), fields_top + fields_height), body.max);
+        let mut suggestions_ui = widgets::clipped_child(ui, area);
+        draw_suggestions(&mut suggestions_ui, area, &search.suggestions, actions);
         return;
     }
     if search.results.is_empty() {
@@ -1588,26 +1624,37 @@ fn draw_suggestions(
     if suggestions.is_empty() {
         return;
     }
-    let mut y = area.top() + 8.0;
-    ui.painter().text(
-        pos2(area.center().x, y + 20.0),
-        Align2::CENTER_CENTER,
-        "Suggestions",
-        theme::regular(theme::JF_FONT_SECTION),
-        theme::JF_TEXT,
+    let em = jf::EM;
+    // `h2.sectionTitle`, centred, 0.83em margins; then the names as bold
+    // accent links, one per 0.5em-padded row, centred.
+    let size = 1.5 * em;
+    let heading_line = jf::layout_unit(1.35 * size);
+    let margin = jf::layout_unit(0.83 * size);
+    let mut y = area.top() + margin;
+    let heading =
+        ui.painter()
+            .layout_no_wrap("Suggestions".to_owned(), theme::regular(size), jf::TEXT_80);
+    let x = area.center().x - heading.size().x / 2.0;
+    widgets::galley_on_baseline(
+        ui.painter(),
+        x,
+        jf::baseline(y, size, heading_line),
+        heading,
     );
-    y += 52.0;
+    y += heading_line + margin;
+    let line = jf::layout_unit(1.35 * em);
+    let pad = vec2(em, 0.5 * em);
     for (id, title) in suggestions {
         let galley = widgets::elided(
             ui,
             title,
-            theme::regular(theme::JF_FONT),
+            theme::bold(em),
             theme::JF_ACCENT,
             area.width() - 40.0,
         );
-        let rect = Rect::from_center_size(
-            pos2(area.center().x, y + 14.0),
-            galley.size() + vec2(8.0, 8.0),
+        let rect = Rect::from_min_size(
+            pos2(area.center().x - galley.size().x / 2.0 - pad.x, y),
+            vec2(galley.size().x + 2.0 * pad.x, line + 2.0 * pad.y),
         );
         let response = ui.interact(
             rect,
@@ -1615,12 +1662,20 @@ fn draw_suggestions(
             Sense::click(),
         );
         widgets::describe_button(&response, true, title);
-        let text_rect = Rect::from_center_size(rect.center(), galley.size());
-        ui.painter().galley(text_rect.min, galley, theme::JF_ACCENT);
+        let text_left = rect.left() + pad.x;
+        let text_top = rect.top() + pad.y;
+        let text_width = galley.size().x;
+        widgets::galley_on_baseline(
+            ui.painter(),
+            text_left,
+            jf::baseline(text_top, em, line),
+            galley,
+        );
         if response.hovered() {
+            let underline = jf::baseline(text_top, em, line) + 1.5;
             ui.painter().hline(
-                text_rect.x_range(),
-                text_rect.bottom(),
+                text_left..=text_left + text_width,
+                underline,
                 egui::Stroke::new(1.0, theme::JF_ACCENT),
             );
         }
@@ -1628,10 +1683,7 @@ fn draw_suggestions(
         if response.clicked() {
             actions.push(UiAction::OpenItem(id.clone()));
         }
-        y += 30.0;
-        if y > area.bottom() {
-            break;
-        }
+        y = rect.bottom();
     }
 }
 

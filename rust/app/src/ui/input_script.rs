@@ -19,6 +19,7 @@
 //! 5.0  detail <Type> <id>    open an item's page (Type as Jellyfin names it)
 //! 5.0  tab    <index>        switch the page's tab
 //! 5.0  back                  go back
+//! 5.0  search [term]         open search (and search for `term`)
 //! 6.0  shot   <file.png>     save the window's next frame, pixel exact
 //! ```
 //!
@@ -69,6 +70,10 @@ impl InputScript {
 
     /// Injects every step that is due.
     pub fn inject(&mut self, input: &mut RawInput) {
+        // The script stands in for the user at the keyboard: the window
+        // counts as focused even on a display nobody is looking at, so
+        // focus-dependent drawing (a focused field's border) shows.
+        input.focused = true;
         let now = input.time.unwrap_or(0.0);
         let start = *self.start.get_or_insert(now);
         while let Some((at, _)) = self.steps.front() {
@@ -166,6 +171,8 @@ fn parse_line(line: &str) -> Option<(f64, Step)> {
         "open" => Step::Action(Box::new(UiAction::OpenItem(rest.to_owned()))),
         "tab" => Step::Action(Box::new(UiAction::SwitchTab(rest.parse().ok()?))),
         "back" => Step::Action(Box::new(UiAction::GoBack)),
+        "search" if rest.is_empty() => Step::Action(Box::new(UiAction::OpenSearch)),
+        "search" => Step::Action(Box::new(UiAction::Search(rest.to_owned()))),
         "detail" => {
             let (kind, id) = rest.split_once(char::is_whitespace)?;
             Step::Action(Box::new(UiAction::OpenDetail {

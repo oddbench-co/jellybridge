@@ -49,10 +49,29 @@ enum Step {
 }
 
 /// Space the page gives up to the bar: the bar's width while the page
-/// overflowed last frame (the bar itself decides, after laying it out).
+/// overflowed last frame (the bar itself decides, after laying it out). A
+/// page that drew no bar last frame reserves nothing.
 pub fn reserved(ui: &Ui) -> f32 {
-    let shown = ui.ctx().data(|data| data.get_temp::<bool>(shown_id()));
-    if shown.unwrap_or(false) { WIDTH } else { 0.0 }
+    let pass = ui.ctx().cumulative_pass_nr();
+    let shown = ui
+        .ctx()
+        .data(|data| data.get_temp::<(u64, bool)>(shown_id()))
+        .is_some_and(|(drawn, overflows)| overflows && drawn + 1 >= pass);
+    if shown { WIDTH } else { 0.0 }
+}
+
+/// Called once a frame is drawn: when no page bar was drawn in it (the page
+/// does not scroll), the bar's space is released and the page laid out
+/// again without it.
+pub fn end_frame(ctx: &egui::Context) {
+    let pass = ctx.cumulative_pass_nr();
+    let stale = ctx
+        .data(|data| data.get_temp::<(u64, bool)>(shown_id()))
+        .is_some_and(|(drawn, overflows)| overflows && drawn < pass);
+    if stale {
+        ctx.data_mut(|data| data.insert_temp(shown_id(), (pass, false)));
+        ctx.request_repaint();
+    }
 }
 
 fn shown_id() -> Id {
@@ -68,9 +87,12 @@ pub fn draw<R>(ui: &mut Ui, output: &ScrollAreaOutput<R>) {
     let viewport = output.inner_rect.height();
     let content = output.content_size.y;
     let overflows = content > viewport + 0.5;
-    let was_shown = ctx.data_mut(|data| data.get_temp::<bool>(shown_id()));
+    let pass = ctx.cumulative_pass_nr();
+    let was_shown = ctx
+        .data(|data| data.get_temp::<(u64, bool)>(shown_id()))
+        .map(|(_, shown)| shown);
+    ctx.data_mut(|data| data.insert_temp(shown_id(), (pass, overflows)));
     if was_shown != Some(overflows) {
-        ctx.data_mut(|data| data.insert_temp(shown_id(), overflows));
         // The page relays out without (or with) the bar's width.
         ctx.request_repaint();
     }
