@@ -38,7 +38,20 @@ pub enum UiAction {
     Retry,
     OpenItem(String),
     Search(String),
-    SortChanged(usize),
+    /// A header tab.
+    SwitchTab(usize),
+    /// A library in the drawer.
+    OpenLibrary(crate::features::pages::LibraryRef),
+    /// A section title's "›".
+    OpenShelfLink(String),
+    /// Another page of the grid, by its first row.
+    GridPage(usize),
+    /// New sort, filter, view or A–Z settings for the grid.
+    GridSettings(crate::features::pages::GridSettings),
+    /// Opens or closes a grid dialog.
+    GridDialog(Option<catalog::GridDialog>),
+    /// The filter dialog wants its options.
+    LoadFilterOptions,
     /// The header's search button.
     OpenSearch,
     /// A card's play button: plays the item, or a series' next episode.
@@ -111,6 +124,8 @@ pub struct JellyBridgeApp {
     measure: Option<super::measure::Measure>,
     /// When the last input event arrived; heavy deferred work waits for quiet.
     last_input: Instant,
+    /// A Back key or mouse button arrived; handled on the next frame.
+    back_pending: bool,
 }
 
 impl JellyBridgeApp {
@@ -140,6 +155,7 @@ impl JellyBridgeApp {
                     input_script: super::input_script::InputScript::from_env(),
             measure: super::measure::Measure::from_env(),
             last_input: Instant::now(),
+            back_pending: false,
         }
     }
 
@@ -231,19 +247,25 @@ impl JellyBridgeApp {
                 features::auth::logout(context);
             }
             UiAction::GoBack => features::catalog::go_back(context),
-            UiAction::GoHome => features::catalog::show_home(context, true),
+            UiAction::GoHome => features::catalog::go_home(context),
             UiAction::Retry => features::catalog::retry(context),
             UiAction::OpenItem(id) => features::catalog::open_item(context, &id),
-            UiAction::Search(term) => features::catalog::start_search(context, term),
-            UiAction::SortChanged(index) => {
-                features::catalog::change_catalog_sort(context, i32::try_from(index).unwrap_or(0));
+            UiAction::Search(term) => features::catalog::search(context, term),
+            UiAction::SwitchTab(index) => features::catalog::switch_tab(context, index),
+            UiAction::OpenLibrary(library) => features::catalog::open_library(context, library),
+            UiAction::OpenShelfLink(shelf) => features::catalog::open_shelf_link(context, &shelf),
+            UiAction::GridPage(start) => features::catalog::show_grid_page(context, start),
+            UiAction::GridSettings(settings) => {
+                features::catalog::update_grid_settings(context, settings);
             }
+            UiAction::GridDialog(dialog) => self.state.catalog.dialog = dialog,
+            UiAction::LoadFilterOptions => features::catalog::load_filter_options(context),
             UiAction::OpenSearch => features::catalog::open_search(context),
             UiAction::PlayItem(id) => features::playback::play_item_by_id(context, id),
             UiAction::ToggleCard { id, toggle } => {
                 features::catalog::toggle_card(context, &id, toggle);
             }
-            UiAction::OpenDetail { id, kind } => features::detail::start_detail(
+            UiAction::OpenDetail { id, kind } => features::catalog::open_detail(
                 context,
                 DetailTarget::new(&id, DetailKind::from_jellyfin(&kind)),
             ),
@@ -343,7 +365,7 @@ impl JellyBridgeApp {
         let has_detail = context
             .state
             .lock()
-            .is_ok_and(|state| state.detail.snapshot().page.is_some());
+            .is_ok_and(|state| state.detail.is_active());
         self.state.screen = if has_detail {
             Screen::Detail
         } else {
@@ -366,6 +388,12 @@ impl eframe::App for JellyBridgeApp {
         self.report_render_error();
 
         let screen = ui.max_rect();
+        if std::mem::take(&mut self.back_pending)
+            && matches!(self.state.screen, Screen::Catalog | Screen::Detail)
+            && !self.state.drawer_open
+        {
+            actions.push(UiAction::GoBack);
+        }
         match self.state.screen {
             Screen::Login => login::draw(ui, &mut self.state, &mut actions),
             Screen::Catalog => catalog::draw(ui, &mut self.state, &mut actions),
@@ -408,9 +436,12 @@ impl eframe::App for JellyBridgeApp {
         }
     }
 
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         if let Some(script) = self.input_script.as_mut() {
             script.inject(raw_input);
+        }
+        if back_requested(ctx, raw_input) {
+            self.back_pending = true;
         }
         if !raw_input.events.is_empty() {
             self.last_input = Instant::now();
@@ -433,6 +464,32 @@ impl eframe::App for JellyBridgeApp {
             video.host.teardown(gl);
         }
     }
+}
+
+/// jellyfin-web's Back besides the header button: the mouse's back button,
+/// Alt+Left, and Backspace outside a text field. Read from the raw input,
+/// before a focused text field can take the keys.
+fn back_requested(ctx: &egui::Context, raw_input: &egui::RawInput) -> bool {
+    let typing = ctx.memory(|memory| memory.focused().is_some());
+    raw_input.events.iter().any(|event| match event {
+        egui::Event::PointerButton {
+            button: egui::PointerButton::Extra1,
+            pressed: true,
+            ..
+        } => true,
+        egui::Event::Key {
+            key: egui::Key::ArrowLeft,
+            pressed: true,
+            modifiers,
+            ..
+        } => modifiers.alt,
+        egui::Event::Key {
+            key: egui::Key::Backspace,
+            pressed: true,
+            ..
+        } => !typing,
+        _ => false,
+    })
 }
 
 /// The settings store does blocking file I/O, so track preferences are

@@ -32,7 +32,7 @@ server on the LAN. Playback numbers use one 4K HEVC 10-bit episode
 
 | | before | now |
 |---|---|---|
-| Launch to content (`total_ms`, median of 3) | 302 ms | 240 ms |
+| Launch to content (`total_ms`, median) | 302 ms | 240–254 ms (server-bound) |
 | Before `main` (dynamic linking) | 70–80 ms | 0 ms |
 | Memory while browsing (RSS) | 166–171 MB | 119 MB |
 | Wake-ups while idle, whole app | 624 per 10 s | 44 per 10 s |
@@ -133,6 +133,31 @@ pending; the wake thread asks for a repaint at its target time
 the home screen at the time. mimalloc was measured as an alternative (see
 below).
 
+### A known address is never waited on (`services/dns.rs`)
+
+*Symptom.* Some launches stalled 1–5 s on their first requests.
+*Measurement.* The `dns lookup` log line caught it: `jellyfin.local` took 5.3 s
+and 1.1 s in two of 38 launches (the resolver's retry after a lost UDP
+reply), and the whole first screen waited on it. A normal lookup is still
+25–40 ms on the critical path, and an expired entry made the next artwork
+request wait for a lookup mid-browse.
+*Fix.* Stale-while-revalidate: a known address is returned at once and
+refreshed in the background, and the addresses are kept in
+`~/.cache/jellybridge/dns.json` (trusted for a week), so launch connects
+without a lookup.
+*Result.* Launch median 290 → 254 ms (8 launches), and the 5 s stall cannot
+hit a launch or a page once the server has been seen.
+
+### Home's music shelf loads after the first screen (`JellyfinApi::deferred_home_sections`)
+
+*Symptom.* After My Media started listing every library, as jellyfin-web
+does, launch was ~15 ms slower (median of 16 interleaved A/B launches).
+*Measurement.* The client's own share (launch minus Next Up) was unchanged at
+10–11 ms; Next Up, the slowest request, got slower on the server while the
+new "Recently Added in Music" query ran beside it.
+*Fix.* Music libraries' Latest shelves are fetched after the home is shown
+and slotted into their place; they sit below the first screen.
+
 ## Measured and rejected
 
 Each was measured and lost; the reason is kept so it is not tried again
@@ -161,9 +186,6 @@ blindly.
   Up`) ends right before content appears. Showing the last home from a cache
   while it refreshes would make launch instant, at the cost of briefly stale
   progress bars, which is a UX decision.
-- Three launches out of ~80 stalled ~5 s on their first requests. DNS lookups
-  are now logged (`dns lookup … ms=`) to tell a resolver timeout from a server
-  stall the next time it happens.
 - The render context's ~100 ms creation still runs on the UI thread at the
   start of playback, while a spinner shows.
 - After playback ~135 MB more than a fresh launch stays mapped: mpv's and

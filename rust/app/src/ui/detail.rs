@@ -102,7 +102,7 @@ pub fn present_loading(context: &AppContext) {
     let can_go_back = context
         .state
         .lock()
-        .map(|state| state.detail.snapshot().can_go_back)
+        .map(|state| !state.history.is_empty())
         .unwrap_or(false);
     context.ui.update(move |state| {
         state.screen = Screen::Detail;
@@ -132,7 +132,7 @@ fn present_page(context: &AppContext, background: bool) {
             (
                 snapshot.page.cloned(),
                 snapshot.error.unwrap_or_default().to_owned(),
-                snapshot.can_go_back,
+                !state.history.is_empty(),
                 state.detail_tracks.clone(),
             )
         }
@@ -1215,6 +1215,7 @@ impl ShelfSpec<'_> {
             }
             let title = card_title(card);
             let model = CardModel {
+                placeholder_icon: None,
                 title: &title,
                 subtitle: &card.subtitle,
                 art: card.art.as_ref(),
@@ -1296,6 +1297,7 @@ impl ShelfSpec<'_> {
                 continue;
             }
             let model = CardModel {
+                placeholder_icon: None,
                 title: &person.name,
                 subtitle: &person.role,
                 art: person.art.as_ref(),
@@ -1610,6 +1612,7 @@ fn draw_poster(ui: &mut Ui, state: &mut UiState, layout: &Layout, page_top: f32)
     }
     // The same corner indicator as on cards.
     let model = CardModel {
+        placeholder_icon: None,
         title: "",
         subtitle: "",
         art: None,

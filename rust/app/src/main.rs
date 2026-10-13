@@ -9,7 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use app::{AppContext, AppState, PlayerTrackState};
-use features::catalog::{CatalogDensity, CatalogSort};
 use features::progress::PlaybackReporter;
 use services::player::{PlayerEvent, create_player};
 use services::playback::PreparedPlayback;
@@ -117,8 +116,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         StoredSettings::default()
     });
     let app_state = AppState {
-        catalog_sort: CatalogSort::from_key(stored_settings.library_sort_key.as_deref()),
-        catalog_density: CatalogDensity::from_card_width(stored_settings.card_width_dp),
+        grid_settings: stored_settings
+            .grid_settings
+            .iter()
+            .filter_map(|(key, stored)| {
+                Some((key.clone(), features::pages::GridSettings::from_stored(stored)?))
+            })
+            .collect(),
         ..AppState::default()
     };
     let image_cache = cache_directory()?;

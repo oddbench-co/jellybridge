@@ -5,88 +5,54 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::api::{CatalogItemData, CatalogSectionData, JellyfinApi};
-use crate::features::catalog::{CatalogDensity, CatalogSort, CatalogSectionRange, flatten_sections};
-use crate::features::detail::{DetailModel, DetailTarget};
+use std::collections::HashMap;
+
+use crate::api::JellyfinApi;
+use crate::features::detail::{DetailModel, DetailPageData, DetailTarget};
 use crate::features::now_playing::NowPlaying;
+use crate::features::pages::{
+    FilterOptions, GridSettings, LibraryRef, Page, PageRoute, Shelf,
+};
 use crate::features::progress::PlaybackReporter;
 use crate::services::playback::PreparedPlayback;
 use crate::services::player::{PlayerSender, PlayerTrack};
 use crate::services::session::{SessionStore, SettingsStore};
 use crate::ui::UiHandle;
 
-#[derive(Clone)]
-pub struct PageSnapshot {
-    pub title: String,
-    pub items: Vec<CatalogItemData>,
-    pub sections: Vec<CatalogSectionRange>,
-    pub parent: Option<CatalogItemData>,
-    pub search_text: String,
-    pub total_record_count: usize,
-    /// The global search page (the header's search button), which searches
-    /// every library and shows nothing until something is typed.
-    pub search_page: bool,
+/// A place the Back button returns to.
+#[derive(Clone, Debug)]
+pub enum HistoryEntry {
+    /// A list page, with what it showed when it was left.
+    Page(Page),
+    /// An item's detail page.
+    Detail(Box<DetailPageData>),
 }
 
-impl PageSnapshot {
-    pub fn empty_home() -> Self {
-        Self {
-            title: "Home".into(),
-            items: Vec::new(),
-            sections: Vec::new(),
-            parent: None,
-            search_text: String::new(),
-            total_record_count: 0,
-            search_page: false,
-        }
-    }
-
-    pub fn search() -> Self {
-        Self {
-            title: "Search".into(),
-            search_page: true,
-            ..Self::empty_home()
-        }
-    }
-
-    pub fn home(sections: &[CatalogSectionData]) -> Self {
-        let flattened = flatten_sections(sections);
-        let total_record_count = flattened.items.len();
-        Self {
-            title: "Home".into(),
-            items: flattened.items,
-            sections: flattened.sections,
-            parent: None,
-            search_text: String::new(),
-            total_record_count,
-            search_page: false,
-        }
-    }
-
-    pub fn is_home_dashboard(&self) -> bool {
-        self.parent.is_none() && self.search_text.is_empty() && !self.search_page
-    }
-}
-
+/// What Retry reloads.
 #[derive(Clone)]
 pub enum RetryAction {
-    Home,
-    Browse(Box<CatalogItemData>, bool),
-    Search(String),
+    /// The current list page.
+    Page,
     Detail(DetailTarget),
 }
 
 pub struct AppState {
     pub api: Option<JellyfinApi>,
     pub account_name: String,
-    pub home: Vec<CatalogSectionData>,
-    pub current: PageSnapshot,
-    pub back_stack: Vec<PageSnapshot>,
+    /// The home page's shelves as last loaded, so Home shows at once.
+    pub home: Vec<Shelf>,
+    /// The user's libraries, for the drawer.
+    pub libraries: Vec<LibraryRef>,
+    /// The list page on screen, or under the detail page when one is open.
+    pub page: Page,
+    pub history: Vec<HistoryEntry>,
+    /// Each grid's sort, filters and view, by `PageRoute::settings_key`.
+    pub grid_settings: HashMap<String, GridSettings>,
+    /// The filter dialog's choices for the grid on screen, by settings key.
+    pub filter_options: Option<(String, FilterOptions)>,
     pub detail: DetailModel,
     pub detail_tracks: DetailTrackSelection,
     pub retry: RetryAction,
-    pub catalog_sort: CatalogSort,
-    pub catalog_density: CatalogDensity,
     /// The item in the player and its neighbours/segments, while playing.
     pub now_playing: Option<NowPlaying>,
 }
@@ -112,15 +78,27 @@ impl Default for AppState {
             api: None,
             account_name: String::new(),
             home: Vec::new(),
-            current: PageSnapshot::empty_home(),
-            back_stack: Vec::new(),
+            libraries: Vec::new(),
+            page: Page::loading(PageRoute::home()),
+            history: Vec::new(),
+            grid_settings: HashMap::new(),
+            filter_options: None,
             detail: DetailModel::default(),
             detail_tracks: DetailTrackSelection::default(),
-            retry: RetryAction::Home,
-            catalog_sort: CatalogSort::default(),
-            catalog_density: CatalogDensity::default(),
+            retry: RetryAction::Page,
             now_playing: None,
         }
+    }
+}
+
+impl AppState {
+    /// The grid settings for `route`, or the defaults for its kind.
+    pub fn grid_settings_for(&self, route: &PageRoute) -> GridSettings {
+        self.grid_settings
+            .get(&route.settings_key())
+            .cloned()
+            .or_else(|| route.grid().map(GridSettings::default_for))
+            .unwrap_or_else(|| GridSettings::default_for(crate::features::pages::GridKind::Folder))
     }
 }
 

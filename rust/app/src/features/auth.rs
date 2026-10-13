@@ -61,7 +61,7 @@ pub fn restore_session(context: &AppContext, prefetch: JoinHandle<PrefetchedHome
     let generation = context.next_generation();
     ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
     if let Ok(mut state) = context.state.lock() {
-        state.retry = RetryAction::Home;
+        state.retry = RetryAction::Page;
     }
     let ctx = context.clone();
     let task = context.runtime.spawn(async move {
@@ -141,9 +141,7 @@ pub fn logout(context: &AppContext) {
 }
 
 pub fn reset_session_state(state: &mut AppState) {
-    let sort = state.catalog_sort;
-    let density = state.catalog_density;
+    let grid_settings = std::mem::take(&mut state.grid_settings);
     *state = AppState::default();
-    state.catalog_sort = sort;
-    state.catalog_density = density;
+    state.grid_settings = grid_settings;
 }

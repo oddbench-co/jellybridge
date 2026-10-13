@@ -1,50 +1,89 @@
-//! Catalog screens, laid out as jellyfin-web's: the home page (sections of
-//! scrolling card shelves), a library (toolbar, poster grid, A–Z picker),
-//! and the search page (a search box, results grouped by kind).
+//! Every list page, laid out as jellyfin-web's: pages of shelves (home,
+//! suggestions, genres, upcoming, favorites), library grids (toolbar,
+//! paging, sort/view/filter dialogs, A–Z picker) and the search page.
+//!
+//! The page arrives as data from `features::catalog`; this module only turns
+//! it into cards and turns clicks into [`UiAction`]s.
 
 use std::sync::Arc;
 
 use egui::{Align2, Color32, Id, Rect, ScrollArea, Sense, TextEdit, Ui, pos2, vec2};
 
 use super::app::UiAction;
-use super::icons::Icon;
+use super::dialogs;
+use super::icons::{self, Icon};
 use super::images::{Art, ArtSource, ImageCache};
 use super::jf::{self, CardModel, Shape};
 use super::top_bar;
-use super::widgets::{self, Shelf};
+use super::widgets::{self, Shelf as ShelfScroll};
 use super::{Screen, UiState, catalog_image_key, detail_art, theme};
 use crate::api::CatalogItemData;
 use crate::app::AppContext;
-use crate::features::catalog::{CardToggle, CatalogSort};
+use crate::features::catalog::CardToggle;
+use crate::features::pages::{
+    CardShape, Feature, FilterOptions, GridKind, GridSettings, PAGE_SIZE, PageContent,
+    SeriesStatus, StatusFilter, VideoType, ViewMode,
+};
 
 /// What the catalog screen shows. Filled by the presenters below.
 #[derive(Default)]
 pub struct CatalogVm {
-    /// "1-34 of 34", the library toolbar's count.
-    pub summary: String,
-    pub home: bool,
-    pub search_page: bool,
-    /// Identifies the page, so each page gets its own scroll position and a
-    /// new page opens at the top.
+    /// Identifies the page, so each page keeps its own scroll position.
     pub page_key: String,
+    /// The home page, whose header shows the logo instead of back/home.
+    pub home: bool,
+    pub tabs: Vec<&'static str>,
+    pub active_tab: usize,
+    pub body: CatalogBody,
     pub search_text: String,
     /// When the search box was last edited; a search runs 300 ms after
     /// typing pauses.
     pub search_edited_at: Option<f64>,
-    pub sort_index: usize,
-    pub sections: Vec<CatalogSection>,
-    pub items: Arc<Vec<CatalogItem>>,
+    pub dialog: Option<GridDialog>,
+    pub filter_options: Option<FilterOptions>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct CatalogSection {
+#[derive(Default)]
+pub enum CatalogBody {
+    #[default]
+    Loading,
+    Failed(String),
+    Shelves(Vec<ShelfVm>),
+    Grid(GridVm),
+    Search(SearchVm),
+}
+
+pub struct ShelfVm {
     pub id: String,
     pub title: String,
-    pub start_index: usize,
-    pub count: usize,
+    pub link: bool,
     pub shape: Shape,
-    /// Text rows under each card: libraries have a title only.
     pub lines: usize,
+    pub wrap: bool,
+    pub items: Vec<CatalogItem>,
+}
+
+pub struct GridVm {
+    pub kind: GridKind,
+    pub settings: GridSettings,
+    pub items: Arc<Vec<CatalogItem>>,
+    pub total: usize,
+    pub start: usize,
+}
+
+pub struct SearchVm {
+    pub suggestions: Vec<(String, String)>,
+    pub term: String,
+    pub results: Vec<ShelfVm>,
+}
+
+/// Which grid dialog is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GridDialog {
+    Sort,
+    View,
+    /// The filter dialog and which of its sections are expanded.
+    Filter(Vec<&'static str>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,223 +91,200 @@ pub struct CatalogItem {
     pub id: String,
     pub title: String,
     pub subtitle: String,
-    /// For the A–Z picker: the name the library is sorted by.
-    pub sort_name: String,
     pub kind: String,
     pub poster: Option<Art>,
     pub thumb: Option<Art>,
+    pub banner: Option<Art>,
     pub watched: bool,
     pub favorite: bool,
     pub unplayed: u32,
     pub progress: f32,
     pub playable: bool,
-    /// Libraries and other folders shown as 16:9 banners.
-    pub wide: bool,
+    /// A library's type icon, shown when it has no artwork.
+    pub icon: Option<Icon>,
 }
 
-/// Presents the current catalog page (home dashboard, browse results, or
-/// search results).
-pub fn present(context: &AppContext, message: &str) {
-    // A new page outdates whatever the previous one still had in flight.
-    context.next_generation();
-    present_page(context, Some(message));
+/// Presents the page on screen (and switches to it).
+pub fn present(context: &AppContext) {
+    present_page(context, true);
 }
 
-/// Re-presents the page after a background refresh, under a generation the
-/// refresh already claimed. Leaves the screen, busy state, and message alone,
-/// so a refresh never pulls the user off the player or clears a status line.
-pub fn present_refresh(context: &AppContext, _generation: u64) {
-    present_page(context, None);
+/// Re-presents the page after a background refresh, without switching
+/// screens, so a refresh never pulls the user off the player.
+pub fn present_refresh(context: &AppContext) {
+    present_page(context, false);
 }
 
-/// `message` is `None` for a background refresh.
-fn present_page(context: &AppContext, message: Option<&str>) {
-    let (current, account, can_go_back, sort) = match context.state.lock() {
-        Ok(state) => (
-            state.current.clone(),
-            state.account_name.clone(),
-            !state.back_stack.is_empty(),
-            state.catalog_sort,
-        ),
-        Err(_) => return,
-    };
-    let home_dashboard = current.is_home_dashboard();
-    let title = if current.search_page {
-        "Search".to_owned()
-    } else if current.parent.is_none() && !current.search_text.is_empty() {
-        "Search results".to_owned()
-    } else {
-        current.title.clone()
-    };
-    let shown = current.items.len();
-    let summary = if shown == 0 {
-        String::new()
-    } else {
-        format!("1-{shown} of {}", current.total_record_count.max(shown))
-    };
-    let page_key = format!(
-        "{}|{}|{}|{}",
-        current
-            .parent
+/// Hands the filter dialog the options that just arrived.
+pub fn present_filter_options(context: &AppContext) {
+    let options = context.state.lock().ok().and_then(|state| {
+        let key = state.page.route.settings_key();
+        state
+            .filter_options
             .as_ref()
-            .map_or("", |parent| parent.id.as_str()),
-        current.search_text,
-        current.title,
-        current.search_page
-    );
-    let search_text = current.search_text.clone();
-    let account_initial = account
-        .trim()
-        .chars()
-        .next()
-        .map(|character| character.to_uppercase().collect::<String>())
-        .unwrap_or_else(|| "?".to_owned());
-    let message = message.map(str::to_owned);
-    let search_page = current.search_page;
-    let home_sections = current.sections;
-    let items_data = current.items;
+            .filter(|(cached, _)| *cached == key)
+            .map(|(_, options)| options.clone())
+    });
+    context.ui.update(move |state| state.catalog.filter_options = options);
+}
+
+fn present_page(context: &AppContext, show: bool) {
+    let Ok(state) = context.state.lock() else {
+        return;
+    };
+    let page = state.page.clone();
+    let account = state.account_name.clone();
+    let libraries = state.libraries.clone();
+    let can_go_back = !state.history.is_empty();
+    let settings = state.grid_settings_for(&page.route);
+    let key = page.route.settings_key();
+    let filter_options = state
+        .filter_options
+        .as_ref()
+        .filter(|(cached, _)| *cached == key)
+        .map(|(_, options)| options.clone());
+    drop(state);
+    let title = page.route.title();
+    let (tabs, active_tab) = page.route.tabs();
+    let home = page.route.is_home();
+    let grid_kind = page.route.grid();
+    let page_key = format!("{:?}", page.route);
     context.ui.update(move |state| {
-        if let Some(message) = message {
+        if show {
             state.screen = Screen::Catalog;
-            state.busy = false;
-            state.message = message;
+            state.busy = page.is_loading();
+            state.message.clear();
         }
         state.page_title = title;
         state.account_name = account;
-        state.account_initial = account_initial;
+        state.libraries = libraries;
         state.can_go_back = can_go_back;
-        // Poster pixels for the cards as they are drawn now: the larger of a
-        // shelf card and a grid card at this window width.
-        let window = state.ctx.content_rect().width().max(760.0);
         let pixels = state.ctx.pixels_per_point();
-        let poster_points = jf::overflow_width(window, Shape::Portrait).max(jf::grid_width(
-            window,
-            window - jf::page_padding(window) - ALPHA_COLUMN,
-        ));
-        let poster_width = ((poster_points * pixels) / 40.0).ceil() as u32 * 40;
-        let items = items_data
-            .iter()
-            .map(|item| to_ui_item(item, poster_width))
-            .collect::<Vec<_>>();
-        let (items, sections) = if search_page {
-            group_search_results(items)
-        } else {
-            let sections = home_sections
-                .iter()
-                .map(|section| {
-                    let first = items_data.get(section.start_index);
-                    let (shape, lines) = section_shape(&section.id, first);
-                    CatalogSection {
-                        id: section.id.clone(),
-                        title: section.title.clone(),
-                        start_index: section.start_index,
-                        count: section.count,
-                        shape,
-                        lines,
-                    }
-                })
-                .collect();
-            (items, sections)
-        };
+        let window = state.ctx.content_rect().width().max(760.0);
         let catalog = &mut state.catalog;
-        catalog.summary = summary;
-        catalog.home = home_dashboard;
-        catalog.search_page = search_page;
-        catalog.page_key = page_key;
-        // Only write the search box when the value actually changed and the
-        // user is not mid-edit: rewriting it would clobber whatever they
-        // typed while the request was in flight.
-        if catalog.search_edited_at.is_none() && catalog.search_text != search_text {
-            catalog.search_text = search_text;
+        if catalog.page_key != page_key {
+            catalog.dialog = None;
+            catalog.search_edited_at = None;
         }
-        catalog.sort_index = usize::try_from(sort.index()).unwrap_or(0);
-        catalog.sections = sections;
-        catalog.items = Arc::new(items);
-        tracing::debug!(
-            ms = super::startup::elapsed_ms(),
-            stage = "catalog_presented",
-            "startup_stage"
-        );
+        catalog.page_key = page_key;
+        catalog.home = home;
+        catalog.tabs = tabs;
+        catalog.active_tab = active_tab;
+        catalog.filter_options = filter_options;
+        let widths = ArtWidths::new(window, pixels);
+        catalog.body = match page.content {
+            PageContent::Loading => CatalogBody::Loading,
+            PageContent::Failed(error) => CatalogBody::Failed(error),
+            PageContent::Shelves(shelves) => CatalogBody::Shelves(
+                shelves
+                    .iter()
+                    .map(|shelf| shelf_vm(shelf, &widths))
+                    .collect(),
+            ),
+            PageContent::Grid(grid) => CatalogBody::Grid(GridVm {
+                kind: grid_kind.unwrap_or(GridKind::Folder),
+                settings,
+                items: Arc::new(
+                    grid.items
+                        .iter()
+                        .map(|item| {
+                            let mut ui_item = to_ui_item(item, &widths);
+                            // The Episodes tab shows each episode's own still.
+                            if grid_kind == Some(GridKind::Episodes)
+                                && let Some(still) = &item.still
+                            {
+                                ui_item.thumb = Some(detail_art(still, widths.wide.max(480)));
+                            }
+                            ui_item
+                        })
+                        .collect(),
+                ),
+                total: grid.total,
+                start: grid.start,
+            }),
+            PageContent::Search {
+                suggestions,
+                term,
+                results,
+            } => {
+                // Only write the box when the user is not mid-edit: rewriting
+                // it would clobber what they typed while the request ran.
+                if catalog.search_edited_at.is_none() && catalog.search_text != term {
+                    catalog.search_text.clone_from(&term);
+                }
+                CatalogBody::Search(SearchVm {
+                    suggestions: suggestions
+                        .into_iter()
+                        .map(|item| (item.id, item.title))
+                        .collect(),
+                    term,
+                    results: results
+                        .iter()
+                        .map(|shelf| shelf_vm(shelf, &widths))
+                        .collect(),
+                })
+            }
+        };
         super::startup::mark_content_ready("catalog");
     });
 }
 
-/// Pushes the persisted sort preference into the window without
-/// re-presenting the page.
-pub fn present_preferences(context: &AppContext) {
-    let sort = match context.state.lock() {
-        Ok(state) => state.catalog_sort,
-        Err(_) => return,
-    };
-    context.ui.update(move |state| {
-        state.catalog.sort_index = usize::try_from(sort.index()).unwrap_or(0);
-    });
+/// Pixel widths to request artwork at, for the window as it is now.
+struct ArtWidths {
+    poster: u32,
+    wide: u32,
 }
 
-/// A home section's card shape and text rows, as jellyfin-web's home lays
-/// them out.
-fn section_shape(id: &str, first: Option<&CatalogItemData>) -> (Shape, usize) {
-    match id {
-        "libraries" => (Shape::Backdrop, 1),
-        "continue" | "next-up" => (Shape::Backdrop, 2),
-        _ if first.is_some_and(|item| {
-            matches!(item.kind.as_str(), "MusicAlbum" | "Audio" | "MusicArtist")
-        }) =>
-        {
-            (Shape::Square, 2)
+impl ArtWidths {
+    fn new(window: f32, pixels: f32) -> Self {
+        let round = |points: f32| ((points * pixels) / 40.0).ceil() as u32 * 40;
+        let poster = jf::overflow_width(window, Shape::Portrait)
+            .max(jf::grid_width(window, window - jf::page_padding(window) - ALPHA_COLUMN));
+        let wide = jf::overflow_width(window, Shape::Backdrop);
+        Self {
+            poster: round(poster),
+            wide: round(wide),
         }
-        _ => (Shape::Portrait, 2),
     }
 }
 
-/// Search results as jellyfin-web shows them: one shelf per kind.
-fn group_search_results(items: Vec<CatalogItem>) -> (Vec<CatalogItem>, Vec<CatalogSection>) {
-    const GROUPS: [(&str, &str); 6] = [
-        ("Movie", "Movies"),
-        ("Series", "Shows"),
-        ("Episode", "Episodes"),
-        ("BoxSet", "Collections"),
-        ("Person", "People"),
-        ("", "Other"),
-    ];
-    let group_of = |kind: &str| {
-        GROUPS
+fn shelf_vm(shelf: &crate::features::pages::Shelf, widths: &ArtWidths) -> ShelfVm {
+    let shape = match shelf.shape {
+        CardShape::Portrait => Shape::Portrait,
+        CardShape::Backdrop => Shape::Backdrop,
+        CardShape::Square => Shape::Square,
+        CardShape::Auto => auto_shape(&shelf.items),
+    };
+    ShelfVm {
+        id: shelf.id.clone(),
+        title: shelf.title.clone(),
+        link: shelf.link.is_some(),
+        shape,
+        lines: shelf.lines,
+        wrap: shelf.wrap,
+        items: shelf
+            .items
             .iter()
-            .position(|(group, _)| *group == kind)
-            .unwrap_or(GROUPS.len() - 1)
-    };
-    let mut ordered = items;
-    // Stable, so the server's relevance order holds within each group.
-    ordered.sort_by_key(|item| group_of(&item.kind));
-    let mut sections: Vec<CatalogSection> = Vec::new();
-    for (index, item) in ordered.iter().enumerate() {
-        let title = GROUPS[group_of(&item.kind)].1;
-        match sections.last_mut() {
-            Some(section) if section.id == title => section.count += 1,
-            _ => sections.push(CatalogSection {
-                id: title.to_owned(),
-                title: title.to_owned(),
-                start_index: index,
-                count: 1,
-                shape: if item.kind == "Episode" {
-                    Shape::Backdrop
-                } else {
-                    Shape::Portrait
-                },
-                lines: 2,
-            }),
-        }
+            .map(|item| to_ui_item(item, widths))
+            .collect(),
     }
-    (ordered, sections)
 }
 
-fn to_ui_item(item: &CatalogItemData, poster_width: u32) -> CatalogItem {
-    let wide = is_wide_tile(&item.kind);
-    let poster_width = if wide {
-        poster_width * 3 / 2
+/// Square cards for music, posters for everything else.
+fn auto_shape(items: &[CatalogItemData]) -> Shape {
+    if items.first().is_some_and(|item| {
+        matches!(
+            item.kind.as_str(),
+            "MusicAlbum" | "Audio" | "MusicArtist" | "Playlist"
+        )
+    }) {
+        Shape::Square
     } else {
-        poster_width
-    };
+        Shape::Portrait
+    }
+}
+
+fn to_ui_item(item: &CatalogItemData, widths: &ArtWidths) -> CatalogItem {
     CatalogItem {
         id: item.id.clone(),
         title: if item.card_title.is_empty() {
@@ -277,41 +293,44 @@ fn to_ui_item(item: &CatalogItemData, poster_width: u32) -> CatalogItem {
             item.card_title.clone()
         },
         subtitle: item.card_subtitle.clone(),
-        sort_name: item.title.clone(),
         kind: item.kind.clone(),
         poster: item.image_tag.as_ref().map(|tag| Art {
-            key: catalog_image_key(&item.image_item_id, tag, poster_width),
+            key: catalog_image_key(&item.image_item_id, tag, widths.poster),
             source: ArtSource::Catalog {
                 image_item_id: item.image_item_id.clone(),
                 tag: tag.clone(),
-                width: poster_width,
+                width: widths.poster,
             },
         }),
-        // Shelf thumbnails are at most ~480 points wide.
-        thumb: item.thumb.as_ref().map(|image| detail_art(image, 720)),
+        thumb: item
+            .thumb
+            .as_ref()
+            .map(|image| detail_art(image, widths.wide.max(480))),
+        banner: item
+            .banner
+            .as_ref()
+            .map(|image| detail_art(image, widths.wide.max(480) * 2)),
         watched: item.watched,
         favorite: item.favorite,
         unplayed: item.unplayed_count,
         progress: item.progress,
         playable: item.playable || matches!(item.kind.as_str(), "Series" | "Season" | "BoxSet"),
-        wide,
+        icon: matches!(item.kind.as_str(), "CollectionFolder" | "UserView" | "ManualPlaylistsFolder")
+            .then(|| top_bar::collection_icon(&item.collection_type)),
     }
 }
 
-/// Folders whose artwork is a 16:9 banner (libraries, playlists).
-fn is_wide_tile(kind: &str) -> bool {
-    matches!(
-        kind,
-        "CollectionFolder" | "UserView" | "ManualPlaylistsFolder"
-    )
-}
-
 impl CatalogItem {
-    pub(super) fn model(&self, shape: Shape) -> CardModel<'_> {
+    fn model(&self, shape: Shape) -> CardModel<'_> {
         let art = match shape {
             Shape::Backdrop => self.thumb.as_ref().or(self.poster.as_ref()),
-            _ => self.poster.as_ref(),
+            Shape::Banner => self.banner.as_ref(),
+            Shape::Portrait | Shape::Square => self.poster.as_ref(),
         };
+        let folder = matches!(
+            self.kind.as_str(),
+            "CollectionFolder" | "UserView" | "Studio" | "Genre" | "Person" | "Folder"
+        );
         CardModel {
             title: &self.title,
             subtitle: &self.subtitle,
@@ -326,7 +345,8 @@ impl CatalogItem {
             },
             favorite: self.favorite,
             playable: self.playable,
-            actions: !self.wide,
+            actions: !folder,
+            placeholder_icon: self.icon,
         }
     }
 }
@@ -338,25 +358,34 @@ const ALPHABET: [&str; 27] = [
     "#", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
     "S", "T", "U", "V", "W", "X", "Y", "Z",
 ];
+/// The toolbar row above a grid.
+const TOOLBAR_HEIGHT: f32 = 68.0;
+const SECTION_TITLE: f32 = 46.0;
 
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
     ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
+    let bar_height = top_bar::height(state);
     let bar = Rect::from_min_size(screen.min, vec2(screen.width(), top_bar::HEIGHT));
-    let body = Rect::from_min_max(pos2(screen.left(), bar.bottom()), screen.max);
+    let body = Rect::from_min_max(pos2(screen.left(), screen.top() + bar_height), screen.max);
     let mut body_ui = widgets::clipped_child(ui, body);
-    if state.catalog.search_page {
-        draw_search(&mut body_ui, state, actions);
-    } else if state.busy {
-        spinner(&mut body_ui, body);
-    } else if state.catalog.items.is_empty() {
-        draw_empty(&mut body_ui, state, body, actions);
-    } else if state.catalog.home {
-        draw_home(&mut body_ui, state, actions);
-    } else {
-        draw_library(&mut body_ui, state, actions);
+    let mut catalog_body = std::mem::take(&mut state.catalog.body);
+    match &mut catalog_body {
+        CatalogBody::Loading => spinner(&mut body_ui, body),
+        CatalogBody::Failed(error) => draw_failed(&mut body_ui, body, error, actions),
+        CatalogBody::Shelves(shelves) => {
+            if shelves.is_empty() {
+                let note = Rect::from_min_size(body.min, vec2(body.width(), 120.0));
+                centered_note(&body_ui, note, "No items found.", theme::JF_TEXT_SECONDARY);
+            } else {
+                draw_shelves(&mut body_ui, state, shelves, actions);
+            }
+        }
+        CatalogBody::Grid(grid) => draw_grid(&mut body_ui, state, grid, actions),
+        CatalogBody::Search(search) => draw_search(&mut body_ui, state, search, actions),
     }
-    // Drawn last so its account menu sits above the page.
+    state.catalog.body = catalog_body;
+    // Drawn last so its menus and drawer sit above the page.
     top_bar::draw(ui, state, bar, actions);
 }
 
@@ -377,17 +406,12 @@ fn centered_note(ui: &Ui, rect: Rect, text: &str, color: Color32) {
     );
 }
 
-fn draw_empty(ui: &mut Ui, state: &UiState, body: Rect, actions: &mut Vec<UiAction>) {
-    let (text, color) = if !state.message.is_empty() {
-        (state.message.as_str(), theme::DANGER_TEXT)
-    } else {
-        ("No items found.", theme::JF_TEXT)
-    };
+fn draw_failed(ui: &mut Ui, body: Rect, error: &str, actions: &mut Vec<UiAction>) {
     let galley = widgets::wrapped(
         ui,
-        text,
+        error,
         theme::regular(theme::JF_FONT_SUBTITLE),
-        color,
+        theme::DANGER_TEXT,
         body.width() - 82.0,
         Some(4),
     );
@@ -397,14 +421,12 @@ fn draw_empty(ui: &mut Ui, state: &UiState, body: Rect, actions: &mut Vec<UiActi
         galley.size(),
     );
     ui.painter().galley(text_rect.min, galley, Color32::WHITE);
-    if !state.message.is_empty() {
-        let button = Rect::from_center_size(
-            pos2(body.center().x, text_rect.bottom() + 40.0),
-            vec2(160.0, 40.0),
-        );
-        if raised_button(ui, button, "Retry", Id::new("catalog-retry")) {
-            actions.push(UiAction::Retry);
-        }
+    let button = Rect::from_center_size(
+        pos2(body.center().x, text_rect.bottom() + 40.0),
+        vec2(160.0, 40.0),
+    );
+    if raised_button(ui, button, "Retry", Id::new("catalog-retry")) {
+        actions.push(UiAction::Retry);
     }
 }
 
@@ -429,26 +451,65 @@ pub fn raised_button(ui: &mut Ui, rect: Rect, label: &str, id: Id) -> bool {
     response.clicked()
 }
 
-/// Shelves of cards, one per section, as on jellyfin-web's home.
-fn draw_home(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
-    let items = state.catalog.items.clone();
-    let sections = std::mem::take(&mut state.catalog.sections);
+/// A page of shelves, one section each.
+fn draw_shelves(ui: &mut Ui, state: &mut UiState, shelves: &[ShelfVm], actions: &mut Vec<UiAction>) {
     let width = ui.max_rect().width();
     ScrollArea::vertical()
-        .id_salt(("catalog-home", state.catalog.page_key.as_str()))
+        .id_salt(("catalog-shelves", state.catalog.page_key.as_str()))
         .auto_shrink(false)
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
             ui.allocate_exact_size(vec2(width, 2.0), Sense::hover());
-            for section in &sections {
-                let rows = items
-                    .get(section.start_index..section.start_index + section.count)
-                    .unwrap_or_default();
-                draw_shelf(ui, &mut state.images, section, rows, width, actions);
+            for shelf in shelves {
+                if shelf.wrap {
+                    draw_wrapped_shelf(ui, &mut state.images, shelf, width, actions);
+                } else {
+                    draw_shelf(ui, &mut state.images, shelf, width, actions);
+                }
             }
             ui.allocate_exact_size(vec2(width, 24.0), Sense::hover());
         });
-    state.catalog.sections = sections;
+}
+
+/// A section title, with a "›" link when the section opens a page.
+fn shelf_title(
+    ui: &mut Ui,
+    row: Rect,
+    shelf: &ShelfVm,
+    padding: f32,
+    paging: Option<(bool, bool)>,
+    actions: &mut Vec<UiAction>,
+) -> i32 {
+    let id = Id::new(("catalog-shelf", shelf.id.as_str()));
+    if shelf.link {
+        let font = theme::regular(theme::JF_FONT_SECTION);
+        let text_width = widgets::text_width(ui, &shelf.title, font);
+        let link = Rect::from_min_size(
+            pos2(row.left() + padding, row.top()),
+            vec2(text_width + 30.0, row.height()),
+        );
+        let response = ui.interact(link, id.with("link"), Sense::click());
+        widgets::describe_button(&response, true, &shelf.title);
+        if response.hovered() {
+            ui.painter().hline(
+                link.left()..=link.left() + text_width,
+                row.center().y + 13.0,
+                egui::Stroke::new(1.0, theme::JF_TEXT),
+            );
+        }
+        icons::paint_centered(
+            ui.painter(),
+            Icon::ChevronRight,
+            pos2(link.left() + text_width + 14.0, row.center().y + 1.0),
+            22.0,
+            theme::JF_TEXT,
+        );
+        widgets::pointer_on_hover(&response);
+        if response.clicked() {
+            actions.push(UiAction::OpenShelfLink(shelf.id.clone()));
+        }
+    }
+    jf::section_title(ui, row, &shelf.title, padding, paging, id.with("paging"))
 }
 
 /// One section: its title row with paging buttons, and a horizontally
@@ -456,40 +517,32 @@ fn draw_home(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
 fn draw_shelf(
     ui: &mut Ui,
     images: &mut ImageCache,
-    section: &CatalogSection,
-    rows: &[CatalogItem],
+    shelf: &ShelfVm,
     width: f32,
     actions: &mut Vec<UiAction>,
 ) {
-    let card_width = jf::overflow_width(width, section.shape);
-    let card_height = jf::card_height(card_width, section.shape, section.lines);
-    let (rect, _) = ui.allocate_exact_size(vec2(width, 46.0 + card_height), Sense::hover());
+    let card_width = jf::overflow_width(width, shelf.shape);
+    let card_height = jf::card_height(card_width, shelf.shape, shelf.lines);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, SECTION_TITLE + card_height), Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
     }
     let padding = jf::page_padding(width);
-    let viewport = Rect::from_min_max(pos2(rect.left(), rect.top() + 46.0), rect.max);
-    let content_width = padding * 2.0 + rows.len() as f32 * card_width;
-    let id = Id::new(("catalog-shelf", section.id.as_str()));
-    let mut shelf = Shelf::begin(ui, id, viewport, content_width);
-    let offset = shelf.scroll(ui);
-    let title_row = Rect::from_min_size(rect.min, vec2(width, 46.0));
+    let viewport = Rect::from_min_max(pos2(rect.left(), rect.top() + SECTION_TITLE), rect.max);
+    let content_width = padding * 2.0 + shelf.items.len() as f32 * card_width;
+    let id = Id::new(("catalog-shelf", shelf.id.as_str()));
+    let mut scroll = ShelfScroll::begin(ui, id, viewport, content_width);
+    let offset = scroll.scroll(ui);
+    let title_row = Rect::from_min_size(rect.min, vec2(width, SECTION_TITLE));
     let paging = (content_width > viewport.width())
-        .then(|| (shelf.can_page_back(offset), shelf.can_page_forward(offset)));
-    match jf::section_title(
-        ui,
-        title_row,
-        &section.title,
-        padding,
-        paging,
-        id.with("paging"),
-    ) {
-        -1 => shelf.page(false),
-        1 => shelf.page(true),
+        .then(|| (scroll.can_page_back(offset), scroll.can_page_forward(offset)));
+    match shelf_title(ui, title_row, shelf, padding, paging, actions) {
+        -1 => scroll.page(false),
+        1 => scroll.page(true),
         _ => {}
     }
     let mut strip = widgets::clipped_child(ui, viewport);
-    for (index, item) in rows.iter().enumerate() {
+    for (index, item) in shelf.items.iter().enumerate() {
         let left = padding + index as f32 * card_width;
         let x = viewport.left() + offset + left;
         if x + card_width < viewport.left() - viewport.width()
@@ -500,19 +553,66 @@ fn draw_shelf(
         let response = jf::card(
             &mut strip,
             images,
-            &item.model(section.shape),
+            &item.model(shelf.shape),
             pos2(x, viewport.top()),
             card_width,
-            section.shape,
-            section.lines,
+            shelf.shape,
+            shelf.lines,
             id.with(index),
         );
         if response.gained_focus {
-            shelf.reveal(left - padding, card_width + padding);
+            scroll.reveal(left - padding, card_width + padding);
         }
         card_actions(item, &response, actions);
     }
-    shelf.end(ui);
+    scroll.end(ui);
+}
+
+/// A section whose cards wrap into rows, as on the Genres and Upcoming tabs.
+fn draw_wrapped_shelf(
+    ui: &mut Ui,
+    images: &mut ImageCache,
+    shelf: &ShelfVm,
+    width: f32,
+    actions: &mut Vec<UiAction>,
+) {
+    let padding = jf::page_padding(width);
+    let grid = width - 2.0 * padding;
+    let card_width = jf::grid_card_width(width, grid, shelf.shape);
+    let columns = ((grid / card_width).round() as usize).max(1);
+    let card_height = jf::card_height(card_width, shelf.shape, shelf.lines);
+    let rows = shelf.items.len().div_ceil(columns);
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(width, SECTION_TITLE + rows as f32 * card_height),
+        Sense::hover(),
+    );
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let title_row = Rect::from_min_size(rect.min, vec2(width, SECTION_TITLE));
+    shelf_title(ui, title_row, shelf, padding, None, actions);
+    let id = Id::new(("catalog-shelf", shelf.id.as_str()));
+    for (index, item) in shelf.items.iter().enumerate() {
+        let origin = pos2(
+            rect.left() + padding + (index % columns) as f32 * card_width,
+            rect.top() + SECTION_TITLE + (index / columns) as f32 * card_height,
+        );
+        let card_rect = Rect::from_min_size(origin, vec2(card_width, card_height));
+        if !ui.is_rect_visible(card_rect) {
+            continue;
+        }
+        let response = jf::card(
+            ui,
+            images,
+            &item.model(shelf.shape),
+            origin,
+            card_width,
+            shelf.shape,
+            shelf.lines,
+            id.with(index),
+        );
+        card_actions(item, &response, actions);
+    }
 }
 
 fn card_actions(item: &CatalogItem, response: &jf::CardResponse, actions: &mut Vec<UiAction>) {
@@ -536,85 +636,279 @@ fn card_actions(item: &CatalogItem, response: &jf::CardResponse, actions: &mut V
     }
 }
 
-/// A library: the toolbar, the poster grid, and the A–Z picker.
-fn draw_library(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
+/// The card shape a grid draws in `view`.
+fn grid_shape(view: ViewMode, items: &[CatalogItem]) -> Option<Shape> {
+    match view {
+        ViewMode::Poster | ViewMode::PosterCard => Some(
+            if items
+                .first()
+                .is_some_and(|item| matches!(item.kind.as_str(), "Playlist" | "MusicAlbum"))
+            {
+                Shape::Square
+            } else {
+                Shape::Portrait
+            },
+        ),
+        ViewMode::Thumb | ViewMode::ThumbCard => Some(Shape::Backdrop),
+        ViewMode::Banner => Some(Shape::Banner),
+        ViewMode::List => None,
+    }
+}
+
+/// A library grid: the toolbar, the cards (or list rows), the A–Z picker,
+/// and whichever dialog the toolbar opened.
+fn draw_grid(ui: &mut Ui, state: &mut UiState, grid: &mut GridVm, actions: &mut Vec<UiAction>) {
     let body = ui.max_rect();
     let window = body.width();
     let padding = jf::page_padding(window);
-    let items = state.catalog.items.clone();
-    let wide = items.iter().all(|item| item.wide);
-    let shape = if wide {
-        Shape::Backdrop
-    } else {
-        Shape::Portrait
-    };
-    let grid_left = body.left() + padding;
-    let grid_width = window - padding - ALPHA_COLUMN;
-    let card_width = if wide {
-        backdrop_grid_width(window, grid_width)
-    } else {
-        jf::grid_width(window, grid_width)
-    };
-    let columns = ((grid_width / card_width).round() as usize).max(1);
-    let row_height = jf::card_height(card_width, shape, 2);
-    let rows = items.len().div_ceil(columns);
+    let alphabet = grid.kind.alphabet() && grid.settings.view != ViewMode::List;
+    let right = if alphabet { ALPHA_COLUMN } else { padding };
+    let grid_width = window - padding - right;
 
-    // Toolbar: count and sort, centred above the grid.
-    let toolbar = Rect::from_min_size(body.min, vec2(window, 68.0));
-    let count = widgets::text_width(ui, &state.catalog.summary, theme::regular(theme::JF_FONT));
-    let total = count + 5.0 + 41.0;
+    let toolbar = Rect::from_min_size(body.min, vec2(window, TOOLBAR_HEIGHT));
+    let buttons = draw_toolbar(ui, toolbar, grid, actions);
+
+    let area = Rect::from_min_max(pos2(body.left(), toolbar.bottom()), body.max);
+    let mut grid_ui = widgets::clipped_child(ui, area);
+    if grid.items.is_empty() {
+        let note = Rect::from_min_size(area.min, vec2(window, 80.0));
+        centered_note(&grid_ui, note, "No items found.", theme::JF_TEXT_SECONDARY);
+    } else {
+        let items = grid.items.clone();
+        let page_key = state.catalog.page_key.clone();
+        let scroll_id = ("catalog-grid", page_key.as_str(), grid.start);
+        match grid_shape(grid.settings.view, &items) {
+            Some(shape) => {
+                let lines = if shape == Shape::Banner { 0 } else { 2 };
+                let card_width = jf::grid_card_width(window, grid_width, shape);
+                let columns = ((grid_width / card_width).round() as usize).max(1);
+                let row_height = jf::card_height(card_width, shape, lines);
+                let rows = items.len().div_ceil(columns);
+                ScrollArea::vertical()
+                    .id_salt(scroll_id)
+                    .auto_shrink(false)
+                    .show_rows(&mut grid_ui, row_height, rows, |ui, visible| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        for row in visible {
+                            let (rect, _) =
+                                ui.allocate_exact_size(vec2(window, row_height), Sense::hover());
+                            for column in 0..columns {
+                                let index = row * columns + column;
+                                let Some(item) = items.get(index) else { break };
+                                let origin = pos2(
+                                    body.left() + padding + column as f32 * card_width,
+                                    rect.top(),
+                                );
+                                let response = jf::card(
+                                    ui,
+                                    &mut state.images,
+                                    &item.model(shape),
+                                    origin,
+                                    card_width,
+                                    shape,
+                                    lines,
+                                    Id::new(("catalog-grid-card", item.id.as_str())),
+                                );
+                                card_actions(item, &response, actions);
+                            }
+                        }
+                    });
+            }
+            None => draw_list(&mut grid_ui, state, &items, scroll_id, padding, actions),
+        }
+    }
+    if alphabet {
+        draw_alphabet(ui, area, &grid.settings, actions);
+    }
+    draw_dialog(ui, state, grid, &buttons, actions);
+}
+
+/// Where the toolbar's dialog buttons sit, for anchoring their menus.
+#[derive(Default)]
+struct ToolbarButtons {
+    view: Option<Rect>,
+}
+
+fn draw_toolbar(
+    ui: &mut Ui,
+    toolbar: Rect,
+    grid: &GridVm,
+    actions: &mut Vec<UiAction>,
+) -> ToolbarButtons {
+    let shown_end = (grid.start + grid.items.len()).min(grid.total);
+    let summary = if grid.items.is_empty() {
+        String::new()
+    } else {
+        format!("{}-{} of {}", grid.start + 1, shown_end, grid.total)
+    };
+    let paged = grid.total > PAGE_SIZE;
+    let mut icons_row: Vec<(Icon, &str, &str, bool)> = Vec::new();
+    if paged {
+        icons_row.push((Icon::ArrowBack, "Previous page", "prev", grid.start > 0));
+        icons_row.push((Icon::ArrowForward, "Next page", "next", shown_end < grid.total));
+    }
+    icons_row.push((Icon::ViewComfy, "Select view", "view", true));
+    if !grid.kind.sorts().is_empty() {
+        icons_row.push((Icon::SortByAlpha, "Sort", "sort", true));
+    }
+    if grid.kind.filters() {
+        icons_row.push((Icon::FilterAlt, "Filter", "filter", true));
+    }
+    const STEP: f32 = 50.0;
+    let count = widgets::text_width(ui, &summary, theme::regular(theme::JF_FONT));
+    let total = count + 9.0 + icons_row.len() as f32 * STEP;
     let left = toolbar.center().x - total / 2.0;
+    let center_y = toolbar.top() + 26.0 + 20.5;
     ui.painter().text(
-        pos2(left, toolbar.top() + 26.0 + 20.5),
+        pos2(left, center_y),
         Align2::LEFT_CENTER,
-        &state.catalog.summary,
+        &summary,
         theme::regular(theme::JF_FONT),
         theme::JF_TEXT,
     );
-    let sort_button = Rect::from_min_size(
-        pos2(left + count + 5.0, toolbar.top() + 26.0),
-        vec2(41.0, 41.0),
-    );
-
-    let grid_area = Rect::from_min_max(pos2(body.left(), toolbar.bottom()), body.max);
-    let mut grid_ui = widgets::clipped_child(ui, grid_area);
-    let jump_id = Id::new(("catalog-alpha-jump", state.catalog.page_key.as_str()));
-    let jump: Option<usize> = ui.ctx().data_mut(|data| data.remove_temp(jump_id));
-    let mut scroll = ScrollArea::vertical()
-        .id_salt(("catalog-grid", state.catalog.page_key.as_str()))
-        .auto_shrink(false);
-    if let Some(row) = jump {
-        scroll = scroll.vertical_scroll_offset(row as f32 * row_height);
-    }
-    scroll.show_rows(&mut grid_ui, row_height, rows, |ui, visible| {
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        for row in visible {
-            let (rect, _) = ui.allocate_exact_size(vec2(window, row_height), Sense::hover());
-            for column in 0..columns {
-                let index = row * columns + column;
-                let Some(item) = items.get(index) else { break };
-                let origin = pos2(grid_left + column as f32 * card_width, rect.top());
-                let id = Id::new(("catalog-grid-card", item.id.as_str()));
-                let response = jf::card(
-                    ui,
-                    &mut state.images,
-                    &item.model(shape),
-                    origin,
-                    card_width,
-                    shape,
-                    2,
-                    id,
-                );
-                card_actions(item, &response, actions);
+    let mut out = ToolbarButtons::default();
+    let filtered = grid.settings.filters.count() > 0;
+    for (index, (icon, label, name, enabled)) in icons_row.into_iter().enumerate() {
+        let rect = Rect::from_center_size(
+            pos2(left + count + 9.0 + STEP * index as f32 + STEP / 2.0, center_y),
+            vec2(41.0, 41.0),
+        );
+        let color = if name == "filter" && filtered {
+            theme::JF_ACCENT
+        } else {
+            Color32::WHITE
+        };
+        let clicked = jf::round_icon_button(
+            ui,
+            rect,
+            icon,
+            color,
+            24.8,
+            label,
+            enabled,
+            Id::new(("grid-toolbar", name)),
+        )
+        .clicked();
+        if name == "view" {
+            out.view = Some(rect);
+        }
+        if !clicked {
+            continue;
+        }
+        match name {
+            "prev" => actions.push(UiAction::GridPage(grid.start.saturating_sub(PAGE_SIZE))),
+            "next" => actions.push(UiAction::GridPage(grid.start + PAGE_SIZE)),
+            "view" => actions.push(UiAction::GridDialog(Some(GridDialog::View))),
+            "sort" => actions.push(UiAction::GridDialog(Some(GridDialog::Sort))),
+            _ => {
+                actions.push(UiAction::GridDialog(Some(GridDialog::Filter(vec!["Filters"]))));
+                actions.push(UiAction::LoadFilterOptions);
             }
         }
-    });
+    }
+    out
+}
 
-    // A–Z picker: jumps the grid to the first title starting with a letter.
+/// jellyfin-web's list view: a row per item with a small thumbnail.
+fn draw_list(
+    ui: &mut Ui,
+    state: &mut UiState,
+    items: &[CatalogItem],
+    scroll_id: (&str, &str, usize),
+    padding: f32,
+    actions: &mut Vec<UiAction>,
+) {
+    const ROW: f32 = 84.0;
+    let width = ui.max_rect().width();
+    ScrollArea::vertical()
+        .id_salt(scroll_id)
+        .auto_shrink(false)
+        .show_rows(ui, ROW, items.len(), |ui, visible| {
+            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+            for index in visible {
+                let item = &items[index];
+                let (row, _) = ui.allocate_exact_size(vec2(width, ROW), Sense::hover());
+                let inner = Rect::from_min_max(
+                    pos2(row.left() + padding, row.top()),
+                    pos2(row.right() - padding, row.bottom()),
+                );
+                let id = Id::new(("catalog-list-row", item.id.as_str()));
+                let response = ui.interact(inner, id, Sense::click());
+                widgets::describe_button(&response, true, &item.title);
+                if response.hovered() || response.has_focus() {
+                    ui.painter()
+                        .rect_filled(inner, 0.0, Color32::from_white_alpha(13));
+                }
+                let image = Rect::from_min_size(
+                    pos2(inner.left() + 8.0, inner.top() + 8.0),
+                    vec2(122.0, 68.0),
+                );
+                let art = item.thumb.as_ref().or(item.poster.as_ref());
+                let texture = art.and_then(|art| {
+                    state
+                        .images
+                        .texture(art)
+                        .zip(state.images.size(&art.key))
+                });
+                match texture {
+                    Some((texture, size)) => {
+                        widgets::image_cover(ui.painter(), texture, size, image, theme::JF_RADIUS);
+                    }
+                    None => {
+                        let color = jf::default_background(&item.title);
+                        ui.painter().rect_filled(image, theme::JF_RADIUS, color);
+                    }
+                }
+                let text_left = image.right() + 16.0;
+                let text_width = inner.right() - text_left - 16.0;
+                let title = widgets::elided(
+                    ui,
+                    &item.title,
+                    theme::regular(theme::JF_FONT),
+                    theme::JF_TEXT,
+                    text_width,
+                );
+                widgets::galley_v_centered(ui.painter(), text_left, inner.center().y - 10.0, title);
+                if !item.subtitle.is_empty() {
+                    let subtitle = widgets::elided(
+                        ui,
+                        &item.subtitle,
+                        theme::regular(theme::JF_FONT_SECONDARY),
+                        theme::JF_TEXT_SECONDARY,
+                        text_width,
+                    );
+                    widgets::galley_v_centered(
+                        ui.painter(),
+                        text_left,
+                        inner.center().y + 11.0,
+                        subtitle,
+                    );
+                }
+                if item.watched {
+                    icons::paint_centered(
+                        ui.painter(),
+                        Icon::Check,
+                        pos2(inner.right() - 24.0, inner.center().y),
+                        22.0,
+                        theme::JF_PLAYED_RED,
+                    );
+                }
+                widgets::pointer_on_hover(&response);
+                if response.clicked() {
+                    actions.push(UiAction::OpenItem(item.id.clone()));
+                }
+            }
+        });
+}
+
+/// The A–Z picker: filters the grid to names starting with a letter; the
+/// active letter is in the accent, and clicking it again clears it.
+fn draw_alphabet(ui: &mut Ui, area: Rect, settings: &GridSettings, actions: &mut Vec<UiAction>) {
     let letter_gap = 20.7;
     let column_height = letter_gap * ALPHABET.len() as f32;
-    let top = grid_area.center().y - column_height / 2.0;
-    let x = body.right() - 37.0;
+    let top = area.center().y - column_height / 2.0;
+    let x = area.right() - 37.0;
+    let active = settings.filters.starts_with.as_deref();
     for (index, letter) in ALPHABET.iter().enumerate() {
         let cell = Rect::from_center_size(
             pos2(x, top + index as f32 * letter_gap + letter_gap / 2.0),
@@ -622,7 +916,10 @@ fn draw_library(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
         );
         let response = ui.interact(cell, Id::new(("alpha", *letter)), Sense::click());
         widgets::describe_button(&response, true, letter);
-        let color = if response.hovered() {
+        let selected = active == Some(*letter);
+        let color = if selected {
+            theme::JF_ACCENT
+        } else if response.hovered() {
             theme::JF_TEXT
         } else {
             theme::JF_TEXT_SECONDARY
@@ -635,140 +932,251 @@ fn draw_library(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
             color,
         );
         widgets::pointer_on_hover(&response);
-        if response.clicked()
-            && let Some(position) = items
-                .iter()
-                .position(|item| starts_with_letter(&item.sort_name, letter))
-        {
-            ui.ctx()
-                .data_mut(|data| data.insert_temp(jump_id, position / columns));
+        if response.clicked() {
+            let mut next = settings.clone();
+            next.filters.starts_with = (!selected).then(|| (*letter).to_owned());
+            actions.push(UiAction::GridSettings(next));
         }
     }
-    // After the grid, so the menu opens above it.
-    sort_menu(ui, state, sort_button, actions);
 }
 
-/// jellyfin-web's `backdropCard` grid widths.
-fn backdrop_grid_width(window: f32, grid: f32) -> f32 {
-    let share = match window {
-        w if w >= 2500.0 => 1.0 / 6.0,
-        w if w >= 1600.0 => 0.20,
-        w if w >= 1200.0 => 0.25,
-        w if w >= 770.0 => 1.0 / 3.0,
-        w if w >= 400.0 => 0.5,
-        _ => 1.0,
-    };
-    grid * share
-}
-
-/// Whether `name` belongs under `letter` in the A–Z picker; "#" collects
-/// everything that does not start with a letter.
-fn starts_with_letter(name: &str, letter: &str) -> bool {
-    let first = name
-        .trim_start_matches(|character: char| !character.is_alphanumeric())
-        .chars()
-        .next();
-    match first {
-        Some(first) if first.is_ascii_alphabetic() => {
-            letter.eq_ignore_ascii_case(&first.to_string())
-        }
-        _ => letter == "#",
-    }
-}
-
-/// The toolbar's sort button and its menu of orders.
-fn sort_menu(ui: &mut Ui, state: &mut UiState, button: Rect, actions: &mut Vec<UiAction>) {
-    let busy = state.busy;
-    let response = jf::round_icon_button(
-        ui,
-        button,
-        Icon::SortByAlpha,
-        Color32::WHITE,
-        24.8,
-        "Sort",
-        !busy,
-        Id::new("catalog-sort"),
-    );
-    let menu_id = Id::new("catalog-sort-menu");
-    let mut open = ui
-        .ctx()
-        .data(|data| data.get_temp::<bool>(menu_id))
-        .unwrap_or(false);
-    if response.clicked() {
-        open = !open;
-    }
-    if !open {
-        ui.ctx().data_mut(|data| data.insert_temp(menu_id, false));
+fn draw_dialog(
+    ui: &mut Ui,
+    state: &mut UiState,
+    grid: &GridVm,
+    buttons: &ToolbarButtons,
+    actions: &mut Vec<UiAction>,
+) {
+    let Some(dialog) = state.catalog.dialog.clone() else {
         return;
-    }
-    let current = state.catalog.sort_index;
-    let area = egui::Area::new(menu_id.with("area"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(pos2(button.left(), button.bottom() + 4.0))
-        .show(ui.ctx(), |ui| {
-            egui::Frame::new()
-                .fill(theme::JF_HEADER)
-                .corner_radius(theme::JF_RADIUS)
-                .shadow(egui::Shadow {
-                    offset: [0, 4],
-                    blur: 16,
-                    spread: 0,
-                    color: Color32::from_black_alpha(160),
+    };
+    let ctx = ui.ctx().clone();
+    match dialog {
+        GridDialog::View => {
+            let items = ViewMode::ALL
+                .iter()
+                .map(|view| dialogs::SheetItem {
+                    label: view.label(),
+                    icon: None,
+                    checked: *view == grid.settings.view,
                 })
-                .inner_margin(egui::Margin::symmetric(0, 6))
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                    let mut picked = None;
-                    for (index, sort) in CatalogSort::ALL.into_iter().enumerate() {
-                        let (row, row_response) =
-                            ui.allocate_exact_size(vec2(240.0, 40.0), Sense::click());
-                        widgets::describe_button(&row_response, true, sort.label());
-                        if row_response.hovered() {
-                            ui.painter()
-                                .rect_filled(row, 0.0, Color32::from_white_alpha(20));
-                        }
-                        if index == current {
-                            super::icons::paint_centered(
-                                ui.painter(),
-                                Icon::Check,
-                                pos2(row.left() + 22.0, row.center().y),
-                                20.0,
-                                theme::JF_ACCENT,
-                            );
-                        }
-                        ui.painter().text(
-                            pos2(row.left() + 44.0, row.center().y),
-                            Align2::LEFT_CENTER,
-                            sort.label(),
-                            theme::regular(theme::JF_FONT),
-                            theme::JF_TEXT,
-                        );
-                        widgets::pointer_on_hover(&row_response);
-                        if row_response.clicked() {
-                            picked = Some(index);
-                        }
-                    }
-                    picked
-                })
-                .inner
-        });
-    if let Some(index) = area.inner {
-        open = false;
-        if index != current {
-            state.catalog.sort_index = index;
-            actions.push(UiAction::SortChanged(index));
+                .collect::<Vec<_>>();
+            let selected = ViewMode::ALL
+                .iter()
+                .position(|view| *view == grid.settings.view)
+                .unwrap_or(0);
+            let anchor = buttons.view.unwrap_or(Rect::from_min_size(
+                ui.max_rect().center(),
+                vec2(41.0, 41.0),
+            ));
+            let (picked, close) =
+                dialogs::action_sheet(&ctx, Id::new("grid-view-sheet"), anchor, &items, selected);
+            if let Some(index) = picked {
+                let mut next = grid.settings.clone();
+                next.view = ViewMode::ALL[index];
+                actions.push(UiAction::GridSettings(next));
+            }
+            if close {
+                state.catalog.dialog = None;
+            }
         }
-    } else if !response.clicked()
-        && ui.input(|input| input.pointer.any_click())
-        && !area.response.contains_pointer()
-    {
-        open = false;
+        GridDialog::Sort => {
+            let ((), close) = dialogs::modal(&ctx, Id::new("grid-sort"), 199.0, None, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(22, 12))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        dialogs::heading(ui, "Sort By");
+                        for sort in grid.kind.sorts() {
+                            let selected = *sort == grid.settings.sort;
+                            if dialogs::radio(ui, sort.label(), selected, Id::new(("sort-by", sort.key())))
+                                && !selected
+                            {
+                                let mut next = grid.settings.clone();
+                                next.sort = *sort;
+                                actions.push(UiAction::GridSettings(next));
+                            }
+                        }
+                        ui.add_space(12.0);
+                        dialogs::heading(ui, "Sort Order");
+                        for (label, descending) in [("Ascending", false), ("Descending", true)] {
+                            let selected = grid.settings.descending == descending;
+                            if dialogs::radio(ui, label, selected, Id::new(("sort-order", label)))
+                                && !selected
+                            {
+                                let mut next = grid.settings.clone();
+                                next.descending = descending;
+                                actions.push(UiAction::GridSettings(next));
+                            }
+                        }
+                    });
+            });
+            if close {
+                state.catalog.dialog = None;
+            }
+        }
+        GridDialog::Filter(expanded) => {
+            let options = state.catalog.filter_options.clone().unwrap_or_default();
+            // jellyfin-web's filter dialog keeps one height as sections open.
+            let height = Some(ui.ctx().content_rect().height() * 0.65);
+            let (toggled, close) = dialogs::modal(&ctx, Id::new("grid-filter"), 300.0, height, |ui| {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(29, 16))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                        filter_sections(ui, grid, &options, &expanded, actions)
+                    })
+                    .inner
+            });
+            if close {
+                state.catalog.dialog = None;
+            } else if let Some(section) = toggled {
+                let mut expanded = expanded;
+                if let Some(at) = expanded.iter().position(|open| *open == section) {
+                    expanded.remove(at);
+                } else {
+                    expanded.push(section);
+                }
+                state.catalog.dialog = Some(GridDialog::Filter(expanded));
+            }
+        }
     }
-    ui.ctx().data_mut(|data| data.insert_temp(menu_id, open));
 }
 
-/// The search page: a search box, then the results as shelves by kind.
-fn draw_search(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
+/// The filter dialog's collapsible sections. Each change applies at once.
+/// Returns a section whose header was clicked.
+fn filter_sections(
+    ui: &mut Ui,
+    grid: &GridVm,
+    options: &FilterOptions,
+    expanded: &[&'static str],
+    actions: &mut Vec<UiAction>,
+) -> Option<&'static str> {
+    let filters = &grid.settings.filters;
+    let mut next = grid.settings.clone();
+    let mut toggled = None;
+    let statuses: &[StatusFilter] = match grid.kind {
+        GridKind::Shows | GridKind::Collections => {
+            &[StatusFilter::Played, StatusFilter::Unplayed, StatusFilter::Favorites]
+        }
+        _ => &StatusFilter::ALL,
+    };
+    if section_header(ui, "Filters", expanded, &mut toggled) {
+        for status in statuses {
+            if checkbox_row(ui, "status", status.label(), filters.status.contains(status)) {
+                toggle(&mut next.filters.status, *status);
+            }
+        }
+    }
+    if grid.kind == GridKind::Shows && section_header(ui, "Status", expanded, &mut toggled) {
+        for status in SeriesStatus::ALL {
+            let checked = filters.series_status.contains(&status);
+            if checkbox_row(ui, "series", status.label(), checked) {
+                toggle(&mut next.filters.series_status, status);
+            }
+        }
+    }
+    if section_header(ui, "Features", expanded, &mut toggled) {
+        for feature in Feature::ALL {
+            if checkbox_row(ui, "feature", feature.label(), filters.features.contains(&feature)) {
+                toggle(&mut next.filters.features, feature);
+            }
+        }
+    }
+    if section_header(ui, "Genres", expanded, &mut toggled) {
+        for value in values_or_none(ui, &options.genres) {
+            if checkbox_row(ui, "genre", value, filters.genres.contains(value)) {
+                toggle(&mut next.filters.genres, value.clone());
+            }
+        }
+    }
+    if section_header(ui, "Parental Ratings", expanded, &mut toggled) {
+        for value in values_or_none(ui, &options.ratings) {
+            if checkbox_row(ui, "rating", value, filters.ratings.contains(value)) {
+                toggle(&mut next.filters.ratings, value.clone());
+            }
+        }
+    }
+    if section_header(ui, "Tags", expanded, &mut toggled) {
+        for value in values_or_none(ui, &options.tags) {
+            if checkbox_row(ui, "tag", value, filters.tags.contains(value)) {
+                toggle(&mut next.filters.tags, value.clone());
+            }
+        }
+    }
+    if matches!(grid.kind, GridKind::Movies | GridKind::Episodes | GridKind::Folder)
+        && section_header(ui, "Video Types", expanded, &mut toggled)
+    {
+        for video_type in VideoType::ALL {
+            let checked = filters.video_types.contains(&video_type);
+            if checkbox_row(ui, "video", video_type.label(), checked) {
+                toggle(&mut next.filters.video_types, video_type);
+            }
+        }
+    }
+    if section_header(ui, "Years", expanded, &mut toggled) {
+        if options.years.is_empty() {
+            values_or_none(ui, &[]);
+        }
+        for year in &options.years {
+            if checkbox_row(ui, "year", &year.to_string(), filters.years.contains(year)) {
+                toggle(&mut next.filters.years, *year);
+            }
+        }
+    }
+    if next != grid.settings {
+        actions.push(UiAction::GridSettings(next));
+    }
+    toggled
+}
+
+/// A filter section's header; returns whether the section is open.
+fn section_header(
+    ui: &mut Ui,
+    title: &'static str,
+    expanded: &[&'static str],
+    toggled: &mut Option<&'static str>,
+) -> bool {
+    let open = expanded.contains(&title);
+    if dialogs::collapsible(ui, title, open, Id::new(("filter-section", title))) {
+        *toggled = Some(title);
+    }
+    if open {
+        ui.add_space(6.0);
+    }
+    open
+}
+
+fn checkbox_row(ui: &mut Ui, group: &str, label: &str, checked: bool) -> bool {
+    dialogs::checkbox(ui, label, checked, Id::new(("filter", group, label)))
+}
+
+/// The values to list, or a "None" note when the server has none.
+fn values_or_none<'a>(ui: &mut Ui, values: &'a [String]) -> &'a [String] {
+    if values.is_empty() {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 31.5), Sense::hover());
+        ui.painter().text(
+            pos2(rect.left(), rect.center().y),
+            Align2::LEFT_CENTER,
+            "None",
+            theme::regular(theme::JF_FONT),
+            theme::JF_TEXT_SECONDARY,
+        );
+    }
+    values
+}
+
+fn toggle<T: PartialEq>(values: &mut Vec<T>, value: T) {
+    if let Some(at) = values.iter().position(|existing| *existing == value) {
+        values.remove(at);
+    } else {
+        values.push(value);
+    }
+}
+
+/// The search page: a search box, suggestions while it is empty, and then
+/// the results as shelves by kind.
+fn draw_search(ui: &mut Ui, state: &mut UiState, search: &SearchVm, actions: &mut Vec<UiAction>) {
     let body = ui.max_rect();
     let width = body.width();
     let padding = jf::page_padding(width);
@@ -778,7 +1186,7 @@ fn draw_search(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     );
     ui.painter()
         .rect_filled(field, theme::JF_RADIUS, theme::JF_INPUT);
-    super::icons::paint_centered(
+    icons::paint_centered(
         ui.painter(),
         Icon::Search,
         pos2(field.left() + 22.0, field.center().y),
@@ -806,7 +1214,7 @@ fn draw_search(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let enter = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
     // The page exists to search: put the caret in the box on arrival. After
     // the Enter check, which focusing would hide (`lost_focus` is live).
-    if !enter && ui.ctx().memory(|memory| memory.focused().is_none()) && catalog.items.is_empty() {
+    if !enter && ui.ctx().memory(|memory| memory.focused().is_none()) && search.results.is_empty() {
         response.request_focus();
     }
     if enter {
@@ -827,94 +1235,120 @@ fn draw_search(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
 
     let results = Rect::from_min_max(pos2(body.left(), field.bottom() + 16.0), body.max);
     let mut results_ui = widgets::clipped_child(ui, results);
-    if state.busy {
-        spinner(&mut results_ui, results);
+    if search.term.is_empty() {
+        draw_suggestions(&mut results_ui, results, &search.suggestions, actions);
         return;
     }
-    if state.catalog.items.is_empty() {
-        if !state.catalog.search_text.trim().is_empty() && state.catalog.search_edited_at.is_none()
-        {
+    if search.results.is_empty() {
+        if state.catalog.search_edited_at.is_none() {
             let note = Rect::from_min_size(results.min, vec2(width, 80.0));
-            centered_note(&results_ui, note, "No results.", theme::JF_TEXT_SECONDARY);
+            let text = format!("Sorry! No results found for \u{201c}{}\u{201d}", search.term);
+            centered_note(&results_ui, note, &text, theme::JF_TEXT_SECONDARY);
         }
         return;
     }
-    let items = state.catalog.items.clone();
-    let sections = std::mem::take(&mut state.catalog.sections);
     ScrollArea::vertical()
-        .id_salt(("catalog-search-results", state.catalog.page_key.as_str()))
+        .id_salt(("catalog-search-results", search.term.as_str()))
         .auto_shrink(false)
         .show(&mut results_ui, |ui| {
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            for section in &sections {
-                let rows = items
-                    .get(section.start_index..section.start_index + section.count)
-                    .unwrap_or_default();
-                draw_shelf(ui, &mut state.images, section, rows, width, actions);
+            for shelf in &search.results {
+                draw_shelf(ui, &mut state.images, shelf, width, actions);
             }
         });
-    state.catalog.sections = sections;
+}
+
+/// jellyfin-web's "Suggestions": a centred column of title links.
+fn draw_suggestions(
+    ui: &mut Ui,
+    area: Rect,
+    suggestions: &[(String, String)],
+    actions: &mut Vec<UiAction>,
+) {
+    if suggestions.is_empty() {
+        return;
+    }
+    let mut y = area.top() + 8.0;
+    ui.painter().text(
+        pos2(area.center().x, y + 20.0),
+        Align2::CENTER_CENTER,
+        "Suggestions",
+        theme::regular(theme::JF_FONT_SECTION),
+        theme::JF_TEXT,
+    );
+    y += 52.0;
+    for (id, title) in suggestions {
+        let galley = widgets::elided(
+            ui,
+            title,
+            theme::regular(theme::JF_FONT),
+            theme::JF_ACCENT,
+            area.width() - 40.0,
+        );
+        let rect = Rect::from_center_size(pos2(area.center().x, y + 14.0), galley.size() + vec2(8.0, 8.0));
+        let response = ui.interact(rect, Id::new(("search-suggestion", id.as_str())), Sense::click());
+        widgets::describe_button(&response, true, title);
+        let text_rect = Rect::from_center_size(rect.center(), galley.size());
+        ui.painter().galley(text_rect.min, galley, theme::JF_ACCENT);
+        if response.hovered() {
+            ui.painter().hline(
+                text_rect.x_range(),
+                text_rect.bottom(),
+                egui::Stroke::new(1.0, theme::JF_ACCENT),
+            );
+        }
+        widgets::pointer_on_hover(&response);
+        if response.clicked() {
+            actions.push(UiAction::OpenItem(id.clone()));
+        }
+        y += 30.0;
+        if y > area.bottom() {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn item(kind: &str, name: &str) -> CatalogItem {
-        CatalogItem {
-            id: name.to_owned(),
-            title: name.to_owned(),
-            subtitle: String::new(),
-            sort_name: name.to_owned(),
+    fn item(kind: &str) -> CatalogItemData {
+        CatalogItemData {
+            id: kind.to_owned(),
+            title: kind.to_owned(),
             kind: kind.to_owned(),
+            ..CatalogItemData::default()
+        }
+    }
+
+    #[test]
+    fn music_shelves_are_square_and_everything_else_is_a_poster() {
+        assert_eq!(auto_shape(&[item("MusicAlbum")]), Shape::Square);
+        assert_eq!(auto_shape(&[item("Movie")]), Shape::Portrait);
+        assert_eq!(auto_shape(&[]), Shape::Portrait);
+    }
+
+    #[test]
+    fn views_choose_card_shapes() {
+        let movie = CatalogItem {
+            id: "m".into(),
+            title: "m".into(),
+            subtitle: String::new(),
+            kind: "Movie".into(),
             poster: None,
             thumb: None,
+            banner: None,
             watched: false,
             favorite: false,
             unplayed: 0,
             progress: 0.0,
             playable: true,
-            wide: false,
-        }
-    }
-
-    #[test]
-    fn search_results_are_grouped_by_kind_in_jellyfin_order() {
-        let (items, sections) = group_search_results(vec![
-            item("Episode", "e1"),
-            item("Movie", "m1"),
-            item("Series", "s1"),
-            item("Movie", "m2"),
-        ]);
-        let titles = sections
-            .iter()
-            .map(|section| section.title.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(titles, ["Movies", "Shows", "Episodes"]);
-        assert_eq!(
-            items
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            ["m1", "m2", "s1", "e1"]
-        );
-        assert_eq!(sections[0].count, 2);
-        assert_eq!(sections[2].shape, Shape::Backdrop);
-    }
-
-    #[test]
-    fn the_alpha_picker_files_names_under_their_first_letter() {
-        assert!(starts_with_letter("The Iron Giant", "T"));
-        assert!(starts_with_letter("alita", "A"));
-        assert!(starts_with_letter("1670", "#"));
-        assert!(starts_with_letter("¡Three Amigos!", "T"));
-        assert!(!starts_with_letter("Tenet", "#"));
-    }
-
-    #[test]
-    fn home_sections_take_jellyfin_card_shapes() {
-        assert_eq!(section_shape("libraries", None), (Shape::Backdrop, 1));
-        assert_eq!(section_shape("continue", None), (Shape::Backdrop, 2));
-        assert_eq!(section_shape("latest-abc", None), (Shape::Portrait, 2));
+            icon: None,
+        };
+        let items = vec![movie];
+        assert_eq!(grid_shape(ViewMode::Poster, &items), Some(Shape::Portrait));
+        assert_eq!(grid_shape(ViewMode::ThumbCard, &items), Some(Shape::Backdrop));
+        assert_eq!(grid_shape(ViewMode::Banner, &items), Some(Shape::Banner));
+        assert_eq!(grid_shape(ViewMode::List, &items), None);
     }
 }

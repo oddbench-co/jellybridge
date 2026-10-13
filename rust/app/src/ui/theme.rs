@@ -159,6 +159,9 @@ fn style() -> Style {
     style.spacing.button_padding = egui::vec2(12.0, 6.0);
     style.spacing.interact_size = egui::vec2(32.0, 32.0);
     style.spacing.combo_height = 320.0;
+    // egui caps an area it has not measured yet at 600×400, which clipped
+    // the sort and filter dialogs; they bound their own height instead.
+    style.spacing.default_area_size = egui::vec2(4096.0, 4096.0);
     style.spacing.scroll.floating = true;
     style.spacing.scroll.bar_width = 8.0;
     style.text_styles = [

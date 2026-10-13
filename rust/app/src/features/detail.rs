@@ -55,6 +55,7 @@ pub enum ImageType {
     Backdrop,
     Logo,
     Thumb,
+    Banner,
 }
 
 impl ImageType {
@@ -64,6 +65,7 @@ impl ImageType {
             Self::Backdrop => "Backdrop",
             Self::Logo => "Logo",
             Self::Thumb => "Thumb",
+            Self::Banner => "Banner",
         }
     }
 }
@@ -227,7 +229,8 @@ pub enum DetailMessage {
         kind: DetailMutationKind,
         error: Option<String>,
     },
-    Back,
+    /// Puts back a page from the navigation history.
+    Restore(Box<DetailPageData>),
     Reset,
 }
 
@@ -237,7 +240,6 @@ pub enum DetailEffect {
     Play(String),
     SetWatched { id: String, watched: bool },
     SetFavorite { id: String, favorite: bool },
-    ShowCatalog,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -249,7 +251,6 @@ pub enum DetailMutationKind {
 #[derive(Default)]
 pub struct DetailModel {
     page: Option<DetailPageData>,
-    history: Vec<DetailPageData>,
     pending: Option<DetailTarget>,
     mutations: HashMap<(String, DetailMutationKind), bool>,
     error: Option<String>,
@@ -259,16 +260,13 @@ pub struct DetailSnapshot<'a> {
     pub page: Option<&'a DetailPageData>,
     pub busy: bool,
     pub error: Option<&'a str>,
-    pub can_go_back: bool,
 }
 
 impl DetailModel {
     pub fn update(&mut self, message: DetailMessage) -> Vec<DetailEffect> {
         match message {
             DetailMessage::Open(target) => {
-                if let Some(page) = self.page.take() {
-                    self.history.push(page);
-                }
+                self.page = None;
                 self.pending = Some(target.clone());
                 self.error = None;
                 vec![DetailEffect::Load(target)]
@@ -341,16 +339,11 @@ impl DetailModel {
                 }
                 Vec::new()
             }
-            DetailMessage::Back => {
+            DetailMessage::Restore(page) => {
+                self.page = Some(*page);
                 self.pending = None;
                 self.error = None;
-                if let Some(previous) = self.history.pop() {
-                    self.page = Some(previous);
-                    Vec::new()
-                } else {
-                    self.page = None;
-                    vec![DetailEffect::ShowCatalog]
-                }
+                Vec::new()
             }
             DetailMessage::Reset => {
                 *self = Self::default();
@@ -364,7 +357,6 @@ impl DetailModel {
             page: self.page.as_ref(),
             busy: self.pending.is_some(),
             error: self.error.as_deref(),
-            can_go_back: self.page.is_some() || !self.history.is_empty(),
         }
     }
 
@@ -373,27 +365,28 @@ impl DetailModel {
         !self.mutations.is_empty()
     }
 
+    /// Whether the detail screen is showing: a page, a load, or its error.
+    pub fn is_active(&self) -> bool {
+        self.page.is_some() || self.pending.is_some() || self.error.is_some()
+    }
+
+    /// Takes the page off screen, for the navigation history.
+    pub fn take_page(&mut self) -> Option<DetailPageData> {
+        let page = self.page.take();
+        *self = Self::default();
+        page
+    }
+
     pub fn item_by_id(&self, id: &str) -> Option<DetailItemData> {
         self.item(id).cloned()
     }
 
     fn item(&self, id: &str) -> Option<&DetailItemData> {
-        self.page
-            .as_ref()
-            .and_then(|page| find_item(page, id))
-            .or_else(|| {
-                self.history
-                    .iter()
-                    .rev()
-                    .find_map(|page| find_item(page, id))
-            })
+        self.page.as_ref().and_then(|page| find_item(page, id))
     }
 
     fn update_item(&mut self, id: &str, mut update: impl FnMut(&mut DetailItemData)) {
         if let Some(page) = self.page.as_mut() {
-            update_matching_items(page, id, &mut update);
-        }
-        for page in &mut self.history {
             update_matching_items(page, id, &mut update);
         }
     }
@@ -664,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_details_restore_each_parent_before_returning_to_the_catalog() {
+    fn a_detail_page_moves_into_the_history_and_back() {
         let mut model = DetailModel::default();
 
         assert_eq!(
@@ -698,15 +691,15 @@ mod tests {
             DetailKind::Episode,
         ))));
 
-        assert!(model.update(DetailMessage::Back).is_empty());
-        assert_eq!(model.snapshot().page.unwrap().item.id, "season");
-        assert!(model.update(DetailMessage::Back).is_empty());
-        assert_eq!(model.snapshot().page.unwrap().item.id, "series");
-        assert_eq!(
-            model.update(DetailMessage::Back),
-            vec![DetailEffect::ShowCatalog]
-        );
-        assert!(model.snapshot().page.is_none());
+        // The history belongs to navigation: the model hands its page over
+        // and takes one back.
+        let episode = model.take_page().unwrap();
+        assert_eq!(episode.item.id, "episode");
+        assert!(!model.is_active());
+        assert!(model
+            .update(DetailMessage::Restore(Box::new(episode)))
+            .is_empty());
+        assert_eq!(model.snapshot().page.unwrap().item.id, "episode");
     }
 
     #[test]
@@ -836,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_replaces_the_shown_page_and_keeps_history() {
+    fn refresh_replaces_the_shown_page() {
         let mut model = DetailModel::default();
         model.update(DetailMessage::Open(DetailTarget::new(
             "series",
@@ -862,8 +855,6 @@ mod tests {
 
         assert!(effects.is_empty());
         assert!(model.snapshot().page.unwrap().item.watched);
-        model.update(DetailMessage::Back);
-        assert_eq!(model.snapshot().page.unwrap().item.id, "series");
     }
 
     #[test]

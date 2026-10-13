@@ -30,6 +30,8 @@ pub enum Shape {
     Portrait,
     /// 1:1: albums, music.
     Square,
+    /// 1000:185 banners.
+    Banner,
 }
 
 impl Shape {
@@ -39,6 +41,7 @@ impl Shape {
             Shape::Backdrop => 9.0 / 16.0,
             Shape::Portrait => 1.5,
             Shape::Square => 1.0,
+            Shape::Banner => 0.185,
         }
     }
 }
@@ -47,7 +50,7 @@ impl Shape {
 /// `window` points wide -- jellyfin-web's breakpoints, in viewport widths.
 pub fn overflow_width(window: f32, shape: Shape) -> f32 {
     let vw = match shape {
-        Shape::Backdrop => match window {
+        Shape::Backdrop | Shape::Banner => match window {
             w if w >= 2500.0 => 15.6,
             w if w >= 1600.0 => 18.7,
             w if w >= 1200.0 => 23.1,
@@ -87,6 +90,59 @@ pub fn grid_width(window: f32, grid: f32) -> f32 {
     grid * share
 }
 
+/// A grid card's width for any shape: posters use [`grid_width`], wide
+/// shapes jellyfin-web's `backdropCard` and `bannerCard` shares.
+pub fn grid_card_width(window: f32, grid: f32, shape: Shape) -> f32 {
+    match shape {
+        Shape::Portrait | Shape::Square => grid_width(window, grid),
+        Shape::Backdrop => {
+            let share = match window {
+                w if w >= 2500.0 => 1.0 / 6.0,
+                w if w >= 1600.0 => 0.20,
+                w if w >= 1200.0 => 0.25,
+                w if w >= 770.0 => 1.0 / 3.0,
+                w if w >= 400.0 => 0.5,
+                _ => 1.0,
+            };
+            grid * share
+        }
+        Shape::Banner => {
+            let share = match window {
+                w if w >= 2100.0 => 0.20,
+                w if w >= 1600.0 => 0.25,
+                w if w >= 1200.0 => 1.0 / 3.0,
+                w if w >= 500.0 => 0.5,
+                _ => 1.0,
+            };
+            grid * share
+        }
+    }
+}
+
+/// jellyfin-web's five placeholder colours for cards without artwork.
+const DEFAULT_BACKGROUNDS: [Color32; 5] = [
+    Color32::from_rgb(0x00, 0xa4, 0xdc),
+    Color32::from_rgb(0x44, 0xba, 0xe1),
+    Color32::from_rgb(0x00, 0x45, 0x5c),
+    Color32::from_rgb(0x1c, 0x4c, 0x5c),
+    Color32::from_rgb(0x00, 0x7e, 0xa8),
+];
+
+/// The placeholder colour jellyfin-web gives `name`: the last digit of the
+/// digit sum of its middle character's code, modulo five.
+pub fn default_background(name: &str) -> Color32 {
+    let characters = name.encode_utf16().collect::<Vec<_>>();
+    let Some(middle) = characters.get(characters.len() / 2) else {
+        return DEFAULT_BACKGROUNDS[0];
+    };
+    let sum: u32 = middle
+        .to_string()
+        .chars()
+        .filter_map(|digit| digit.to_digit(10))
+        .sum();
+    DEFAULT_BACKGROUNDS[(sum % 10 % 5) as usize]
+}
+
 /// What a card shows.
 pub struct CardModel<'a> {
     pub title: &'a str,
@@ -100,6 +156,8 @@ pub struct CardModel<'a> {
     /// Whether hovering shows the played/favorite buttons (cast and
     /// libraries have none).
     pub actions: bool,
+    /// Drawn instead of the name on a card with no artwork (libraries).
+    pub placeholder_icon: Option<Icon>,
 }
 
 /// What the user did with a card this frame.
@@ -160,6 +218,24 @@ pub fn card(
         match texture {
             Some((texture, size)) => {
                 widgets::image_cover(&painter, texture, size, image, theme::JF_RADIUS)
+            }
+            // No artwork at all: jellyfin-web's coloured tile with the name.
+            None if model.art.is_none_or(|art| images.is_failed(&art.key)) => {
+                painter.rect_filled(image, theme::JF_RADIUS, default_background(model.title));
+                if let Some(icon) = model.placeholder_icon {
+                    let size = (image.height() * 0.45).min(image.width() * 0.45);
+                    icons::paint_centered(&painter, icon, image.center(), size, Color32::WHITE);
+                } else {
+                let name = widgets::wrapped(
+                    ui,
+                    model.title,
+                    theme::bold(theme::JF_FONT * 1.4),
+                    Color32::WHITE,
+                    image.width() - 16.0,
+                    Some(3),
+                );
+                widgets::galley_centered(&painter, image, name);
+                }
             }
             None => {
                 painter.rect_filled(image, theme::JF_RADIUS, theme::JF_CARD_EMPTY);

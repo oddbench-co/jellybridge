@@ -17,16 +17,23 @@ pub struct StoredSession {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSettings {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub card_width_dp: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub library_sort_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub library_page_size: Option<i32>,
+    /// Each library grid's sort and view, by page key.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub grid_settings: HashMap<String, StoredGridSettings>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub playback_preferences: HashMap<String, StoredPlaybackPreference>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// How one grid is sorted and drawn, in jellyfin-web's own vocabulary
+/// ("SortName", "Descending", "posterCard").
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct StoredGridSettings {
+    pub sort_by: String,
+    pub descending: bool,
+    pub view: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -201,14 +208,12 @@ impl SettingsStore {
         }
     }
 
-    pub fn save_catalog_preferences(
+    pub fn save_grid_settings(
         &self,
-        card_width_dp: i32,
-        library_sort_key: &str,
+        grids: HashMap<String, StoredGridSettings>,
     ) -> Result<(), SessionError> {
         let mut settings = self.load()?;
-        settings.card_width_dp = Some(card_width_dp);
-        settings.library_sort_key = Some(library_sort_key.to_owned());
+        settings.grid_settings = grids;
         self.save(&settings)
     }
 
@@ -415,12 +420,22 @@ mod tests {
         )
         .unwrap();
 
-        store.save_catalog_preferences(320, "rating_desc").unwrap();
+        let grids = HashMap::from([(
+            "lib:movies".to_owned(),
+            StoredGridSettings {
+                sort_by: "DateCreated".into(),
+                descending: true,
+                view: "posterCard".into(),
+            },
+        )]);
+        store.save_grid_settings(grids).unwrap();
         let value: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(directory.join("settings.json")).unwrap())
                 .unwrap();
-        assert_eq!(value["cardWidthDp"], 320);
-        assert_eq!(value["librarySortKey"], "rating_desc");
+        assert_eq!(value["gridSettings"]["lib:movies"]["sortBy"], "DateCreated");
+        assert_eq!(value["gridSettings"]["lib:movies"]["view"], "posterCard");
+        // Settings this version no longer reads survive a save.
+        assert_eq!(value["cardWidthDp"], 220);
         assert_eq!(value["libraryPageSize"], 120);
         assert_eq!(
             value["playbackPreferences"]["movie"]["audioLanguage"],
@@ -472,7 +487,7 @@ mod tests {
         let store = SettingsStore::at(directory.join("settings.json"));
         fs::write(directory.join("settings.json"), b"not-json").unwrap();
         let settings = store.load().unwrap();
-        assert!(settings.card_width_dp.is_none());
+        assert!(settings.grid_settings.is_empty());
         assert!(fs::read_dir(&directory).unwrap().flatten().any(|entry| {
             entry
                 .file_name()

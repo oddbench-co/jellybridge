@@ -114,3 +114,40 @@ when played), Favorite, More.
 14.88 px above at 70% white (accent when focused). Sign In: 47 px, accent,
 semibold white. Secondary buttons `#303030`. Server entry is a separate
 "Connect to Server" step with a Host field and Connect.
+
+## Drawer
+
+320 px wide, `#101010`, shadow `rgba(0,0,0,0.4) 2px 0 12px`, slides in with
+`transform 0.24s ease-out` over the page dimmed to 50%. Rows 47 px tall:
+20 px icon at x 36, label 14.88 px at x 76. Section headers ("Media",
+"Administration", "User") 14.88 px at x 17.9, 14.9 px above and 7.4 px
+below. Rows: Home; each library (icons: movie, tv, music_note, book, queue);
+Settings and Sign Out under User.
+
+## Header tabs
+
+Centred in a 53 px strip under the 57 px header, 12.4 px semibold; each tab
+is its label plus 18 px either side. Active white, inactive `#999`, hovered
+the accent. No underline.
+
+## Library tabs and dialogs
+
+- Movies: Movies, Suggestions, Favorites, Collections, Genres. Shows: Shows,
+  Suggestions, Upcoming, Genres, TV Networks, Episodes.
+- Grid toolbar: "1-35 of 35", then (when paged by 100) ← →, Play All,
+  Shuffle, View, Sort, Filter, 41 px buttons ~50 px apart.
+- Sort: a centred dialog (black 50% backdrop, `#101010`, radius 3, content
+  width 199) with "Sort By" and "Sort Order" (22.3 px headings) and radio
+  rows 31.5 px apart; 16 px accent rings.
+- View: an action sheet opened on the button, its checked row level with it;
+  rows 40 px, check at x 17, label at x 63. Banner, List, Poster, Poster
+  Card, Thumb, Thumb Card.
+- Filter: a 300 px dialog of collapsible 52 px sections with hairlines:
+  Filters (Played, Unplayed, Resumable, Favorites), Status (shows), Features,
+  Genres, Parental Ratings, Tags, Video Types (BD, DVD, HD, 4K, SD, 3D),
+  Years. Options come from `Items/Filters`.
+- Genres tab: per genre a titled section with "›" to the full list and up
+  to 9 cards wrapping into rows. Upcoming: one section per day ("Tuesday,
+  Oct 13"), thumb cards. TV Networks: studio thumbs; a studio without one is
+  a coloured tile with its name (`#00a4dc`, `#44bae1`, `#00455c`,
+  `#1c4c5c`, `#007ea8`, picked from the name).

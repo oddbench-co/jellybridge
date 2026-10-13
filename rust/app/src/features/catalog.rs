@@ -1,196 +1,17 @@
-use crate::api::{ApiError, CatalogItemData, CatalogSectionData, JellyfinApi};
-use crate::app::{
-    AppContext, PageSnapshot, RetryAction, cancel_catalog_request, replace_catalog_request,
+//! Navigation between jellyfin-web's pages, and what the cards on them do.
+//!
+//! There is one history for every page: list pages ([`Page`]) and item
+//! detail pages alike. Opening anything pushes the place being left, Back
+//! pops it, and Home clears it. A page is kept with what it showed, so Back
+//! is instant; the background refresh then re-reads it.
+
+use crate::api::{ApiError, CatalogItemData, CatalogSectionData, JellyfinApi, library_route};
+use crate::app::{AppContext, AppState, HistoryEntry, RetryAction, cancel_catalog_request, replace_catalog_request};
+use crate::features::detail::{DetailKind, DetailMessage, DetailTarget};
+use crate::features::pages::{
+    GridSettings, LibraryRef, ListFilter, ListQuery, Page, PageContent, PageRoute, Shelf,
 };
-use crate::features::detail::{DetailEffect, DetailKind, DetailMessage, DetailTarget};
 use crate::ui;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CatalogSort {
-    #[default]
-    NameAscending,
-    NameDescending,
-    DateAddedNewest,
-    DateAddedOldest,
-    ReleaseDateNewest,
-    ReleaseDateOldest,
-    RatingHighest,
-}
-
-impl CatalogSort {
-    pub const ALL: [Self; 7] = [
-        Self::NameAscending,
-        Self::NameDescending,
-        Self::DateAddedNewest,
-        Self::DateAddedOldest,
-        Self::ReleaseDateNewest,
-        Self::ReleaseDateOldest,
-        Self::RatingHighest,
-    ];
-
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::NameAscending => "name_asc",
-            Self::NameDescending => "name_desc",
-            Self::DateAddedNewest => "date_added_desc",
-            Self::DateAddedOldest => "date_added_asc",
-            Self::ReleaseDateNewest => "release_date_desc",
-            Self::ReleaseDateOldest => "release_date_asc",
-            Self::RatingHighest => "rating_desc",
-        }
-    }
-
-    pub fn from_index(index: i32) -> Option<Self> {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| Self::ALL.get(index).copied())
-    }
-
-    pub fn index(self) -> i32 {
-        Self::ALL
-            .iter()
-            .position(|candidate| *candidate == self)
-            .and_then(|index| i32::try_from(index).ok())
-            .unwrap_or(0)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::NameAscending => "Name A-Z",
-            Self::NameDescending => "Name Z-A",
-            Self::DateAddedNewest => "Date added newest",
-            Self::DateAddedOldest => "Date added oldest",
-            Self::ReleaseDateNewest => "Release date newest",
-            Self::ReleaseDateOldest => "Release date oldest",
-            Self::RatingHighest => "Rating highest",
-        }
-    }
-
-    pub fn query(self) -> (&'static str, &'static str) {
-        match self {
-            Self::NameAscending => ("SortName", "Ascending"),
-            Self::NameDescending => ("SortName", "Descending"),
-            Self::DateAddedNewest => ("DateCreated", "Descending"),
-            Self::DateAddedOldest => ("DateCreated", "Ascending"),
-            Self::ReleaseDateNewest => ("PremiereDate", "Descending"),
-            Self::ReleaseDateOldest => ("PremiereDate", "Ascending"),
-            Self::RatingHighest => ("CommunityRating,SortName", "Descending,Ascending"),
-        }
-    }
-
-    pub fn from_key(value: Option<&str>) -> Self {
-        value
-            .and_then(|value| Self::ALL.into_iter().find(|sort| sort.key() == value))
-            .unwrap_or_default()
-    }
-
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CatalogDensity {
-    Compact,
-    #[default]
-    Normal,
-    Large,
-}
-
-impl CatalogDensity {
-    pub const ALL: [Self; 3] = [Self::Compact, Self::Normal, Self::Large];
-
-    pub fn card_width(self) -> i32 {
-        match self {
-            Self::Compact => 220,
-            Self::Normal => 260,
-            Self::Large => 320,
-        }
-    }
-
-    pub fn from_card_width(value: Option<i32>) -> Self {
-        let value = value.unwrap_or(Self::Normal.card_width());
-        Self::ALL
-            .into_iter()
-            .min_by_key(|density| (density.card_width() - value).abs())
-            .unwrap_or_default()
-    }
-
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatalogSectionRange {
-    pub id: String,
-    pub title: String,
-    pub start_index: usize,
-    pub count: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct FlattenedCatalog {
-    pub items: Vec<CatalogItemData>,
-    pub sections: Vec<CatalogSectionRange>,
-}
-
-pub fn flatten_sections(sections: &[CatalogSectionData]) -> FlattenedCatalog {
-    let mut items = Vec::new();
-    let mut ranges = Vec::with_capacity(sections.len());
-    for section in sections {
-        if section.items.is_empty() {
-            continue;
-        }
-        let start_index = items.len();
-        items.extend(section.items.iter().cloned());
-        ranges.push(CatalogSectionRange {
-            id: section.id.clone(),
-            title: section.title.clone(),
-            start_index,
-            count: section.items.len(),
-        });
-    }
-    FlattenedCatalog {
-        items,
-        sections: ranges,
-    }
-}
-
-pub enum EmptySearchDestination {
-    Ignore,
-    Home,
-    Parent(Box<CatalogItemData>),
-    /// The search page stays, emptied.
-    ClearSearch,
-}
-
-pub fn empty_search_destination(current: &PageSnapshot) -> EmptySearchDestination {
-    if current.search_page {
-        EmptySearchDestination::ClearSearch
-    } else if current.search_text.is_empty() {
-        EmptySearchDestination::Ignore
-    } else if let Some(parent) = current.parent.clone() {
-        EmptySearchDestination::Parent(Box::new(parent))
-    } else {
-        EmptySearchDestination::Home
-    }
-}
-
-pub fn start_home_load(context: &AppContext) {
-    let Some(api) = context.api() else {
-        ui::show_login(context, "Please sign in to continue");
-        return;
-    };
-    let generation = context.next_generation();
-    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
-    if let Ok(mut state) = context.state.lock() {
-        state.retry = RetryAction::Home;
-    }
-    let ctx = context.clone();
-    let task = context.runtime.spawn(async move {
-        let result = api.home().await;
-        if !ctx.is_current(generation) {
-            return;
-        }
-        apply_home_result(&ctx, api, result);
-    });
-    replace_catalog_request(context, task.abort_handle());
-}
 
 /// Installs a finished dashboard request, or reports why it failed.
 ///
@@ -222,61 +43,398 @@ pub fn apply_home_result(
                 "Your saved session is no longer valid. Please sign in again.",
             );
         }
-        Err(error) => ui::show_catalog_error(context, error.to_string()),
+        Err(error) => {
+            if let Ok(mut state) = context.state.lock() {
+                state.api = Some(api);
+                state.page = Page {
+                    route: PageRoute::home(),
+                    content: PageContent::Failed(error.to_string()),
+                };
+            }
+            ui::catalog::present(context);
+        }
     }
 }
 
+/// Shows a freshly signed-in or restored session's home page.
 pub fn install_home(
     context: &AppContext,
     api: JellyfinApi,
     account_name: String,
     home: Vec<CatalogSectionData>,
 ) {
-    let current = PageSnapshot::home(&home);
+    let shelves = crate::api::home_shelves(home);
     if let Ok(mut state) = context.state.lock() {
         state.api = Some(api);
         state.account_name = account_name;
-        state.home = home;
-        state.current = current;
-        state.back_stack.clear();
+        state.libraries = libraries_of(&shelves);
+        state.home = shelves.clone();
+        state.page = Page {
+            route: PageRoute::home(),
+            content: PageContent::Shelves(shelves),
+        };
+        state.history.clear();
         state.detail.update(DetailMessage::Reset);
-        state.retry = RetryAction::Home;
+        state.retry = RetryAction::Page;
     }
-    ui::catalog::present(context, "");
+    ui::catalog::present(context);
+    load_deferred_home(context);
 }
 
-/// Opens the global search page, as the header's search button does.
-pub fn open_search(context: &AppContext) {
-    context.next_generation();
-    cancel_catalog_request(context);
-    if let Ok(mut state) = context.state.lock() {
-        if state.current.search_page {
+/// Fetches the home shelves left out of the first screen and slots them in.
+fn load_deferred_home(context: &AppContext) {
+    let Some(api) = context.api() else { return };
+    let libraries = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| {
+            state
+                .home
+                .iter()
+                .find(|shelf| shelf.id == "libraries")
+                .map(|shelf| shelf.items.clone())
+        })
+        .unwrap_or_default();
+    if !libraries.iter().any(|library| library.collection_type == "music") {
+        return;
+    }
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        let sections = api.deferred_home_sections(&libraries).await;
+        if sections.is_empty() {
             return;
         }
-        let previous = std::mem::replace(&mut state.current, PageSnapshot::search());
-        state.back_stack.push(previous);
-        state.detail.update(DetailMessage::Reset);
-    }
-    ui::catalog::present(context, "");
+        if let Ok(mut state) = ctx.state.lock() {
+            crate::api::merge_home_shelves(&mut state.home, sections.clone());
+            if state.page.route == PageRoute::home()
+                && let PageContent::Shelves(shelves) = &mut state.page.content
+            {
+                crate::api::merge_home_shelves(shelves, sections);
+            }
+        }
+        ui::catalog::present_refresh(&ctx);
+    });
 }
 
-pub fn show_home(context: &AppContext, clear_history: bool) {
+/// The libraries listed in My Media, for the drawer.
+pub fn libraries_of(home: &[Shelf]) -> Vec<LibraryRef> {
+    home.iter()
+        .find(|shelf| shelf.id == "libraries")
+        .map(|shelf| {
+            shelf
+                .items
+                .iter()
+                .map(|item| LibraryRef {
+                    id: item.id.clone(),
+                    name: item.title.clone(),
+                    collection_type: item.collection_type.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Moves whatever is on screen into the history.
+fn push_location(state: &mut AppState) {
+    if state.detail.is_active() {
+        if let Some(page) = state.detail.take_page() {
+            state.history.push(HistoryEntry::Detail(Box::new(page)));
+        }
+    } else {
+        state.history.push(HistoryEntry::Page(state.page.clone()));
+    }
+}
+
+/// Opens a list page, keeping the current place in the history.
+pub fn navigate(context: &AppContext, route: PageRoute) {
+    if let Ok(mut state) = context.state.lock() {
+        let already_here = !state.detail.is_active() && state.page.route == route;
+        if already_here {
+            return;
+        }
+        push_location(&mut state);
+    }
+    load_route(context, route, 0);
+}
+
+/// Switches the header tab: the same page on another tab, without a new
+/// history entry, as jellyfin-web's tabs behave.
+pub fn switch_tab(context: &AppContext, index: usize) {
+    let route = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.page.route.with_tab(index));
+    if let Some(route) = route {
+        load_route(context, route, 0);
+    }
+}
+
+/// Opens an item's detail page.
+pub fn open_detail(context: &AppContext, target: DetailTarget) {
+    if let Ok(mut state) = context.state.lock() {
+        push_location(&mut state);
+    }
+    crate::features::detail::start_detail(context, target);
+}
+
+/// Loads `route` into the page on screen. Home shows its last shelves at
+/// once and refreshes behind them.
+fn load_route(context: &AppContext, route: PageRoute, start: usize) {
+    let Some(api) = context.api() else {
+        ui::show_login(context, "Please sign in to continue");
+        return;
+    };
+    let generation = context.next_generation();
+    cancel_catalog_request(context);
+    let settings = {
+        let Ok(mut state) = context.state.lock() else { return };
+        state.detail.update(DetailMessage::Reset);
+        state.retry = RetryAction::Page;
+        if route == PageRoute::home() && !state.home.is_empty() {
+            state.page = Page {
+                route,
+                content: PageContent::Shelves(state.home.clone()),
+            };
+            drop(state);
+            ui::catalog::present(context);
+            context.request_refresh();
+            return;
+        }
+        // A grid turning its page keeps its rows until the next arrive.
+        let same_grid = state.page.route == route && matches!(state.page.content, PageContent::Grid(_));
+        if !same_grid {
+            state.page = Page::loading(route.clone());
+        }
+        state.grid_settings_for(&route)
+    };
+    ui::catalog::present(context);
+    let ctx = context.clone();
+    let task = context.runtime.spawn(async move {
+        let result = api.load_page(&route, &settings, start).await;
+        if !ctx.is_current(generation) {
+            return;
+        }
+        let content = match result {
+            Ok(content) => content,
+            Err(ApiError::Unauthorized) => {
+                apply_home_result(&ctx, api, Err(ApiError::Unauthorized));
+                return;
+            }
+            Err(error) => PageContent::Failed(error.to_string()),
+        };
+        if let Ok(mut state) = ctx.state.lock() {
+            if state.page.route != route {
+                return;
+            }
+            if let (PageRoute::Home { favorites: false }, PageContent::Shelves(shelves)) =
+                (&route, &content)
+            {
+                state.home = shelves.clone();
+                state.libraries = libraries_of(shelves);
+            }
+            state.page.content = content;
+        }
+        ui::catalog::present(&ctx);
+    });
+    replace_catalog_request(context, task.abort_handle());
+}
+
+pub fn go_back(context: &AppContext) {
     context.next_generation();
     cancel_catalog_request(context);
-    if let Ok(mut state) = context.state.lock() {
-        state.current = PageSnapshot::home(&state.home);
-        if clear_history {
-            state.back_stack.clear();
-        }
+    let entry = context.state.lock().ok().and_then(|mut state| {
         state.detail.update(DetailMessage::Reset);
+        state.history.pop()
+    });
+    match entry {
+        Some(HistoryEntry::Page(page)) => {
+            if let Ok(mut state) = context.state.lock() {
+                state.page = page;
+                state.retry = RetryAction::Page;
+            }
+            ui::catalog::present(context);
+        }
+        Some(HistoryEntry::Detail(page)) => {
+            if let Ok(mut state) = context.state.lock() {
+                state.retry = RetryAction::Detail(DetailTarget::new(
+                    page.item.id.clone(),
+                    page.item.kind,
+                ));
+                state.detail.update(DetailMessage::Restore(page));
+            }
+            let generation = context.current_generation();
+            ui::detail::present(context, generation);
+        }
+        // Nothing to return to: the page under a closed detail, or home.
+        None => {
+            let on_home = context
+                .state
+                .lock()
+                .is_ok_and(|state| state.page.route.is_home());
+            if on_home {
+                ui::catalog::present(context);
+            } else {
+                go_home(context);
+                return;
+            }
+        }
     }
-    ui::catalog::present(context, "");
-    // The cached dashboard shows instantly; the refresh patches in whatever
-    // was watched since it was fetched.
+    // Restored pages are snapshots from when they were left.
     context.request_refresh();
 }
 
-/// A played/favorite toggle on a home or library card.
+pub fn go_home(context: &AppContext) {
+    if let Ok(mut state) = context.state.lock() {
+        state.history.clear();
+    }
+    load_route(context, PageRoute::home(), 0);
+}
+
+/// Shows another page of the grid on screen.
+pub fn show_grid_page(context: &AppContext, start: usize) {
+    let route = context.state.lock().ok().map(|state| state.page.route.clone());
+    if let Some(route) = route {
+        load_route(context, route, start);
+    }
+}
+
+/// Applies new sort, filter or view settings to the grid on screen,
+/// remembering them for that grid.
+pub fn update_grid_settings(context: &AppContext, settings: GridSettings) {
+    let Some((route, reload)) = context.state.lock().ok().map(|mut state| {
+        let route = state.page.route.clone();
+        let previous = state.grid_settings_for(&route);
+        // The view only changes how rows are drawn; everything else changes
+        // which rows there are.
+        let reload = previous.sort != settings.sort
+            || previous.descending != settings.descending
+            || previous.filters != settings.filters;
+        state.grid_settings.insert(route.settings_key(), settings);
+        (route, reload)
+    }) else {
+        return;
+    };
+    persist_grid_settings(context);
+    if reload {
+        load_route(context, route, 0);
+    } else {
+        ui::catalog::present(context);
+    }
+}
+
+/// Fetches what the filter dialog can offer for the grid on screen.
+pub fn load_filter_options(context: &AppContext) {
+    let Some(api) = context.api() else { return };
+    let Some(route) = context.state.lock().ok().map(|state| state.page.route.clone()) else {
+        return;
+    };
+    let key = route.settings_key();
+    let cached = context.state.lock().is_ok_and(|state| {
+        state
+            .filter_options
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached == key)
+    });
+    if cached {
+        return;
+    }
+    let ctx = context.clone();
+    context.runtime.spawn(async move {
+        match api.filter_options(&route).await {
+            Ok(options) => {
+                if let Ok(mut state) = ctx.state.lock() {
+                    state.filter_options = Some((key, options));
+                }
+                ui::catalog::present_filter_options(&ctx);
+            }
+            Err(error) => tracing::warn!(%error, "filter options failed"),
+        }
+    });
+}
+
+fn persist_grid_settings(context: &AppContext) {
+    let Ok(settings) = context.state.lock().map(|state| {
+        state
+            .grid_settings
+            .iter()
+            .map(|(key, settings)| (key.clone(), settings.to_stored()))
+            .collect()
+    }) else {
+        return;
+    };
+    // The settings store does blocking file I/O, so persist off the UI thread.
+    let store = context.settings_store.clone();
+    context.runtime.spawn_blocking(move || {
+        if let Err(error) = store.save_grid_settings(settings) {
+            tracing::warn!(%error, "grid settings could not be saved");
+        }
+    });
+}
+
+/// Opens the search page, as the header's search button does.
+pub fn open_search(context: &AppContext) {
+    navigate(context, PageRoute::Search);
+}
+
+/// Runs a search on the search page; an empty term shows the suggestions.
+pub fn search(context: &AppContext, term: String) {
+    let Some(api) = context.api() else { return };
+    let term = term.trim().to_owned();
+    let generation = context.next_generation();
+    let on_search = context.state.lock().is_ok_and(|mut state| {
+        let PageContent::Search {
+            term: shown,
+            results,
+            ..
+        } = &mut state.page.content
+        else {
+            return false;
+        };
+        shown.clone_from(&term);
+        if term.is_empty() {
+            results.clear();
+        }
+        true
+    });
+    if !on_search {
+        return;
+    }
+    ui::catalog::present(context);
+    if term.is_empty() {
+        return;
+    }
+    let ctx = context.clone();
+    let task = context.runtime.spawn(async move {
+        let result = api.search_results(&term).await;
+        if !ctx.is_current(generation) {
+            return;
+        }
+        let results = match result {
+            Ok(results) => results,
+            Err(error) => {
+                tracing::warn!(%error, "search failed");
+                ui::set_message(&ctx, &error.to_string());
+                Vec::new()
+            }
+        };
+        if let Ok(mut state) = ctx.state.lock()
+            && let PageContent::Search {
+                term: shown,
+                results: shown_results,
+                ..
+            } = &mut state.page.content
+            && *shown == term
+        {
+            *shown_results = results;
+        }
+        ui::catalog::present(&ctx);
+    });
+    replace_catalog_request(context, task.abort_handle());
+}
+
+/// A played/favorite toggle on a card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CardToggle {
     Played(bool),
@@ -304,15 +462,14 @@ pub fn toggle_card(context: &AppContext, id: &str, toggle: CardToggle) {
                 }
             }
         };
-        state.current.items.iter_mut().for_each(apply);
+        state.page.items_mut().for_each(apply);
         state
             .home
             .iter_mut()
-            .flat_map(|section| section.items.iter_mut())
+            .flat_map(|shelf| shelf.items.iter_mut())
             .for_each(apply);
     }
-    let generation = context.generation.load(std::sync::atomic::Ordering::Acquire);
-    ui::catalog::present_refresh(context, generation);
+    ui::catalog::present(context);
     let ctx = context.clone();
     let id = id.to_owned();
     context.runtime.spawn(async move {
@@ -328,212 +485,86 @@ pub fn toggle_card(context: &AppContext, id: &str, toggle: CardToggle) {
     });
 }
 
+/// What opening a card leads to, by the item's kind.
+pub fn destination(item: &CatalogItemData) -> Destination {
+    match item.kind.as_str() {
+        "CollectionFolder" | "UserView" => Destination::Page(library_route(item)),
+        "Movie" | "Series" | "Season" | "Episode" => Destination::Detail(DetailTarget::new(
+            item.id.clone(),
+            DetailKind::from_jellyfin(&item.kind),
+        )),
+        "Genre" => Destination::Page(PageRoute::List(ListQuery {
+            title: item.title.clone(),
+            parent_id: None,
+            filter: ListFilter::Genre(item.id.clone()),
+            item_types: String::new(),
+        })),
+        "Studio" => Destination::Page(PageRoute::List(ListQuery {
+            title: item.title.clone(),
+            parent_id: None,
+            filter: ListFilter::Studio(item.id.clone()),
+            item_types: "Series".to_owned(),
+        })),
+        "Person" => Destination::Page(PageRoute::List(ListQuery {
+            title: item.title.clone(),
+            parent_id: None,
+            filter: ListFilter::Person(item.id.clone()),
+            item_types: "Movie,Series".to_owned(),
+        })),
+        _ => Destination::Page(PageRoute::List(ListQuery::children(
+            item.title.clone(),
+            item.id.clone(),
+        ))),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Destination {
+    Page(PageRoute),
+    Detail(DetailTarget),
+}
+
 pub fn open_item(context: &AppContext, id: &str) {
-    let item = context.state.lock().ok().and_then(|state| {
-        state
-            .current
-            .items
-            .iter()
-            .find(|item| item.id == id)
-            .cloned()
-    });
+    let item = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.page.find(id).cloned());
     let Some(item) = item else { return };
-    let detail_kind = DetailKind::from_jellyfin(&item.kind);
-    if !matches!(detail_kind, DetailKind::Other) {
-        crate::features::detail::start_detail(context, DetailTarget::new(item.id, detail_kind));
-    } else if item.is_container {
-        start_browse(context, item);
+    match destination(&item) {
+        Destination::Page(route) => navigate(context, route),
+        Destination::Detail(target) => open_detail(context, target),
     }
 }
 
-pub fn start_browse(context: &AppContext, item: CatalogItemData) {
-    start_browse_request(context, item, true);
-}
-
-pub fn start_browse_request(context: &AppContext, item: CatalogItemData, push_history: bool) {
-    let Some(api) = context.api() else { return };
-    let generation = context.next_generation();
-    let sort = context
-        .state
-        .lock()
-        .map(|state| state.catalog_sort)
-        .unwrap_or_default();
-    if let Ok(mut state) = context.state.lock() {
-        state.retry = RetryAction::Browse(Box::new(item.clone()), push_history);
-    }
-    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
-    let ctx = context.clone();
-    let task = context.runtime.spawn(async move {
-        let result = api.browse(&item, sort).await;
-        if !ctx.is_current(generation) {
-            return;
-        }
-        match result {
-            Ok(page) => {
-                if let Ok(mut state) = ctx.state.lock() {
-                    if push_history {
-                        let previous = state.current.clone();
-                        state.back_stack.push(previous);
-                    }
-                    state.current = PageSnapshot {
-                        title: item.title.clone(),
-                        items: page.items,
-                        sections: Vec::new(),
-                        parent: Some(item.clone()),
-                        search_text: String::new(),
-                        total_record_count: page.total_record_count,
-                        search_page: false,
-                    };
-                    state.detail.update(DetailMessage::Reset);
-                }
-                ui::catalog::present(&ctx, "");
-            }
-            Err(error) => ui::show_catalog_error(&ctx, error.to_string()),
-        }
-    });
-    replace_catalog_request(context, task.abort_handle());
-}
-
-pub fn start_search(context: &AppContext, term: String) {
-    let term = term.trim().to_owned();
-    if term.is_empty() {
-        let destination = context
-            .state
-            .lock()
-            .map(|state| empty_search_destination(&state.current))
-            .unwrap_or(EmptySearchDestination::Ignore);
-        match destination {
-            EmptySearchDestination::Ignore => {}
-            EmptySearchDestination::Home => show_home(context, false),
-            EmptySearchDestination::Parent(parent) => {
-                start_browse_request(context, *parent, false);
-            }
-            EmptySearchDestination::ClearSearch => {
-                context.next_generation();
-                cancel_catalog_request(context);
-                if let Ok(mut state) = context.state.lock() {
-                    state.current = PageSnapshot::search();
-                }
-                ui::catalog::present(context, "");
-            }
-        }
-        return;
-    }
-    let Some(api) = context.api() else { return };
-    let generation = context.next_generation();
-    let (parent, sort) = context
-        .state
-        .lock()
-        .map(|state| (state.current.parent.clone(), state.catalog_sort))
-        .unwrap_or((None, CatalogSort::default()));
-    if let Ok(mut state) = context.state.lock() {
-        state.retry = RetryAction::Search(term.clone());
-        state.current.search_text.clone_from(&term);
-    }
-    ui::set_screen_busy(context, ui::Screen::Catalog, true, "");
-    let ctx = context.clone();
-    let task = context.runtime.spawn(async move {
-        let result = api
-            .search(&term, parent.as_ref().map(|item| item.id.as_str()), sort)
-            .await;
-        if !ctx.is_current(generation) {
-            return;
-        }
-        match result {
-            Ok(page) => {
-                if let Ok(mut state) = ctx.state.lock() {
-                    state.current.items = page.items;
-                    state.current.sections.clear();
-                    state.current.search_text.clone_from(&term);
-                    state.current.total_record_count = page.total_record_count;
-                    state.detail.update(DetailMessage::Reset);
-                }
-                ui::catalog::present(&ctx, "");
-            }
-            Err(error) => ui::show_catalog_error(&ctx, error.to_string()),
-        }
-    });
-    replace_catalog_request(context, task.abort_handle());
-}
-
-pub fn change_catalog_sort(context: &AppContext, index: i32) {
-    let Some(sort) = CatalogSort::from_index(index) else {
-        return;
-    };
-    let (search_text, parent, is_home_dashboard) = match context.state.lock() {
-        Ok(mut state) => {
-            state.catalog_sort = sort;
-            (
-                state.current.search_text.clone(),
-                state.current.parent.clone(),
-                state.current.is_home_dashboard(),
-            )
-        }
-        Err(_) => return,
-    };
-    persist_catalog_preferences(context);
-    if is_home_dashboard {
-        ui::catalog::present_preferences(context);
-    } else if !search_text.is_empty() {
-        start_search(context, search_text);
-    } else if let Some(parent) = parent {
-        start_browse_request(context, parent, false);
-    }
-}
-
-fn persist_catalog_preferences(context: &AppContext) {
-    let (density, sort) = match context.state.lock() {
-        Ok(state) => (state.catalog_density, state.catalog_sort),
-        Err(_) => return,
-    };
-    // The settings store does blocking file I/O, so persist off the UI thread.
-    let ctx = context.clone();
-    context.runtime.spawn(async move {
-        let store = ctx.settings_store.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            store.save_catalog_preferences(density.card_width(), sort.key())
-        })
-        .await;
-        if !matches!(result, Ok(Ok(()))) {
-            tracing::warn!("catalog preferences could not be saved");
-            ui::set_message(&ctx, "Catalog preferences could not be saved");
-        }
-    });
-}
-
-pub fn go_back(context: &AppContext) {
-    context.next_generation();
-    cancel_catalog_request(context);
-    let detail_effects = context.state.lock().ok().and_then(|mut state| {
-        let snapshot = state.detail.snapshot();
-        (snapshot.page.is_some() || snapshot.busy || snapshot.error.is_some())
-            .then(|| state.detail.update(DetailMessage::Back))
-    });
-    if let Some(effects) = detail_effects {
-        if effects
+/// Opens the page a section title's "›" leads to.
+pub fn open_shelf_link(context: &AppContext, shelf_id: &str) {
+    let link = context.state.lock().ok().and_then(|state| match &state.page.content {
+        PageContent::Shelves(shelves) | PageContent::Search { results: shelves, .. } => shelves
             .iter()
-            .any(|effect| matches!(effect, DetailEffect::ShowCatalog))
-        {
-            ui::catalog::present(context, "");
-        } else {
-            let generation = context.current_generation();
-            ui::detail::present(context, generation);
-        }
-        // Restored pages are snapshots from when they were left.
-        context.request_refresh();
-        return;
+            .find(|shelf| shelf.id == shelf_id)
+            .and_then(|shelf| shelf.link.clone()),
+        _ => None,
+    });
+    if let Some(route) = link {
+        navigate(context, route);
     }
-    let mut show_catalog = false;
-    if let Ok(mut state) = context.state.lock()
-        && let Some(previous) = state.back_stack.pop()
-    {
-        state.current = previous;
-        show_catalog = true;
+}
+
+/// Opens a library from the drawer.
+pub fn open_library(context: &AppContext, library: LibraryRef) {
+    let tab = library.tabs()[0];
+    // Like jellyfin-web, a library opened from the drawer goes back home.
+    if let Ok(mut state) = context.state.lock() {
+        let home = Page {
+            route: PageRoute::home(),
+            content: PageContent::Shelves(state.home.clone()),
+        };
+        state.history.clear();
+        state.history.push(HistoryEntry::Page(home));
+        state.detail.update(DetailMessage::Reset);
     }
-    if show_catalog {
-        ui::catalog::present(context, "");
-        context.request_refresh();
-    }
+    load_route(context, PageRoute::Library { library, tab }, 0);
 }
 
 pub fn retry(context: &AppContext) {
@@ -541,13 +572,22 @@ pub fn retry(context: &AppContext) {
         .state
         .lock()
         .map(|state| state.retry.clone())
-        .unwrap_or(RetryAction::Home);
+        .unwrap_or(RetryAction::Page);
     match action {
-        RetryAction::Home => start_home_load(context),
-        RetryAction::Browse(item, push_history) => {
-            start_browse_request(context, *item, push_history);
+        RetryAction::Page => {
+            let route = context
+                .state
+                .lock()
+                .ok()
+                .map(|state| state.page.route.clone())
+                .unwrap_or_else(PageRoute::home);
+            if route == PageRoute::home()
+                && let Ok(mut state) = context.state.lock()
+            {
+                state.home.clear();
+            }
+            load_route(context, route, 0);
         }
-        RetryAction::Search(term) => start_search(context, term),
         RetryAction::Detail(target) => crate::features::detail::start_detail(context, target),
     }
 }
@@ -555,114 +595,69 @@ pub fn retry(context: &AppContext) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::pages::LibraryTab;
 
-    fn item(id: &str) -> CatalogItemData {
+    fn item(kind: &str) -> CatalogItemData {
         CatalogItemData {
-            id: id.into(),
-            title: id.into(),
-            subtitle: String::new(),
-            kind: "Movie".into(),
-            image_item_id: id.into(),
-            image_tag: None,
-            watched: false,
-            progress: 0.0,
-            is_container: false,
-            playable: true,
+            id: "id".into(),
+            title: "Title".into(),
+            kind: kind.into(),
             ..CatalogItemData::default()
         }
     }
 
     #[test]
-    fn flattening_preserves_section_ranges_and_duplicate_items() {
-        let sections = vec![
-            CatalogSectionData {
-                id: "one".into(),
-                title: "One".into(),
-                items: vec![item("a"), item("shared")],
-            },
-            CatalogSectionData {
-                id: "empty".into(),
-                title: "Empty".into(),
-                items: Vec::new(),
-            },
-            CatalogSectionData {
-                id: "two".into(),
-                title: "Two".into(),
-                items: vec![item("shared"), item("b")],
-            },
-        ];
-
-        let flattened = flatten_sections(&sections);
+    fn cards_open_what_jellyfin_opens() {
+        let mut library = item("CollectionFolder");
+        library.collection_type = "tvshows".into();
         assert_eq!(
-            flattened
-                .items
-                .iter()
-                .map(|item| item.id.as_str())
-                .collect::<Vec<_>>(),
-            ["a", "shared", "shared", "b"]
-        );
-        assert_eq!(
-            flattened.sections,
-            [
-                CatalogSectionRange {
-                    id: "one".into(),
-                    title: "One".into(),
-                    start_index: 0,
-                    count: 2,
+            destination(&library),
+            Destination::Page(PageRoute::Library {
+                library: LibraryRef {
+                    id: "id".into(),
+                    name: "Title".into(),
+                    collection_type: "tvshows".into(),
                 },
-                CatalogSectionRange {
-                    id: "two".into(),
-                    title: "Two".into(),
-                    start_index: 2,
-                    count: 2,
-                },
-            ]
+                tab: LibraryTab::Shows,
+            })
         );
-    }
-
-    #[test]
-    fn catalog_preferences_use_kotlin_compatible_values() {
-        assert_eq!(
-            CatalogDensity::from_card_width(Some(220)),
-            CatalogDensity::Compact
-        );
-        assert_eq!(
-            CatalogDensity::from_card_width(Some(360)),
-            CatalogDensity::Large
-        );
-        assert_eq!(CatalogDensity::default().card_width(), 260);
-        assert_eq!(
-            CatalogSort::from_key(Some("rating_desc")),
-            CatalogSort::RatingHighest
-        );
-        assert_eq!(
-            CatalogSort::from_key(Some("runtime_asc")),
-            CatalogSort::NameAscending
-        );
-        assert_eq!(
-            CatalogSort::RatingHighest.query(),
-            ("CommunityRating,SortName", "Descending,Ascending")
-        );
-    }
-
-    #[test]
-    fn programmatic_empty_search_does_not_interrupt_initial_home_load() {
-        let initial_home = PageSnapshot::empty_home();
-
+        assert!(matches!(destination(&item("Episode")), Destination::Detail(_)));
         assert!(matches!(
-            empty_search_destination(&initial_home),
-            EmptySearchDestination::Ignore
+            destination(&item("Studio")),
+            Destination::Page(PageRoute::List(ListQuery {
+                filter: ListFilter::Studio(_),
+                ..
+            }))
+        ));
+        assert!(matches!(
+            destination(&item("Folder")),
+            Destination::Page(PageRoute::List(ListQuery {
+                filter: ListFilter::Children,
+                ..
+            }))
         ));
     }
 
     #[test]
-    fn clearing_an_active_search_returns_to_home() {
-        let mut search_results = PageSnapshot::empty_home();
-        search_results.search_text = "movie".into();
-
-        assert!(matches!(
-            empty_search_destination(&search_results),
-            EmptySearchDestination::Home
-        ));
+    fn drawer_libraries_come_from_my_media() {
+        let mut movies = item("CollectionFolder");
+        movies.collection_type = "movies".into();
+        let shelves = vec![Shelf {
+            id: "libraries".into(),
+            title: "My Media".into(),
+            link: None,
+            shape: crate::features::pages::CardShape::Backdrop,
+            lines: 1,
+            wrap: false,
+            items: vec![movies],
+        }];
+        assert_eq!(
+            libraries_of(&shelves),
+            vec![LibraryRef {
+                id: "id".into(),
+                name: "Title".into(),
+                collection_type: "movies".into(),
+            }]
+        );
     }
 }

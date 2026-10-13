@@ -6,7 +6,9 @@ use std::future::Future;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
-use crate::features::catalog::CatalogSort;
+
+mod pages;
+pub use pages::{home_shelves, library_route, merge_home_shelves};
 use crate::features::detail::{
     DetailItemData, DetailKind, DetailPageData, ImageRef, ImageType, PersonData, StreamData,
 };
@@ -21,23 +23,17 @@ const DEVICE_ID: &str = "jellybridge-rust-desktop";
 // Fields for list queries. `RecursiveItemCount` is deliberately absent: it
 // makes the server recursively count the contents of every folder-typed row,
 // which measured 17.8-18.1 s against a 323-item music library versus 0.37 s
-// without it. The only thing that reads it is the `CollectionFolder` subtitle
-// (see `item_subtitle`), and the only query that returns those is
-// `libraries()`, which uses LIBRARY_FIELDS below and returns a handful of rows.
+// without it. No card shows a recursive count: jellyfin-web's library cards
+// carry their name only.
 // `Overview` and `MediaStreams` are absent for the same reason: nothing on a
 // catalog row reads them. `CatalogItemData` has no overview, and the media
 // summary is built only for detail pages, which fetch DETAIL_FIELDS
 // separately. Carrying them made the six home requests ~900 KiB instead of
 // ~75 KiB and roughly doubled the slowest one.
 const LIST_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ImageTags,UserData,RunTimeTicks,ChildCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType";
-// The top-level library rows, which need the recursive count for their
-// "Library - N items" subtitle. Cheap here because there are only a few.
-// How many rows one browse or search page returns.
-const PAGE_LIMIT: &str = "120";
 /// Rows fetched for "Recently Added" before episodes are collapsed into their
 /// show, and rows kept afterwards.
 const HOME_SHELF_LIMIT: usize = 16;
-const LIBRARY_FIELDS: &str = "ParentId,ImageTags,UserData,Overview,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,CollectionType";
 const DETAIL_FIELDS: &str = "ParentId,SeriesId,SeriesPrimaryImageTag,SeasonId,SeasonName,ParentPrimaryImageItemId,ParentBackdropItemId,ParentBackdropImageTags,ImageTags,BackdropImageTags,UserData,Overview,RunTimeTicks,MediaStreams,Genres,People,Studios,OfficialRating,CommunityRating,CriticRating,Taglines,PremiereDate,DateCreated,ChildCount,RecursiveItemCount,PrimaryImageAspectRatio,ProductionYear,SeriesName,IndexNumber,ParentIndexNumber,CollectionType,Tags,ExternalUrls,ParentLogoItemId,ParentLogoImageTag";
 
 #[derive(Debug, thiserror::Error)]
@@ -101,12 +97,12 @@ pub struct CatalogItemData {
     /// Artwork for a 16:9 card, chosen like Jellyfin's `preferThumb`: the
     /// item's Thumb, the series' Thumb, a backdrop, then an episode still.
     pub thumb: Option<ImageRef>,
-}
-
-#[derive(Clone, Debug)]
-pub struct CatalogPage {
-    pub items: Vec<CatalogItemData>,
-    pub total_record_count: usize,
+    /// The wide banner for the grid's Banner view.
+    pub banner: Option<ImageRef>,
+    /// An episode's own still, which the Episodes tab shows.
+    pub still: Option<ImageRef>,
+    /// A library's kind ("movies", "tvshows", …); empty for anything else.
+    pub collection_type: String,
 }
 
 /// Times one dashboard request.
@@ -201,6 +197,11 @@ impl JellyfinApi {
     /// The home screen, laid out as jellyfin-web's default home: My Media,
     /// Continue Watching, Next Up, then "Recently Added in <library>" for
     /// each library.
+    ///
+    /// Music libraries' shelves are left out: they sit below the first
+    /// screen, and their query competes on the server with Next Up, the
+    /// slowest request, which held launch back by ~50 ms. They follow
+    /// through [`Self::deferred_home_sections`].
     pub async fn home(&self) -> Result<Vec<CatalogSectionData>, ApiError> {
         // The per-library shelves need the library list, so they start the
         // moment it lands, while Continue Watching and Next Up are still in
@@ -210,6 +211,7 @@ impl JellyfinApi {
             let latest = futures_util::future::join_all(
                 libraries
                     .iter()
+                    .filter(|library| has_latest_shelf(library) && !defers_latest_shelf(library))
                     .map(|library| timed("latest", self.latest_in(&library.id))),
             )
             .await;
@@ -223,6 +225,7 @@ impl JellyfinApi {
         let (libraries, latest) = libraries_and_latest?;
         let latest_titles = libraries
             .iter()
+            .filter(|library| has_latest_shelf(library) && !defers_latest_shelf(library))
             .map(|library| (library.id.clone(), format!("Recently Added in {}", library.name)))
             .collect::<Vec<_>>();
         let mut sections = vec![CatalogSectionData {
@@ -244,81 +247,30 @@ impl JellyfinApi {
         Ok(sections)
     }
 
-    pub async fn browse(
+    /// The home shelves [`Self::home`] leaves for later: "Recently Added in"
+    /// each music library among `libraries` (the My Media rows).
+    pub async fn deferred_home_sections(
         &self,
-        item: &CatalogItemData,
-        sort: CatalogSort,
-    ) -> Result<CatalogPage, ApiError> {
-        let (sort_by, sort_order) = sort.query();
-        let response = if item.kind.eq_ignore_ascii_case("Series") {
-            // A series has a handful of seasons; no page limit is needed.
-            self.items_page_request(
-                &format!("Shows/{}/Seasons", encode_path_segment(&item.id)),
-                &[
-                    ("UserId", self.session.user_id.as_str()),
-                    ("SortBy", sort_by),
-                    ("SortOrder", sort_order),
-                ],
-                "loading series seasons",
-            )
-            .await?
-        } else {
-            // Bounded like `search`: an unbounded folder returns every row in
-            // the library, and each row costs a spawned artwork task and a
-            // decode. The UI already reports "Showing first N of M".
-            self.items_page_request(
-                &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
-                &[
-                    ("ParentId", item.id.as_str()),
-                    ("Recursive", "false"),
-                    ("SortBy", sort_by),
-                    ("SortOrder", sort_order),
-                    ("StartIndex", "0"),
-                    ("Limit", PAGE_LIMIT),
-                    ("EnableTotalRecordCount", "true"),
-                ],
-                "loading a library folder",
-            )
-            .await?
-        };
-        Ok(response.into())
-    }
-
-    pub async fn search(
-        &self,
-        term: &str,
-        parent_id: Option<&str>,
-        sort: CatalogSort,
-    ) -> Result<CatalogPage, ApiError> {
-        let term = term.trim();
-        if term.is_empty() {
-            return Ok(CatalogPage {
-                items: Vec::new(),
-                total_record_count: 0,
-            });
+        libraries: &[CatalogItemData],
+    ) -> Vec<CatalogSectionData> {
+        let deferred = libraries
+            .iter()
+            .filter(|library| library.collection_type == "music")
+            .collect::<Vec<_>>();
+        let latest =
+            futures_util::future::join_all(deferred.iter().map(|library| self.latest_in(&library.id)))
+                .await;
+        let mut sections = Vec::new();
+        for (library, items) in deferred.into_iter().zip(latest) {
+            append_series_grouped_section(
+                &mut sections,
+                &format!("latest-{}", library.id),
+                &format!("Recently Added in {}", library.title),
+                HOME_SHELF_LIMIT,
+                items,
+            );
         }
-        let (sort_by, sort_order) = sort.query();
-        let mut query = vec![
-            ("Recursive", "true"),
-            ("IncludeItemTypes", "Movie,Series,Episode"),
-            ("SearchTerm", term),
-            ("SortBy", sort_by),
-            ("SortOrder", sort_order),
-            ("StartIndex", "0"),
-            ("Limit", PAGE_LIMIT),
-            ("EnableTotalRecordCount", "true"),
-        ];
-        if let Some(parent_id) = parent_id {
-            query.push(("ParentId", parent_id));
-        }
-        let response = self
-            .items_page_request(
-                &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
-                &query,
-                "searching the library",
-            )
-            .await?;
-        Ok(response.into())
+        sections
     }
 
     pub async fn detail_page(&self, item_id: &str) -> Result<DetailPageData, ApiError> {
@@ -627,19 +579,19 @@ impl JellyfinApi {
         Ok(response.bytes().await?.to_vec())
     }
 
+    /// The user's libraries ("views") in their configured order, as My Media
+    /// lists them.
     async fn libraries(&self) -> Result<Vec<LibraryItem>, ApiError> {
-        Ok(self
-            .items_page_request_with_fields(
-                &format!("Users/{}/Items", encode_path_segment(&self.session.user_id)),
-                LIBRARY_FIELDS,
-                &[("Recursive", "false")],
+        let response: ItemsResponse = self
+            .send_json(
+                self.request(
+                    Method::GET,
+                    &format!("Users/{}/Views", encode_path_segment(&self.session.user_id)),
+                )?,
                 "loading libraries",
             )
-            .await?
-            .items
-            .into_iter()
-            .filter(is_visible_library)
-            .collect())
+            .await?;
+        Ok(response.items)
     }
 
     async fn series_seasons(&self, series_id: &str) -> Result<Vec<LibraryItem>, ApiError> {
@@ -1154,6 +1106,10 @@ impl From<LibraryItem> for CatalogItemData {
         let (image_item_id, image_tag) = artwork_identity(&item);
         let (card_title, card_subtitle) = card_lines(&item);
         let thumb = thumb_image(&item);
+        let banner = own_image(&item, "Banner", ImageType::Banner);
+        let still = (item.kind == "Episode")
+            .then(|| own_image(&item, "Primary", ImageType::Primary))
+            .flatten();
         let user = item.user_data.as_ref();
         Self {
             watched: user.is_some_and(|data| data.played),
@@ -1174,6 +1130,9 @@ impl From<LibraryItem> for CatalogItemData {
             card_title,
             card_subtitle,
             thumb,
+            banner,
+            still,
+            collection_type: item.collection_type.unwrap_or_default(),
         }
     }
 }
@@ -1656,18 +1615,6 @@ struct ItemsResponse {
     total_record_count: Option<usize>,
 }
 
-impl From<ItemsResponse> for CatalogPage {
-    fn from(response: ItemsResponse) -> Self {
-        let total_record_count = response
-            .total_record_count
-            .unwrap_or(response.items.len())
-            .max(response.items.len());
-        Self {
-            items: response.items.into_iter().map(Into::into).collect(),
-            total_record_count,
-        }
-    }
-}
 
 #[derive(Deserialize)]
 struct LibraryItem {
@@ -1754,16 +1701,18 @@ struct LibraryItem {
     media_streams: Vec<ItemMediaStream>,
 }
 
-fn is_visible_library(item: &LibraryItem) -> bool {
+/// Libraries whose "Recently Added" shelf loads after the first screen.
+fn defers_latest_shelf(item: &LibraryItem) -> bool {
+    item.collection_type.as_deref() == Some("music")
+}
+
+/// Whether jellyfin-web's home gives a library a "Recently Added in …"
+/// shelf: every library except playlists, collections and live TV.
+fn has_latest_shelf(item: &LibraryItem) -> bool {
     !matches!(
-        item.kind.as_str(),
-        "ManualPlaylistsFolder" | "PlaylistsFolder" | "Playlist"
-    ) && !matches!(
         item.collection_type.as_deref(),
-        Some(collection_type)
-            if collection_type.eq_ignore_ascii_case("music")
-                || collection_type.eq_ignore_ascii_case("playlists")
-    )
+        Some("playlists" | "boxsets" | "livetv")
+    ) && !matches!(item.kind.as_str(), "ManualPlaylistsFolder" | "PlaylistsFolder")
 }
 
 #[derive(Deserialize)]
@@ -2017,19 +1966,6 @@ mod tests {
         }
     }
 
-    /// The library rows are the one list that does need the recursive count,
-    /// for their "Library - N items" subtitle. It is cheap there because the
-    /// query only ever returns the handful of top-level libraries.
-    #[test]
-    fn library_rows_keep_the_recursive_count_their_subtitle_needs() {
-        assert!(fields(LIBRARY_FIELDS).contains(&"RecursiveItemCount"));
-        let item: LibraryItem = serde_json::from_str(
-            r#"{"Id":"l1","Name":"Movies","Type":"CollectionFolder","RecursiveItemCount":33}"#,
-        )
-        .unwrap();
-        assert_eq!(item_subtitle(&item), "Library • 33 items");
-    }
-
     /// The detail page renders both of the fields trimmed from LIST_FIELDS, so
     /// the trim must not be copied across to DETAIL_FIELDS.
     #[test]
@@ -2040,13 +1976,6 @@ mod tests {
                 "the detail page renders {wanted}"
             );
         }
-    }
-
-    /// An unbounded folder query returns every row in the library, and each row
-    /// costs a spawned artwork task and a decode.
-    #[test]
-    fn browsing_a_folder_is_a_bounded_page() {
-        assert!(PAGE_LIMIT.parse::<u32>().is_ok_and(|limit| limit > 0));
     }
 
     #[test]
@@ -2232,7 +2161,7 @@ mod tests {
     }
 
     #[test]
-    fn hides_music_and_playlists_from_top_level_libraries() {
+    fn every_library_but_playlists_gets_a_recently_added_shelf() {
         let response: ItemsResponse = serde_json::from_str(
             r#"{
                 "Items": [
@@ -2248,11 +2177,11 @@ mod tests {
         let visible_ids = response
             .items
             .iter()
-            .filter(|item| is_visible_library(item))
+            .filter(|item| has_latest_shelf(item))
             .map(|item| item.id.as_str())
             .collect::<Vec<_>>();
 
-        assert_eq!(visible_ids, ["movies", "shows"]);
+        assert_eq!(visible_ids, ["movies", "shows", "music"]);
     }
     /// Jellyfin ignores fields it does not recognise and still answers 204, so
     /// a misspelled key would leave reporting silently doing nothing. Pin the

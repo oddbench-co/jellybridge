@@ -12,9 +12,12 @@ use std::time::Duration;
 
 use tokio::time::MissedTickBehavior;
 
+use std::collections::HashMap;
+
 use crate::api::{CatalogItemData, JellyfinApi};
-use crate::app::{AppContext, AppState, PageSnapshot};
+use crate::app::{AppContext, AppState};
 use crate::features::detail::DetailMessage;
+use crate::features::pages::{GridSettings, LibraryTab, PageContent, PageRoute};
 use crate::ui;
 
 /// How often the visible screen is re-read when nothing else triggers it.
@@ -22,11 +25,11 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub enum RefreshTarget {
-    Home,
-    Browse(Box<CatalogItemData>),
-    Search {
-        term: String,
-        parent_id: Option<String>,
+    /// A list page: its route, grid settings and first grid row.
+    Page {
+        route: Box<PageRoute>,
+        settings: Box<GridSettings>,
+        start: usize,
     },
     Detail(String),
 }
@@ -48,17 +51,33 @@ pub fn refresh_target(state: &AppState, playing: bool, loading: bool) -> Option<
         // A failed detail load is on screen; there is nothing to re-read.
         return None;
     }
-    let current = &state.current;
-    Some(if !current.search_text.is_empty() {
-        RefreshTarget::Search {
-            term: current.search_text.clone(),
-            parent_id: current.parent.as_ref().map(|parent| parent.id.clone()),
+    let page = &state.page;
+    let start = match &page.content {
+        PageContent::Grid(grid) => grid.start,
+        PageContent::Shelves(_) => 0,
+        // Search results only change when the term does, and a loading or
+        // failed page has its own request (or Retry).
+        PageContent::Search { .. } | PageContent::Loading | PageContent::Failed(_) => {
+            return None;
         }
-    } else if let Some(parent) = current.parent.clone() {
-        RefreshTarget::Browse(Box::new(parent))
-    } else {
-        RefreshTarget::Home
+    };
+    Some(RefreshTarget::Page {
+        route: Box::new(page.route.clone()),
+        settings: Box::new(state.grid_settings_for(&page.route)),
+        start,
     })
+}
+
+/// Pages whose rows the server picks at random: a refresh keeps the rows and
+/// only updates their watched state, so the page does not reshuffle.
+fn keeps_rows(route: &PageRoute) -> bool {
+    matches!(
+        route,
+        PageRoute::Library {
+            tab: LibraryTab::Suggestions | LibraryTab::Genres,
+            ..
+        }
+    )
 }
 
 pub async fn run_refresh_loop(context: AppContext) {
@@ -85,12 +104,8 @@ pub fn refresh_visible(context: &AppContext) {
             .as_ref()
             .is_some_and(|request| !request.is_finished())
     });
-    let (target, api, sort) = match context.state.lock() {
-        Ok(state) => (
-            refresh_target(&state, playing, loading),
-            state.api.clone(),
-            state.catalog_sort,
-        ),
+    let (target, api) = match context.state.lock() {
+        Ok(state) => (refresh_target(&state, playing, loading), state.api.clone()),
         Err(_) => return,
     };
     let (Some(target), Some(api)) = (target, api) else {
@@ -101,57 +116,63 @@ pub fn refresh_visible(context: &AppContext) {
     context.runtime.spawn(async move {
         tracing::debug!(?target, "refreshing visible screen");
         match target {
-            RefreshTarget::Home => match api.home().await {
-                Ok(home) => apply_home(&ctx, generation, home),
-                Err(error) => tracing::warn!(%error, "home refresh failed"),
+            RefreshTarget::Page {
+                route,
+                settings,
+                start,
+            } => match api.load_page(&route, &settings, start).await {
+                Ok(content) => apply_page(&ctx, generation, &route, content),
+                Err(error) => tracing::warn!(%error, "page refresh failed"),
             },
-            RefreshTarget::Browse(item) => match api.browse(&item, sort).await {
-                Ok(page) => apply_items(&ctx, generation, page.items, page.total_record_count),
-                Err(error) => tracing::warn!(%error, "browse refresh failed"),
-            },
-            RefreshTarget::Search { term, parent_id } => {
-                match api.search(&term, parent_id.as_deref(), sort).await {
-                    Ok(page) => {
-                        apply_items(&ctx, generation, page.items, page.total_record_count);
-                    }
-                    Err(error) => tracing::warn!(%error, "search refresh failed"),
-                }
-            }
             RefreshTarget::Detail(id) => refresh_detail(&ctx, generation, api, &id).await,
         }
     });
 }
 
-fn apply_home(context: &AppContext, generation: u64, home: Vec<crate::api::CatalogSectionData>) {
+fn apply_page(context: &AppContext, generation: u64, route: &PageRoute, content: PageContent) {
     let claimed = context.state.lock().ok().and_then(|mut state| {
-        let claimed = context.claim_generation(generation)?;
-        if state.current.is_home_dashboard() {
-            state.current = PageSnapshot::home(&home);
+        if state.page.route != *route || state.detail.is_active() {
+            return None;
         }
-        // Kept even when home is not showing, so going home later starts
-        // from fresh data. `back_stack` is left alone, unlike `install_home`.
-        state.home = home;
+        let claimed = context.claim_generation(generation)?;
+        if let (PageRoute::Home { favorites: false }, PageContent::Shelves(shelves)) =
+            (route, &content)
+        {
+            // Kept even when home is not showing, so going home later starts
+            // from fresh data.
+            state.home = shelves.clone();
+            state.libraries = crate::features::catalog::libraries_of(shelves);
+        }
+        if keeps_rows(route) {
+            patch_user_data(&mut state.page, content);
+        } else {
+            state.page.content = content;
+        }
         Some(claimed)
     });
-    if let Some(claimed) = claimed {
-        ui::catalog::present_refresh(context, claimed);
+    if claimed.is_some() {
+        ui::catalog::present_refresh(context);
     }
 }
 
-fn apply_items(
-    context: &AppContext,
-    generation: u64,
-    items: Vec<CatalogItemData>,
-    total_record_count: usize,
-) {
-    let claimed = context.state.lock().ok().and_then(|mut state| {
-        let claimed = context.claim_generation(generation)?;
-        state.current.items = items;
-        state.current.total_record_count = total_record_count;
-        Some(claimed)
-    });
-    if let Some(claimed) = claimed {
-        ui::catalog::present_refresh(context, claimed);
+/// Copies watched state from `fresh` onto the rows already on the page.
+fn patch_user_data(page: &mut crate::features::pages::Page, fresh: PageContent) {
+    let fresh_page = crate::features::pages::Page {
+        route: page.route.clone(),
+        content: fresh,
+    };
+    let mut fresh_items: HashMap<String, CatalogItemData> = HashMap::new();
+    let mut fresh_page = fresh_page;
+    for item in fresh_page.items_mut() {
+        fresh_items.insert(item.id.clone(), item.clone());
+    }
+    for item in page.items_mut() {
+        if let Some(fresh) = fresh_items.get(&item.id) {
+            item.watched = fresh.watched;
+            item.favorite = fresh.favorite;
+            item.progress = fresh.progress;
+            item.unplayed_count = fresh.unplayed_count;
+        }
     }
 }
 
@@ -266,19 +287,26 @@ mod tests {
     #[test]
     fn the_visible_page_decides_what_is_refreshed() {
         let mut state = signed_in();
-        assert!(matches!(target(&state), Some(RefreshTarget::Home)));
+        // A page still loading has its own request in flight.
+        assert!(target(&state).is_none());
 
-        state.current.parent = Some(folder("library"));
+        state.page.content = PageContent::Shelves(Vec::new());
         assert!(matches!(
             target(&state),
-            Some(RefreshTarget::Browse(item)) if item.id == "library"
+            Some(RefreshTarget::Page { route, start: 0, .. }) if *route == PageRoute::home()
         ));
 
-        state.current.search_text = "alien".into();
+        state.page = crate::features::pages::Page {
+            route: PageRoute::List(crate::features::pages::ListQuery::children("Library", "library")),
+            content: PageContent::Grid(crate::features::pages::GridPage {
+                items: vec![folder("a")],
+                total: 300,
+                start: 100,
+            }),
+        };
         assert!(matches!(
             target(&state),
-            Some(RefreshTarget::Search { term, parent_id })
-                if term == "alien" && parent_id.as_deref() == Some("library")
+            Some(RefreshTarget::Page { start: 100, .. })
         ));
 
         show_detail(&mut state, "episode");
@@ -286,5 +314,39 @@ mod tests {
             target(&state),
             Some(RefreshTarget::Detail(id)) if id == "episode"
         ));
+    }
+
+    #[test]
+    fn random_pages_keep_their_rows_and_take_new_watched_state() {
+        let route = PageRoute::Library {
+            library: crate::features::pages::LibraryRef {
+                id: "lib".into(),
+                name: "Movies".into(),
+                collection_type: "movies".into(),
+            },
+            tab: LibraryTab::Genres,
+        };
+        assert!(keeps_rows(&route));
+        let shelf = |items: Vec<CatalogItemData>| crate::features::pages::Shelf {
+            id: "genre".into(),
+            title: "Action".into(),
+            link: None,
+            shape: crate::features::pages::CardShape::Portrait,
+            lines: 2,
+            wrap: true,
+            items,
+        };
+        let mut page = crate::features::pages::Page {
+            route,
+            content: PageContent::Shelves(vec![shelf(vec![folder("a"), folder("b")])]),
+        };
+        let mut watched = folder("b");
+        watched.watched = true;
+        patch_user_data(
+            &mut page,
+            PageContent::Shelves(vec![shelf(vec![watched, folder("c")])]),
+        );
+        let ids = page.items_mut().map(|item| (item.id.clone(), item.watched)).collect::<Vec<_>>();
+        assert_eq!(ids, [("a".to_owned(), false), ("b".to_owned(), true)]);
     }
 }

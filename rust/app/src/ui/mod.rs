@@ -10,6 +10,7 @@
 pub mod app;
 pub mod catalog;
 pub mod detail;
+pub mod dialogs;
 pub mod icons;
 pub mod images;
 pub mod input_script;
@@ -47,13 +48,16 @@ pub struct UiState {
     pub message: String,
     pub page_title: String,
     pub account_name: String,
-    pub account_initial: String,
     pub can_go_back: bool,
     pub catalog: catalog::CatalogVm,
     pub detail: detail::DetailVm,
     pub player: player::PlayerVm,
     pub images: images::ImageCache,
     pub login: login::LoginForm,
+    /// Whether the side drawer is open.
+    pub drawer_open: bool,
+    /// The user's libraries, listed in the drawer.
+    pub libraries: Vec<crate::features::pages::LibraryRef>,
     /// The app icon, drawn in the brand marks.
     pub brand_icon: Option<egui::TextureHandle>,
     /// Actions raised outside a frame (mpv ending an item), run on the next.
@@ -69,13 +73,14 @@ impl UiState {
             message: String::new(),
             page_title: "Home".to_owned(),
             account_name: String::new(),
-            account_initial: "?".to_owned(),
             can_go_back: false,
             catalog: catalog::CatalogVm::default(),
             detail: detail::DetailVm::default(),
             player: player::PlayerVm::default(),
             images: images::ImageCache::default(),
             login: login::LoginForm::default(),
+            drawer_open: false,
+            libraries: Vec::new(),
             brand_icon: None,
             deferred: Vec::new(),
         }
@@ -155,16 +160,6 @@ pub fn set_message(context: &AppContext, message: &str) {
 pub fn show_login(context: &AppContext, message: &str) {
     set_screen_busy(context, Screen::Login, false, message);
     startup::mark_content_ready("login");
-}
-
-pub fn show_catalog_error(context: &AppContext, message: String) {
-    context.ui.update(move |state| {
-        state.screen = Screen::Catalog;
-        state.busy = false;
-        state.message = message;
-        state.catalog.items = Arc::new(Vec::new());
-        state.catalog.sections.clear();
-    });
 }
 
 /// Clears the artwork cache from any thread (used on logout).

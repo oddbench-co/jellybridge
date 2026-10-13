@@ -84,6 +84,11 @@ impl ImageCache {
         None
     }
 
+    /// Whether `key` could not be fetched or decoded.
+    pub fn is_failed(&self, key: &str) -> bool {
+        self.failed.contains(key)
+    }
+
     /// The texture's size in pixels, if resident -- for aspect-aware layout.
     pub fn size(&self, key: &str) -> Option<[usize; 2]> {
         self.entries.get(key).map(|entry| entry.texture.size())
