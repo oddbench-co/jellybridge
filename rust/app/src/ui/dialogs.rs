@@ -13,15 +13,6 @@ const BACKDROP: Color32 = Color32::from_black_alpha(128);
 /// Action sheet rows.
 const SHEET_ROW: f32 = 40.14;
 
-fn shadow() -> egui::Shadow {
-    egui::Shadow {
-        offset: [0, 16],
-        blur: 24,
-        spread: 2,
-        color: Color32::from_black_alpha(90),
-    }
-}
-
 /// Claims clicks on a dialog's box, so a click on its empty parts is not
 /// taken for a click on the dim (which closes the dialog): egui sends a
 /// click to the topmost widget under the pointer, whatever layer it is in.
@@ -42,43 +33,6 @@ fn backdrop(ctx: &egui::Context, id: Id) -> bool {
             response.clicked()
         });
     area.inner || ctx.input(|input| input.key_pressed(egui::Key::Escape))
-}
-
-/// A dialog centred in the window, `width` wide, filled by `content`.
-/// `height` fixes its height (content scrolls inside); otherwise it fits its
-/// content. Returns `content`'s result and whether the dialog asked to
-/// close (Escape, or a click on the dim around it).
-pub fn modal<R>(
-    ctx: &egui::Context,
-    id: Id,
-    width: f32,
-    height: Option<f32>,
-    content: impl FnOnce(&mut Ui) -> R,
-) -> (R, bool) {
-    let max_height = ctx.content_rect().height() - 48.0;
-    let fixed = height.map(|height| height.min(max_height));
-    let response = egui::Modal::new(id)
-        .backdrop_color(BACKDROP)
-        .frame(
-            egui::Frame::new()
-                .fill(theme::JF_BG)
-                .corner_radius(theme::JF_RADIUS)
-                .shadow(shadow()),
-        )
-        .show(ctx, |ui| {
-            ui.set_width(width);
-            let mut scroll = egui::ScrollArea::vertical()
-                .id_salt(id.with("scroll"))
-                .max_height(fixed.unwrap_or(max_height));
-            if let Some(fixed) = fixed {
-                scroll = scroll
-                    .min_scrolled_height(fixed)
-                    .auto_shrink([false, false]);
-            }
-            scroll.show(ui, content).inner
-        });
-    let close = response.should_close();
-    (response.inner, close)
 }
 
 /// What an action sheet row shows.
@@ -321,7 +275,8 @@ pub fn message_box(ctx: &egui::Context, id: Id, title: &str, text: &str, button:
 
 /// A dialog laid out by hand: the dim, then a `size` box centred on the
 /// page (the window less the page scrollbar, as jellyfin-web centres in the
-/// viewport), or `top` below the window's top, with jellyfin's radius and shadow. `content` draws into the
+/// viewport), or `top` below the window's top, with `radius` and jellyfin's
+/// shadow. `content` draws into the
 /// box. Returns its result and whether the dialog asked to close (Escape or
 /// a click on the dim).
 pub fn panel<R>(
@@ -329,6 +284,7 @@ pub fn panel<R>(
     id: Id,
     size: egui::Vec2,
     top: Option<f32>,
+    radius: f32,
     content: impl FnOnce(&mut Ui, Rect) -> R,
 ) -> (R, bool) {
     let close = backdrop(ctx, id);
@@ -342,7 +298,6 @@ pub fn panel<R>(
         ),
         size,
     );
-    let radius = 0.2 * theme::JF_FONT;
     // Above the dim's order: egui raises a pressed area within its order,
     // and the dim covers the window, so the same order would put the dim
     // over the box after the first click.
@@ -375,7 +330,7 @@ pub const FORM_LABEL_LEFT: f32 = RADIO + 8.035;
 /// the font loses less than a pixel), and, as dialogs are composited as their
 /// own layer, rounded to device pixels where page text is floored.
 /// `galley_on_baseline` floors, hence the half pixel.
-fn layer_baseline(ui: &Ui, top: f32, size: f32, line_height: f32) -> f32 {
+pub fn layer_baseline(ui: &Ui, top: f32, size: f32, line_height: f32) -> f32 {
     let ascent = (1.069 * size).round();
     let descent = (0.293 * size).round();
     let half_leading = ((line_height - ascent - descent) / 2.0 * 64.0).trunc() / 64.0;

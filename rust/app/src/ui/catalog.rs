@@ -1308,7 +1308,7 @@ fn draw_dialog(
             let height = 18.6 + section(sorts.len()) + 22.32 + section(orders.len()) + dialogs::FORM_ROW_MARGIN + 22.32;
             let id = Id::new("grid-sort");
             dialogs::autofocus(&ctx, id, id.with(("sort-by", 0)), true);
-            let (next, close) = dialogs::panel(&ctx, id, vec2(content_width + 44.64, height), None, |ui, rect| {
+            let (next, close) = dialogs::panel(&ctx, id, vec2(content_width + 44.64, height), None, 0.2 * theme::JF_FONT, |ui, rect| {
                 let left = rect.left() + 22.32;
                 let row = |top: f32| Rect::from_min_size(pos2(left, top), vec2(content_width, dialogs::FORM_ROW));
                 let mut next = None;
@@ -1357,6 +1357,7 @@ fn draw_dialog(
                 id,
                 vec2(299.97, screen.height() * 0.65),
                 Some(screen.height() * 0.1),
+                0.2 * theme::JF_FONT,
                 |ui, rect| {
                     let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
                     egui::ScrollArea::vertical()

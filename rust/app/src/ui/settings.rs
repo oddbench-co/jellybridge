@@ -854,7 +854,7 @@ fn draw_subtitle_preview(ui: &Ui, form: &Form, vm: &SettingsVm, top: f32) -> f32
 
 /// `.checkboxOutline`: an outlined box, filled accent with a check when
 /// ticked.
-fn paint_checkbox(ui: &Ui, rect: Rect, checked: bool) {
+pub(super) fn paint_checkbox(ui: &Ui, rect: Rect, checked: bool) {
     let painter = ui.painter();
     let radius = 2.08;
     if checked {
@@ -872,7 +872,7 @@ fn paint_checkbox(ui: &Ui, rect: Rect, checked: bool) {
 }
 
 /// An `emby-select`: the choice on #292929, an arrow at the right.
-fn paint_select(ui: &Ui, field: Rect, shown: &str, focused: bool) {
+pub(super) fn paint_select(ui: &Ui, field: Rect, shown: &str, focused: bool) {
     let painter = ui.painter();
     let radius = 0.2 * INPUT_FONT;
     painter.rect_filled(field, radius, Color32::from_gray(41));
