@@ -290,8 +290,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // compositor's frame callback for the previous frame arrives. A window on
     // a hidden workspace never gets one, so the first repaint after switching
     // away would park the UI thread for good and the compositor would report
-    // the app as not responding. winit already paces redraws by frame
-    // callback on Wayland, so turning vsync off there neither tears nor spins.
+    // the app as not responding. Instead winit paces redraws by frame
+    // callback, which the app asks for on every frame it draws
+    // (`pre_present_notify` in ui/app.rs), so turning vsync off there
+    // neither tears nor spins.
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         glow_options.vsync = false;
     }

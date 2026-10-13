@@ -38,6 +38,8 @@ server on the LAN. Playback numbers use one 4K HEVC 10-bit episode
 | Frames drawn while idle on Home | 588 per 10 s | ~20 per 10 s (launch only) |
 | Wake-ups while idle, whole app | 624 per 10 s | 44 per 10 s |
 | Scrolling at 240 Hz: frames over budget | 0 | 0 (UI 0.33 ms per frame, p95) |
+| Scrolling at 240 Hz: frames drawn per second | 7326 (unpaced) | 207–240 |
+| Scrolling at 240 Hz: GPU power (RTX 3090) | ~313 W | ~100 W |
 | Playback, UI thread per frame (p95) | 41 ms | 0.5 ms |
 | Play → first video frame | 448–471 ms | 205–215 ms |
 | UI freeze while the player starts | ~335 ms | ~100 ms |
@@ -203,6 +205,29 @@ one), and asks for another frame while any wait. A shelf's artwork appears
 over a few frames instead of in one long one.
 *Result.* No frame over budget while scrolling or when shelves arrive; the
 launch's worst frame 20 → 10 ms (the first frame's font atlas and layout).
+
+### Frames are paced by the compositor (`JellyBridgeApp::ui`, `pre_present_notify`)
+
+*Symptom.* Scrolling Home kept the RTX 3090 at 40–80 % busy and drew
+~313 W, its boost clock, for a page that costs 0.04 ms of CPU per frame.
+*Measurement.* `uiFps` in the `JELLYBRIDGE_MEASURE` report: 7326 frames a
+second, one every 0.1 ms. Vsync is off on Wayland (a hidden window would
+block forever in `swap_buffers`), on the assumption that winit paces redraws
+by frame callback. It only does when the app calls `pre_present_notify`
+before presenting, and eframe's glow backend never calls it, so every
+repaint an animation asked for was drawn at once. The CPU-per-frame numbers
+looked perfect throughout, which is how this hid: nothing measured how many
+frames there were, or the GPU.
+*Fix.* `ui` calls `pre_present_notify` on every frame it draws; winit then
+holds the next redraw until the compositor's frame callback. It is called
+from `ui`, not `logic`: eframe swaps after every `ui`, while `logic` also
+runs for a minimized window, whose callback request would never be committed.
+A window on a hidden workspace now just stops drawing, without blocking.
+*Result.* Scrolling at 240 Hz: 7326 → 207 frames a second (interval p50
+4.17 ms), process CPU 78 → 13 %, GPU ~313 W at 1.8–1.9 GHz → ~100 W at
+~550 MHz (`nvidia-smi --query-gpu=clocks.gr,utilization.gpu,power.draw`).
+Read GPU utilization with the clock beside it: a downclocked card reports a
+higher busy share for the same work.
 
 ### Idle redraws
 

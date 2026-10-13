@@ -536,6 +536,17 @@ impl JellyBridgeApp {
 impl eframe::App for JellyBridgeApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let layout_started = std::time::Instant::now();
+        // Vsync is off on Wayland (see main.rs), so this is what keeps the
+        // frame rate at the display's: it asks the compositor for a frame
+        // callback with this frame's commit, and winit holds the next
+        // redraw until it arrives. eframe's glow backend never asks, and
+        // without it a scroll animation drew ~7000 frames a second. Only
+        // `ui` may ask: eframe swaps after every `ui`, while a callback
+        // asked for in `logic` (which also runs for a minimized window)
+        // could wait on a commit that never comes and stall the window.
+        if let Some(window) = frame.winit_window() {
+            window.pre_present_notify();
+        }
         self.queue.drain(&mut self.state);
         if self.state.images.upload_ready(ui.ctx()) {
             ui.ctx().request_repaint();
