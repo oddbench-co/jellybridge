@@ -184,6 +184,18 @@ pub fn play_adjacent(context: &AppContext, forward: bool) {
     }
 }
 
+/// Starts the playing item again from the beginning.
+pub fn replay_current(context: &AppContext) {
+    let item = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.now_playing.as_ref().map(|now| now.item.clone()));
+    if let Some(item) = item {
+        begin_playback(context, item, true, Origin::Player);
+    }
+}
+
 /// Jellyfin's previous button: restart once a few seconds in, otherwise go
 /// back an episode.
 pub fn play_previous(context: &AppContext, position: f64) {
@@ -795,31 +807,43 @@ fn normalized_preference(value: &Option<String>) -> Option<String> {
 /// own title over its year.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlayerTitle {
+    /// jellyfin-web's OSD title, one line.
     pub title: String,
-    pub subtitle: String,
+    pub item_id: String,
+    pub favorite: bool,
+    /// Jellyfin's audio and subtitle streams, which the player's menus list.
+    pub streams: Vec<crate::features::detail::StreamData>,
 }
 
+/// jellyfin-web's video OSD title: for an episode "Series - S1:E3 - Name",
+/// then the year in brackets (a movie's production year, anything else's
+/// premiere year).
 pub fn player_title(item: &DetailItemData) -> PlayerTitle {
+    let mut title = item.title.clone();
     if item.kind == DetailKind::Episode {
-        let series = item.series_name.clone().filter(|name| !name.is_empty());
         let number = match (item.parent_index_number, item.index_number) {
             (Some(season), Some(episode)) => format!("S{season}:E{episode} - "),
             (None, Some(episode)) => format!("E{episode} - "),
             _ => String::new(),
         };
-        if let Some(series) = series {
-            return PlayerTitle {
-                title: series,
-                subtitle: format!("{number}{}", item.title),
-            };
+        title = format!("{number}{title}");
+        if let Some(series) = item.series_name.as_deref().filter(|name| !name.is_empty()) {
+            title = format!("{series} - {title}");
         }
     }
+    let year = if item.kind == DetailKind::Movie {
+        item.production_year
+    } else {
+        item.premiere_date.map(|(year, _, _)| year)
+    };
+    if let Some(year) = year {
+        title.push_str(&format!(" ({year})"));
+    }
     PlayerTitle {
-        title: item.title.clone(),
-        subtitle: item
-            .production_year
-            .map(|year| year.to_string())
-            .unwrap_or_default(),
+        title,
+        item_id: item.id.clone(),
+        favorite: item.favorite,
+        streams: item.streams.clone(),
     }
 }
 
@@ -858,24 +882,17 @@ mod tests {
         episode.series_name = Some("The Show".into());
         episode.parent_index_number = Some(1);
         episode.index_number = Some(3);
-        assert_eq!(
-            player_title(&episode),
-            PlayerTitle {
-                title: "The Show".into(),
-                subtitle: "S1:E3 - Pilot".into(),
-            }
-        );
+        episode.premiere_date = Some((2025, 3, 1));
+        assert_eq!(player_title(&episode).title, "The Show - S1:E3 - Pilot (2025)");
 
         let mut movie = DetailItemData::fixture("movie-1", DetailKind::Movie);
         movie.title = "Alien".into();
         movie.production_year = Some(1979);
-        assert_eq!(
-            player_title(&movie),
-            PlayerTitle {
-                title: "Alien".into(),
-                subtitle: "1979".into(),
-            }
-        );
+        movie.favorite = true;
+        let title = player_title(&movie);
+        assert_eq!(title.title, "Alien (1979)");
+        assert_eq!(title.item_id, "movie-1");
+        assert!(title.favorite);
     }
 
     #[test]

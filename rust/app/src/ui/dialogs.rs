@@ -40,6 +40,8 @@ pub struct SheetItem<'a> {
     pub label: &'a str,
     pub icon: Option<Icon>,
     pub checked: bool,
+    /// The current value, written small at the row's right.
+    pub aside: Option<&'a str>,
 }
 
 // jellyfin-web's action sheet metrics at 1em = 14.88 px.
@@ -52,6 +54,17 @@ const SHEET_TEXT_LEFT: f32 = 7.44 + 8.928;
 const SHEET_TEXT_RIGHT: f32 = 14.88 + 3.72;
 const SHEET_TEXT_TOP: f32 = 9.66;
 const SHEET_TEXT_LINE: f32 = 20.83;
+/// A row's value: 90% type at 70%, 5em of its size from the label.
+const SHEET_ASIDE: f32 = 0.9 * theme::JF_FONT;
+const SHEET_ASIDE_GAP: f32 = 5.0 * SHEET_ASIDE;
+const SHEET_ASIDE_RIGHT: f32 = 0.5 * SHEET_ASIDE;
+const SHEET_ASIDE_COLOR: Color32 = Color32::from_rgba_unmultiplied_const(255, 255, 255, 143);
+/// The sheet's title: 1.8em, 0.6em above and 0.7em below, 0.75rem in.
+const SHEET_TITLE: f32 = 1.8 * theme::JF_FONT;
+const SHEET_TITLE_LINE: f32 = 36.14;
+const SHEET_TITLE_TOP: f32 = 0.6 * SHEET_TITLE;
+const SHEET_TITLE_BOTTOM: f32 = 0.7 * SHEET_TITLE;
+const SHEET_TITLE_SIDE: f32 = 12.0;
 
 /// An action sheet opened from `anchor`. With `selected` its row is level
 /// with the anchor's centre, as a select's list opens; without, the sheet is
@@ -62,6 +75,7 @@ pub fn action_sheet(
     ctx: &egui::Context,
     id: Id,
     anchor: Rect,
+    title: Option<&str>,
     items: &[SheetItem<'_>],
     selected: Option<usize>,
 ) -> (Option<usize>, bool) {
@@ -76,12 +90,34 @@ pub fn action_sheet(
             ctx.fonts_mut(|fonts| fonts.layout_no_wrap(item.label.to_owned(), font.clone(), theme::JF_TEXT))
         })
         .collect();
-    let widest = galleys.iter().map(|galley| galley.size().x).fold(0.0, f32::max);
-    let width = (text_left + widest + SHEET_TEXT_RIGHT).min(screen.width() * 0.9);
-    let height = (items.len() as f32 * SHEET_ROW + 2.0 * SHEET_PADDING).min(screen.height() * 0.9);
+    let aside_font = theme::regular(SHEET_ASIDE);
+    let asides: Vec<_> = items
+        .iter()
+        .map(|item| {
+            item.aside.map(|aside| {
+                ctx.fonts_mut(|fonts| fonts.layout_no_wrap(aside.to_owned(), aside_font.clone(), SHEET_ASIDE_COLOR))
+            })
+        })
+        .collect();
+    let title_galley = title.map(|title| {
+        ctx.fonts_mut(|fonts| fonts.layout_no_wrap(title.to_owned(), theme::regular(SHEET_TITLE), theme::JF_TEXT))
+    });
+    let widest = galleys
+        .iter()
+        .zip(&asides)
+        .map(|(galley, aside)| {
+            galley.size().x
+                + aside.as_ref().map_or(0.0, |aside| SHEET_ASIDE_GAP + aside.size().x + SHEET_ASIDE_RIGHT)
+        })
+        .fold(0.0, f32::max);
+    let width = (text_left + widest + SHEET_TEXT_RIGHT)
+        .max(title_galley.as_ref().map_or(0.0, |title| title.size().x + 2.0 * SHEET_TITLE_SIDE))
+        .min(screen.width() * 0.9);
+    let heading = if title.is_some() { SHEET_TITLE_TOP + SHEET_TITLE_LINE + SHEET_TITLE_BOTTOM } else { 0.0 };
+    let height = (heading + items.len() as f32 * SHEET_ROW + 2.0 * SHEET_PADDING).min(screen.height() * 0.9);
     let (left, top) = match selected {
         Some(selected) => {
-            let top = anchor.center().y - SHEET_PADDING - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
+            let top = anchor.center().y - SHEET_PADDING - heading - selected as f32 * SHEET_ROW - SHEET_ROW / 2.0;
             let top = top.clamp(screen.top() + 8.0, (screen.bottom() - height - 8.0).max(8.0));
             let left = anchor
                 .left()
@@ -114,9 +150,17 @@ pub fn action_sheet(
             paint_dialog_shadow(ui.painter(), rect, radius);
             ui.painter().rect_filled(rect, radius, theme::JF_BG);
             let mut picked = None;
-            for (index, (item, galley)) in items.iter().zip(galleys).enumerate() {
+            if let Some(title) = title_galley {
+                widgets::galley_on_baseline(
+                    ui.painter(),
+                    rect.left() + SHEET_TITLE_SIDE,
+                    layer_baseline(ui, rect.top() + SHEET_PADDING + SHEET_TITLE_TOP, SHEET_TITLE, SHEET_TITLE_LINE),
+                    title,
+                );
+            }
+            for (index, ((item, galley), aside)) in items.iter().zip(galleys).zip(asides).enumerate() {
                 let row = Rect::from_min_size(
-                    pos2(rect.left(), rect.top() + SHEET_PADDING + index as f32 * SHEET_ROW),
+                    pos2(rect.left(), rect.top() + SHEET_PADDING + heading + index as f32 * SHEET_ROW),
                     vec2(width, SHEET_ROW),
                 );
                 if row.bottom() > rect.bottom() {
@@ -152,6 +196,14 @@ pub fn action_sheet(
                     super::jf::baseline(row.top() + SHEET_TEXT_TOP, theme::JF_FONT, SHEET_TEXT_LINE),
                     galley,
                 );
+                if let Some(aside) = aside {
+                    widgets::galley_on_baseline(
+                        ui.painter(),
+                        row.right() - SHEET_ASIDE_RIGHT - 3.72 - aside.size().x,
+                        layer_baseline(ui, row.top() + 11.03, SHEET_ASIDE, 1.35 * SHEET_ASIDE),
+                        aside,
+                    );
+                }
                 widgets::pointer_on_hover(&response);
                 if response.clicked() {
                     picked = Some(index);

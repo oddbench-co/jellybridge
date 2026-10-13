@@ -218,6 +218,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if ended && ui_state.screen == ui::Screen::Player {
                 ui_state.deferred.push(if autoplay {
                     UiAction::PlayNext
+                } else if ui_state.player.repeat == ui::player::RepeatMode::All {
+                    UiAction::ReplayCurrent
                 } else {
                     UiAction::LeavePlayer
                 });

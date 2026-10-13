@@ -184,14 +184,14 @@ pub fn draw_menu(ui: &mut Ui, menu: &mut Option<OpenMenu>, actions: &mut Vec<UiA
         .map(|command| SheetItem {
             label: command.label(),
             icon: Some(command.icon()),
-            checked: false,
+            checked: false, aside: None,
         })
         .collect::<Vec<_>>();
     let (picked, close) = dialogs::action_sheet(
         ui.ctx(),
         Id::new("item-menu"),
         open.request.anchor,
-        &items,
+        None, &items,
         None,
     );
     if let Some(index) = picked {
@@ -264,9 +264,9 @@ pub fn draw_dialog(ui: &mut Ui, dialog: &mut Option<ItemDialog>, actions: &mut V
                         let items = options
                             .iter()
                             .enumerate()
-                            .map(|(index, label)| SheetItem { label, icon: None, checked: index == shown })
+                            .map(|(index, label)| SheetItem { label, icon: None, checked: index == shown , aside: None})
                             .collect::<Vec<_>>();
-                        let (picked, closed) = dialogs::action_sheet(&ctx, id.with("sheet"), field, &items, Some(shown));
+                        let (picked, closed) = dialogs::action_sheet(&ctx, id.with("sheet"), field, None, &items, Some(shown));
                         if let Some(index) = picked {
                             *selected = index.checked_sub(1);
                         }

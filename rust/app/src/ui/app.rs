@@ -138,6 +138,11 @@ pub enum UiAction {
     SetVolume(f32),
     ToggleMute,
     SetSpeed(usize),
+    /// jellyfin-web's repeat mode for the player.
+    SetRepeat(super::player::RepeatMode),
+    /// Start the playing item again from the beginning (Repeat all at the
+    /// end of the queue).
+    ReplayCurrent,
     SetAspect(usize),
     SelectAudio(i32),
     SelectSubtitle(i32),
@@ -411,6 +416,12 @@ impl JellyBridgeApp {
             UiAction::SeekAbsolute(seconds) => send(PlayerCommand::SeekAbsolute(seconds)),
             UiAction::SetVolume(volume) => send(PlayerCommand::SetVolume(f64::from(volume))),
             UiAction::ToggleMute => send(PlayerCommand::ToggleMuted),
+            UiAction::SetRepeat(mode) => {
+                // Repeat one loops the file in mpv, so it never ends.
+                let looped = if mode == super::player::RepeatMode::One { "inf" } else { "no" };
+                send(PlayerCommand::Configure(vec![("loop-file", looped.to_owned())]));
+            }
+            UiAction::ReplayCurrent => features::playback::replay_current(context),
             UiAction::SetSpeed(index) => {
                 if let Some(speed) = PLAYBACK_SPEEDS.get(index) {
                     send(PlayerCommand::SetSpeed(*speed));

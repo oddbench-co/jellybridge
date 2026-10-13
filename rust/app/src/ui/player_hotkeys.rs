@@ -75,8 +75,8 @@ pub fn key_text(key: egui::Key, shift: bool) -> Option<String> {
 pub const REWIND_SECONDS: f64 = 10.0;
 pub const FAST_FORWARD_SECONDS: f64 = 30.0;
 
-/// The speed menu's choices; `PlayerVm::speed_index` indexes this.
-pub const PLAYBACK_SPEEDS: [f64; 7] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+/// jellyfin-web's playback speeds; `PlayerVm::speed_index` indexes this.
+pub const PLAYBACK_SPEEDS: [f64; 11] = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlayerUiState {
@@ -234,20 +234,18 @@ pub fn stepped_speed(current: f64, steps: i32) -> f64 {
     PLAYBACK_SPEEDS[index.min(last)]
 }
 
-/// Where the chapter keys go: the next chapter start, or the start of the
-/// current chapter -- the one before it when already within its first few
-/// seconds, so pressing twice keeps going back.
-pub fn chapter_target(chapters: &[f64], position: f64, forward: bool) -> Option<f64> {
-    const RESTART_GRACE_SECONDS: f64 = 3.0;
+/// Where jellyfin-web's chapter buttons and keys go: forward, the first
+/// chapter after the position; back, the last one starting at least 10 s
+/// before it (so a press early in a chapter reaches the one before), never
+/// before the start on the queue's first item. `None` moves to the next or
+/// previous item instead.
+pub fn chapter_target(chapters: &[f64], position: f64, forward: bool, first_in_queue: bool) -> Option<f64> {
     if forward {
-        chapters.iter().copied().find(|time| *time > position + 1.0)
+        chapters.iter().copied().find(|time| *time > position)
     } else {
-        chapters
-            .iter()
-            .copied()
-            .rev()
-            .find(|time| *time < position - RESTART_GRACE_SECONDS)
-            .or(Some(0.0))
+        let back = position - 10.0;
+        let back = if first_in_queue { back.max(0.0) } else { back };
+        chapters.iter().copied().rev().find(|time| *time <= back)
     }
 }
 
@@ -399,18 +397,21 @@ mod tests {
         assert_eq!(speed_index(1.3), 3);
         assert_eq!(stepped_speed(1.0, 1), 1.25);
         assert_eq!(stepped_speed(1.0, -1), 0.75);
-        assert_eq!(stepped_speed(2.0, 1), 2.0);
+        assert_eq!(stepped_speed(2.0, 1), 2.5);
+        assert_eq!(stepped_speed(4.0, 1), 4.0);
         assert_eq!(stepped_speed(0.5, -1), 0.5);
     }
 
     #[test]
     fn chapter_keys_move_between_chapter_starts() {
         let chapters = [0.0, 100.0, 200.0];
-        assert_eq!(chapter_target(&chapters, 50.0, true), Some(100.0));
-        assert_eq!(chapter_target(&chapters, 250.0, true), None);
-        assert_eq!(chapter_target(&chapters, 150.0, false), Some(100.0));
-        // Just past a chapter start, going back skips to the one before.
-        assert_eq!(chapter_target(&chapters, 101.0, false), Some(0.0));
-        assert_eq!(chapter_target(&[], 30.0, false), Some(0.0));
+        assert_eq!(chapter_target(&chapters, 50.0, true, true), Some(100.0));
+        assert_eq!(chapter_target(&chapters, 250.0, true, true), None);
+        assert_eq!(chapter_target(&chapters, 150.0, false, true), Some(100.0));
+        // Within 10 s of a chapter start, going back reaches the one before.
+        assert_eq!(chapter_target(&chapters, 105.0, false, true), Some(0.0));
+        // On the queue's first item the start is as far back as it goes.
+        assert_eq!(chapter_target(&chapters, 5.0, false, true), Some(0.0));
+        assert_eq!(chapter_target(&chapters, 5.0, false, false), None);
     }
 }

@@ -51,7 +51,6 @@ pub const TEXT_BRIGHT: Color32 = rgb(0xffffff); // buttons, hero titles
 pub const TEXT_PRIMARY: Color32 = rgb(0xf5f8f9); // headings, body
 pub const TEXT_SECONDARY: Color32 = rgb(0xc8d1d5); // supporting copy
 pub const TEXT_MUTED: Color32 = rgb(0xaeb8bd); // labels, captions
-pub const TEXT_FAINT: Color32 = rgb(0x82929a); // hints, disabled
 
 // Accent (Jellyfin blue)
 pub const ACCENT: Color32 = rgb(0x00a4dc);
@@ -66,7 +65,6 @@ pub const DANGER_TEXT: Color32 = rgb(0xffb1b1);
 pub const VIDEO_BG: Color32 = rgb(0x050607); // letterbox behind video
 pub const SCRIM: Color32 = rgb(0x000000); // use with `with_alpha`
 pub const OVERLAY: Color32 = rgba(0x171e21e5); // floating player chrome
-pub const OVERLAY_RAISED: Color32 = rgba(0x2b393fef);
 
 // Radii
 pub const RADIUS_SMALL: f32 = 6.0;

@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use egui::{Align2, Color32, CursorIcon, Id, Rect, Sense, Ui, pos2, vec2};
 
 use super::app::UiAction;
-use super::icons::{self, Icon};
+use super::jf;
+use super::icons::Icon;
 use super::player_hotkeys::{
     PLAYBACK_SPEEDS, PlayerHotkeyAction, PlayerUiState, chapter_target, key_text, next_track_index,
     resolve_player_hotkey, speed_index, stepped_speed,
@@ -15,17 +16,19 @@ use super::{Screen, UiState, ends_at_from_now, format_playback_time, theme, widg
 use crate::app::{AppContext, PlayerTrackState};
 use crate::features::now_playing::PlayerOverlay;
 use crate::features::playback::PlayerTitle;
-use crate::services::player::PlayerEvent;
+use crate::services::player::{PlayerEvent, PlayerTrack};
 
-pub const SPEED_LABELS: [&str; 7] = ["0.5x", "0.75x", "Normal", "1.25x", "1.5x", "1.75x", "2x"];
+pub const SPEED_LABELS: [&str; 11] = [
+    "0.5x", "0.75x", "1x", "1.25x", "1.5x", "1.75x", "2x", "2.5x", "3x", "3.5x", "4.0x",
+];
 pub const ASPECT_LABELS: [&str; 3] = ["Auto", "Cover", "Fill"];
 /// How long the chrome stays up after the last activity.
 const CONTROLS_IDLE_SECONDS: f64 = 3.0;
 /// How long a click waits to be sure it is not the first of a double click.
 const SINGLE_CLICK_SECONDS: f64 = 0.22;
-const BOTTOM_HEIGHT: f32 = 150.0;
 
-/// Which pop-up menu is open. Settings drills into speed and aspect.
+/// Which pop-up menu is open. Settings drills into speed, aspect and
+/// repeat.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlayerMenu {
     #[default]
@@ -35,6 +38,28 @@ pub enum PlayerMenu {
     Settings,
     Speed,
     Aspect,
+    Repeat,
+}
+
+/// jellyfin-web's repeat modes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RepeatMode {
+    All,
+    One,
+    #[default]
+    None,
+}
+
+impl RepeatMode {
+    pub const ALL: [Self; 3] = [Self::All, Self::One, Self::None];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "Repeat all",
+            Self::One => "Repeat one",
+            Self::None => "None",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +79,13 @@ pub struct UpNext {
 pub struct PlayerVm {
     pub status: String,
     pub title: String,
-    pub subtitle: String,
+    /// The playing item, for the favourite button.
+    pub item_id: String,
+    pub favorite: bool,
+    /// Jellyfin's streams for the playing item: (index, kind, label).
+    pub streams: Vec<(i64, String, String)>,
+    /// jellyfin-web's "remaining time" toggle on the duration label.
+    pub show_remaining: bool,
     pub decode_label: String,
     pub paused: bool,
     pub muted: bool,
@@ -84,6 +115,9 @@ pub struct PlayerVm {
     /// Fullscreen and overlay visibility.
     pub ui: PlayerUiState,
     pub menu: PlayerMenu,
+    /// The button the open menu came from; its sheet is centred on it.
+    pub menu_anchor: Rect,
+    pub repeat: RepeatMode,
     /// When the chrome hides unless something holds it up.
     pub hide_at: Option<f64>,
     /// When a single click on the video arrived, pending a double click.
@@ -100,7 +134,10 @@ impl Default for PlayerVm {
         Self {
             status: String::new(),
             title: String::new(),
-            subtitle: String::new(),
+            item_id: String::new(),
+            favorite: false,
+            streams: Vec::new(),
+            show_remaining: true,
             decode_label: String::new(),
             paused: false,
             muted: false,
@@ -128,6 +165,8 @@ impl Default for PlayerVm {
             subtitle_index: 0,
             ui: PlayerUiState::default(),
             menu: PlayerMenu::None,
+            menu_anchor: Rect::NOTHING,
+            repeat: RepeatMode::None,
             hide_at: None,
             pending_click: None,
             timeline_position: 0.0,
@@ -153,15 +192,6 @@ impl PlayerVm {
         }
     }
 
-    /// Name of the chapter at `time`, or "".
-    pub fn chapter_title_at(&self, time: f64) -> &str {
-        self.chapters
-            .iter()
-            .take_while(|chapter| chapter.time <= time)
-            .last()
-            .map_or("", |chapter| chapter.title.as_str())
-    }
-
     /// Shows the chrome and cursor and restarts the idle countdown.
     pub fn activity(&mut self, now: f64) {
         self.ui.pointer_activity();
@@ -171,6 +201,31 @@ impl PlayerVm {
     fn controls_visible(&self) -> bool {
         self.ui.overlay_visible
     }
+}
+
+/// mpv's tracks as Jellyfin lists them: for each of Jellyfin's `kind`
+/// streams, the embedded track with its index, else the downloaded copy
+/// (titled with Jellyfin's label), relabelled with Jellyfin's display title.
+/// Without any match (no stream list yet) mpv's tracks are kept as they are.
+fn jellyfin_tracks(streams: &[(i64, String, String)], kind: &str, tracks: Vec<PlayerTrack>) -> Vec<PlayerTrack> {
+    let mapped: Vec<PlayerTrack> = streams
+        .iter()
+        .filter(|(_, stream_kind, _)| stream_kind == kind)
+        .filter_map(|(index, _, label)| {
+            let embedded = tracks
+                .iter()
+                .find(|track| track.external_filename.is_none() && track.source_index == Some(*index));
+            let external = || {
+                tracks
+                    .iter()
+                    .find(|track| track.external_filename.is_some() && track.title.as_deref() == Some(label.as_str()))
+            };
+            let mut track = embedded.or_else(external)?.clone();
+            track.label.clone_from(label);
+            Some(track)
+        })
+        .collect();
+    if mapped.is_empty() { tracks } else { mapped }
 }
 
 /// Applies one mpv worker event. Runs on the UI thread.
@@ -206,6 +261,11 @@ pub fn apply_player_event(
             selected_audio,
             selected_subtitle,
         } => {
+            // The menus list Jellyfin's streams under its labels, each
+            // played by the mpv track carrying it; mpv's own extras (tracks
+            // Jellyfin skips, downloaded copies of embedded ones) stay out.
+            let audio = jellyfin_tracks(&player.streams, "Audio", audio);
+            let subtitles = jellyfin_tracks(&player.streams, "Subtitle", subtitles);
             let selected_audio_index = audio
                 .iter()
                 .position(|track| Some(track.id) == selected_audio)
@@ -310,7 +370,13 @@ pub fn present_playback_started(
         let now = state.ctx.input(|input| input.time);
         let player = &mut state.player;
         player.title = title.title;
-        player.subtitle = title.subtitle;
+        player.item_id = title.item_id;
+        player.favorite = title.favorite;
+        player.streams = title
+            .streams
+            .into_iter()
+            .map(|stream| (i64::from(stream.index), stream.kind, stream.label))
+            .collect();
         player.loading = true;
         player.buffering = false;
         player.has_previous = false;
@@ -465,9 +531,7 @@ fn apply_hotkey(
                 .map(|chapter| chapter.time)
                 .collect::<Vec<_>>();
             let forward = action == PlayerHotkeyAction::NextChapter;
-            if let Some(target) = chapter_target(&chapters, player.position, forward) {
-                actions.push(UiAction::SeekAbsolute(target));
-            }
+            actions.push(chapter_action(&chapters, player, forward));
         }
         PlayerHotkeyAction::NextItem => {
             if player.has_next {
@@ -605,86 +669,74 @@ pub fn draw(
     }
 }
 
-/// A round, borderless icon button like those in Jellyfin's player OSD;
-/// `badge` draws a number inside the icon (the 10/30 second skips).
-#[allow(clippy::too_many_arguments)]
-fn player_icon_button(
-    ui: &mut Ui,
-    center: egui::Pos2,
-    icon: Icon,
-    icon_size: f32,
-    label: &str,
-    badge: &str,
-    enabled: bool,
-    opacity: f32,
-) -> bool {
-    let side = icon_size + 18.0;
-    let rect = Rect::from_center_size(center, vec2(side, side));
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, Id::new(("player-button", label)), sense);
-    widgets::describe_button(&response, enabled, label);
-    let painter = ui.painter();
-    let target = if !enabled {
-        0.0
-    } else if response.is_pointer_button_down_on() {
-        0.22
-    } else if response.hovered() {
-        0.12
-    } else {
-        0.0
-    };
-    let tint = ui
-        .ctx()
-        .animate_value_with_time(response.id.with("tint"), target, 0.12);
-    if tint > 0.0 {
-        painter.circle_filled(
-            rect.center(),
-            side / 2.0,
-            theme::with_alpha(theme::TEXT_BRIGHT, tint * opacity),
-        );
+/// A chapter button or key: the chapter jellyfin-web would seek to, else
+/// the next or previous item (the previous one restarts the first).
+fn chapter_action(chapters: &[f64], player: &PlayerVm, forward: bool) -> UiAction {
+    match chapter_target(chapters, player.position, forward, !player.has_previous) {
+        Some(time) => UiAction::SeekAbsolute(time),
+        None if forward => UiAction::PlayNext,
+        None => UiAction::PlayPrevious(player.position),
     }
-    if response.has_focus() {
-        painter.circle_stroke(
-            rect.center(),
-            side / 2.0,
-            egui::Stroke::new(2.0, theme::ACCENT_BRIGHT),
-        );
-    }
-    let color = if enabled {
-        theme::TEXT_BRIGHT
-    } else {
-        theme::TEXT_FAINT
-    };
-    icons::paint_centered(
-        painter,
-        icon,
-        rect.center(),
-        icon_size,
-        color.gamma_multiply(opacity),
-    );
-    if !badge.is_empty() {
-        // The replay/forward arrows circle (12, 13) of the 24-unit viewbox.
-        let y = rect.center().y - icon_size / 2.0 + icon_size * 13.0 / 24.0;
-        painter.text(
-            pos2(rect.center().x, y),
-            Align2::CENTER_CENTER,
-            badge,
-            theme::bold(icon_size * 0.36),
-            theme::TEXT_BRIGHT.gamma_multiply(opacity),
-        );
-    }
-    if enabled {
-        widgets::pointer_on_hover(&response);
-    }
-    response.on_hover_text(label).clicked()
 }
 
-/// Back, title, subtitle and status over a top scrim. Returns whether the
-/// pointer rests on it.
+// jellyfin-web's video OSD, at 1em = 14.88 px.
+const OSD_HEADER: f32 = 111.59;
+const OSD_BOTTOM: f32 = 222.88;
+/// From the bottom gradient's top to the controls (its top padding).
+const OSD_CONTROLS_TOP: f32 = 111.6;
+const OSD_BUTTON: f32 = 41.36;
+const OSD_ICON: f32 = 24.84;
+const OSD_BUTTON_MARGIN: f32 = 4.3152;
+/// The OSD's side padding (0.8em).
+const OSD_PADDING: f32 = 11.904;
+/// Inline buttons are parted by a space as well as their margins.
+const OSD_SPACE: f32 = 3.87;
+const OSD_FONT: f32 = 14.88;
+const OSD_LINE: f32 = 20.08;
+/// A slider's container (1.25em) and its thumb (1.08em).
+const SLIDER_HEIGHT: f32 = 18.59;
+const SLIDER_THUMB: f32 = 16.07;
+const SLIDER_TRACK: f32 = 2.976;
+const SLIDER_BUBBLE_FONT: f32 = 1.8 * OSD_FONT;
+const OSD_SCRIM: Color32 = Color32::from_rgb(15, 15, 15);
+
+/// One of the OSD's icon buttons at `left` on the row starting at `top`.
+fn osd_button(ui: &mut Ui, left: f32, top: f32, icon: Icon, label: &str, color: Color32) -> bool {
+    jf::round_icon_button(
+        ui,
+        Rect::from_min_size(pos2(left, top), vec2(OSD_BUTTON, OSD_BUTTON)),
+        icon,
+        color,
+        OSD_ICON,
+        label,
+        true,
+        Id::new(("player-button", label)),
+    )
+    .clicked()
+}
+
+/// One line of OSD text whose 20 px line box starts at `top`.
+fn osd_text(ui: &Ui, left: f32, top: f32, text: &str, color: Color32) -> Rect {
+    let galley = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), theme::regular(OSD_FONT), color);
+    widgets::galley_on_baseline(
+        ui.painter(),
+        left,
+        jf::baseline(top, OSD_FONT, OSD_LINE),
+        galley,
+    )
+}
+
+fn text_width(ui: &Ui, text: &str, size: f32) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), theme::regular(size), Color32::WHITE)
+        .size()
+        .x
+}
+
+/// jellyfin-web's OSD header: the back arrow and the title over a fading
+/// top gradient. Returns whether the pointer rests on it.
 fn draw_top_chrome(
     ui: &mut Ui,
     state: &mut UiState,
@@ -692,71 +744,44 @@ fn draw_top_chrome(
     opacity: f32,
     actions: &mut Vec<UiAction>,
 ) -> bool {
-    let rect = Rect::from_min_size(screen.min, vec2(screen.width(), 120.0));
+    let rect = Rect::from_min_size(screen.min, vec2(screen.width(), OSD_HEADER));
     // Hovering the chrome holds it up, and clicks on its empty background
     // don't fall through to the video surface.
     let backing = ui.interact(rect, Id::new("player-top-chrome"), Sense::click());
-    let painter = ui.painter().clone();
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(screen));
+    ui.multiply_opacity(opacity);
     widgets::vertical_gradient(
-        &painter,
+        ui.painter(),
         rect,
-        theme::with_alpha(theme::SCRIM, 0.75 * opacity),
-        theme::with_alpha(theme::SCRIM, 0.0),
+        theme::with_alpha(OSD_SCRIM, 0.75),
+        theme::with_alpha(OSD_SCRIM, 0.0),
     );
-    let row_center = rect.top() + 42.0;
-    if player_icon_button(
-        ui,
-        pos2(rect.left() + 16.0 + 22.0, row_center),
-        Icon::ArrowBack,
-        26.0,
-        "Back",
-        "",
-        true,
-        opacity,
-    ) {
+    let header_text = Color32::from_gray(238);
+    if osd_button(&mut ui, rect.left() + 16.2, rect.top() + 17.23, Icon::ArrowBack, "Back", header_text) {
         state.player.activity(ui.input(|input| input.time));
         actions.push(UiAction::LeavePlayer);
     }
-    let left = rect.left() + 16.0 + 44.0 + 12.0;
-    let width = rect.right() - 24.0 - left;
-    let player = &state.player;
-    let mut lines = vec![widgets::elided(
-        ui,
-        &player.title,
-        theme::bold(theme::FONT_HEADING),
-        theme::TEXT_BRIGHT.gamma_multiply(opacity),
-        width,
-    )];
-    if !player.subtitle.is_empty() {
-        lines.push(widgets::elided(
-            ui,
-            &player.subtitle,
-            theme::regular(theme::FONT_BODY_LARGE),
-            theme::TEXT_SECONDARY.gamma_multiply(opacity),
-            width,
-        ));
-    }
-    if !player.status.is_empty() {
-        lines.push(widgets::elided(
-            ui,
-            &player.status,
-            theme::regular(theme::FONT_BODY),
-            theme::TEXT_MUTED.gamma_multiply(opacity),
-            width,
-        ));
-    }
-    let total: f32 =
-        lines.iter().map(|line| line.size().y).sum::<f32>() + 2.0 * (lines.len() as f32 - 1.0);
-    let mut y = row_center - total / 2.0;
-    for line in lines {
-        let height = line.size().y;
-        painter.galley(pos2(left, y), line, Color32::WHITE);
-        y += height + 2.0;
-    }
+    let size = 1.17 * OSD_FONT;
+    let left = rect.left() + 70.58;
+    let galley = widgets::elided(
+        &ui,
+        &state.player.title,
+        theme::regular(size),
+        header_text,
+        (rect.right() - OSD_PADDING - left).max(0.0),
+    );
+    widgets::galley_on_baseline(
+        ui.painter(),
+        left,
+        jf::baseline(rect.top() + 23.13, size, 1.7 * size),
+        galley,
+    );
     backing.hovered()
 }
 
-/// Seek bar over the transport and option buttons, on a bottom scrim.
+/// jellyfin-web's OSD controls over a bottom gradient: the time row (time,
+/// position slider, remaining time) above the buttons. Returns whether the
+/// pointer rests on them.
 fn draw_bottom_chrome(
     ui: &mut Ui,
     state: &mut UiState,
@@ -765,223 +790,212 @@ fn draw_bottom_chrome(
     now: f64,
     actions: &mut Vec<UiAction>,
 ) -> bool {
-    let rect = Rect::from_min_max(
-        pos2(screen.left(), screen.bottom() - BOTTOM_HEIGHT),
-        screen.max,
-    );
+    let rect = Rect::from_min_max(pos2(screen.left(), screen.bottom() - OSD_BOTTOM), screen.max);
     let backing = ui.interact(rect, Id::new("player-bottom-chrome"), Sense::click());
-    let painter = ui.painter().clone();
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(screen));
+    ui.multiply_opacity(opacity);
+    let ui = &mut ui;
     widgets::vertical_gradient(
-        &painter,
+        ui.painter(),
         rect,
-        theme::with_alpha(theme::SCRIM, 0.0),
-        theme::with_alpha(theme::SCRIM, 0.85 * opacity),
+        theme::with_alpha(OSD_SCRIM, 0.0),
+        theme::with_alpha(OSD_SCRIM, 0.75),
     );
-    let row = Rect::from_min_max(
-        pos2(rect.left() + 24.0, rect.bottom() - 14.0 - 56.0),
-        pos2(rect.right() - 24.0, rect.bottom() - 14.0),
-    );
-    let timeline = Rect::from_min_size(
-        pos2(row.left(), row.top() - 4.0 - 28.0),
-        vec2(row.width(), 28.0),
-    );
-    draw_timeline(ui, state, timeline, opacity, now, actions);
+    let white = Color32::WHITE;
+    let controls = rect.top() + OSD_CONTROLS_TOP;
+    let row = controls + 10.416;
 
-    let center_y = row.center().y;
-    let mut x = row.left();
-    let button = |ui: &mut Ui,
-                  x: &mut f32,
-                  icon: Icon,
-                  icon_size: f32,
-                  label: &str,
-                  badge: &str,
-                  enabled: bool| {
-        let side = icon_size + 18.0;
-        let clicked = player_icon_button(
-            ui,
-            pos2(*x + side / 2.0, center_y),
-            icon,
-            icon_size,
-            label,
-            badge,
-            enabled,
-            opacity,
-        );
-        *x += side + 2.0;
-        clicked
-    };
+    // The time row.
     let player = &state.player;
-    let (paused, has_previous, has_next, muted, volume, fullscreen) = (
-        player.paused,
-        player.has_previous,
-        player.has_next,
-        player.muted,
-        player.volume,
-        player.ui.fullscreen,
+    let shown_position = if player.scrubbing { player.timeline_position } else { player.position };
+    let position_text = format_playback_time(shown_position);
+    let end_text = if player.show_remaining {
+        format!("-{}", format_playback_time(player.duration - shown_position))
+    } else {
+        format_playback_time(player.duration)
+    };
+    let text_top = row + 4.82;
+    let start = osd_text(ui, rect.left() + OSD_PADDING + 7.44, text_top, &position_text, white);
+    let end_width = text_width(ui, &end_text, OSD_FONT);
+    let end_left = rect.right() - OSD_PADDING - end_width;
+    osd_text(ui, end_left, text_top, &end_text, white);
+    let end_box = Rect::from_min_size(pos2(end_left - 7.44, text_top), vec2(end_width + 7.44, OSD_LINE));
+    let end_response = ui.interact(end_box, Id::new("player-duration"), Sense::click());
+    widgets::pointer_on_hover(&end_response);
+    if end_response.clicked() {
+        state.player.show_remaining = !state.player.show_remaining;
+    }
+    let slider = Rect::from_min_max(
+        pos2(start.right() + 3.72, row + 7.43),
+        pos2(end_box.left() - 3.72, row + 7.43 + SLIDER_HEIGHT),
     );
+    draw_timeline(ui, state, slider, now, actions);
+
+    // The buttons.
+    let top = row + 29.75 + 3.72;
+    let player = &state.player;
+    let chapters = player.chapters.len() > 1;
     let mut clicked = Vec::new();
-    if has_previous && button(ui, &mut x, Icon::SkipPrevious, 26.0, "Previous", "", true) {
-        clicked.push(UiAction::PlayPrevious(state.player.position));
+    let mut x = rect.left() + OSD_PADDING + OSD_BUTTON_MARGIN;
+    let pitch = OSD_BUTTON + 2.0 * OSD_BUTTON_MARGIN + OSD_SPACE;
+    let mut last_right = x;
+    let mut button = |ui: &mut Ui, icon: Icon, label: &str| {
+        let pressed = osd_button(ui, x, top, icon, label, white);
+        last_right = x + OSD_BUTTON;
+        x += pitch;
+        pressed
+    };
+    if player.has_previous && button(ui, Icon::SkipPrevious, "Previous track") {
+        clicked.push(UiAction::PlayPrevious(player.position));
     }
-    if button(
-        ui,
-        &mut x,
-        Icon::Replay,
-        32.0,
-        "Rewind 10 seconds",
-        "10",
-        true,
-    ) {
-        clicked.push(UiAction::SeekRelative(-state.player.skip_back));
+    if chapters && button(ui, Icon::Undo, "Previous chapter") {
+        let times = player.chapters.iter().map(|chapter| chapter.time).collect::<Vec<_>>();
+        clicked.push(chapter_action(&times, player, false));
     }
-    let play_label = if paused { "Play" } else { "Pause" };
-    if button(
-        ui,
-        &mut x,
-        if paused { Icon::Play } else { Icon::Pause },
-        36.0,
-        play_label,
-        "",
-        true,
-    ) {
+    if button(ui, Icon::FastRewind, "Rewind") {
+        clicked.push(UiAction::SeekRelative(-player.skip_back));
+    }
+    let (icon, label) = if player.paused { (Icon::Play, "Play") } else { (Icon::Pause, "Pause") };
+    if button(ui, icon, label) {
         clicked.push(UiAction::TogglePlayback);
     }
-    if button(
-        ui,
-        &mut x,
-        Icon::Forward,
-        32.0,
-        "Fast forward 30 seconds",
-        "30",
-        true,
-    ) {
-        clicked.push(UiAction::SeekRelative(state.player.skip_forward));
+    if button(ui, Icon::FastForward, "Fast Forward") {
+        clicked.push(UiAction::SeekRelative(player.skip_forward));
     }
-    if has_next && button(ui, &mut x, Icon::SkipNext, 26.0, "Next", "", true) {
+    if chapters && button(ui, Icon::Redo, "Next chapter") {
+        let times = player.chapters.iter().map(|chapter| chapter.time).collect::<Vec<_>>();
+        clicked.push(chapter_action(&times, player, true));
+    }
+    if player.has_next && button(ui, Icon::SkipNext, "Next track") {
         clicked.push(UiAction::PlayNext);
     }
-    let clock = format!(
-        "{} / {}",
-        state.player.position_label, state.player.duration_label
-    );
-    let clock = widgets::elided(
-        ui,
-        &clock,
-        theme::regular(theme::FONT_BODY_LARGE),
-        theme::TEXT_PRIMARY.gamma_multiply(opacity),
-        200.0,
-    );
-    widgets::galley_v_centered(&painter, x + 24.0, center_y, clock);
-
-    // Right side, laid out from the right edge.
-    let mut right = row.right();
-    let right_button = |ui: &mut Ui, right: &mut f32, icon: Icon, label: &str, enabled: bool| {
-        let side = 26.0 + 18.0;
-        let clicked = player_icon_button(
+    if !player.ends_at_label.is_empty() {
+        // jellyfin-web puts four no-break spaces before "Ends at".
+        let lead = text_width(ui, "\u{a0}\u{a0}\u{a0}\u{a0}", OSD_FONT);
+        osd_text(
             ui,
-            pos2(*right - side / 2.0, center_y),
-            icon,
-            26.0,
-            label,
-            "",
-            enabled,
-            opacity,
+            last_right + OSD_BUTTON_MARGIN + OSD_FONT + lead,
+            top + 10.64,
+            &player.ends_at_label,
+            white,
         );
-        *right -= side + 2.0;
-        clicked
-    };
-    let fullscreen_label = if fullscreen {
-        "Exit fullscreen"
-    } else {
-        "Fullscreen"
-    };
-    let fullscreen_icon = if fullscreen {
-        Icon::FullscreenExit
-    } else {
-        Icon::Fullscreen
-    };
-    let toggle_full = right_button(ui, &mut right, fullscreen_icon, fullscreen_label, true);
-    let settings = right_button(ui, &mut right, Icon::Settings, "Settings", true);
-    let subtitles_enabled = state.player.subtitle_options.len() > 1;
-    let subtitles = right_button(
-        ui,
-        &mut right,
-        Icon::Subtitles,
-        "Subtitles",
-        subtitles_enabled,
-    );
-    let audio_enabled = !state.player.audio_options.is_empty();
-    let audio = right_button(ui, &mut right, Icon::Audiotrack, "Audio", audio_enabled);
-    right -= 8.0;
-    let volume_rect = Rect::from_min_max(pos2(right - 96.0, row.top()), pos2(right, row.bottom()));
-    draw_volume(ui, state, volume_rect, opacity, now, actions);
-    right = volume_rect.left() - 2.0;
-    let mute_icon = if muted || volume <= 0.0 {
-        Icon::VolumeOff
-    } else {
-        Icon::VolumeUp
-    };
-    let mute = right_button(
-        ui,
-        &mut right,
-        mute_icon,
-        if muted { "Unmute" } else { "Mute" },
-        true,
-    );
-    if !state.player.ends_at_label.is_empty() {
-        let galley = widgets::elided(
-            ui,
-            &state.player.ends_at_label,
-            theme::regular(theme::FONT_BODY),
-            theme::TEXT_SECONDARY.gamma_multiply(opacity),
-            200.0,
-        );
-        let x = right - 16.0 - galley.size().x;
-        widgets::galley_v_centered(&painter, x, center_y, galley);
     }
+
+    // Right side, from the right edge: fullscreen, settings, then the
+    // volume group, audio, subtitles and the favourite.
+    let (fullscreen, muted) = (player.ui.fullscreen, player.muted);
+    let step = OSD_BUTTON + 2.0 * OSD_BUTTON_MARGIN;
+    let full_left = rect.right() - OSD_PADDING - OSD_BUTTON_MARGIN - OSD_BUTTON;
+    let (full_icon, full_label) = if fullscreen {
+        (Icon::FullscreenExit, "Exit Fullscreen")
+    } else {
+        (Icon::Fullscreen, "Fullscreen")
+    };
+    let toggle_full = osd_button(ui, full_left, top, full_icon, full_label, white);
+    let settings_left = full_left - step;
+    let settings = osd_button(ui, settings_left, top, Icon::Settings, "Settings", white);
+    let volume_right = settings_left - OSD_BUTTON_MARGIN - OSD_FONT;
+    let volume_rect = Rect::from_min_size(
+        pos2(volume_right - 133.91, top + 11.39),
+        vec2(133.91, SLIDER_HEIGHT),
+    );
+    draw_volume(ui, state, volume_rect, now, actions);
+    let mute_left = volume_rect.left() - OSD_BUTTON_MARGIN - OSD_BUTTON;
+    let mute_icon = if muted { Icon::VolumeOff } else { Icon::VolumeUp };
+    let mute = osd_button(ui, mute_left, top, mute_icon, if muted { "Unmute" } else { "Mute" }, white);
+    let mut right = mute_left - 3.0 * OSD_BUTTON_MARGIN;
+    // Each returns its rect when pressed, for the menu it opens.
+    let mut next = |ui: &mut Ui, icon: Icon, label: &str, color: Color32| {
+        let left = right - OSD_BUTTON;
+        right = left - 2.0 * OSD_BUTTON_MARGIN;
+        osd_button(ui, left, top, icon, label, color)
+            .then(|| Rect::from_min_size(pos2(left, top), vec2(OSD_BUTTON, OSD_BUTTON)))
+    };
+    let player = &state.player;
+    let audio = if player.audio_options.len() > 1 { next(ui, Icon::Audiotrack, "Audio", white) } else { None };
+    let subtitles = if player.subtitle_options.len() > 1 {
+        next(ui, Icon::ClosedCaption, "Subtitles", white)
+    } else {
+        None
+    };
+    let favorite_color = if player.favorite { theme::JF_PLAYED_RED } else { white };
+    let favorite = !player.item_id.is_empty() && next(ui, Icon::Favorite, "Favorite", favorite_color).is_some();
 
     if toggle_full {
         toggle_fullscreen(state, now);
     }
     if settings {
         state.player.menu = PlayerMenu::Settings;
+        state.player.menu_anchor = Rect::from_min_size(pos2(settings_left, top), vec2(OSD_BUTTON, OSD_BUTTON));
     }
-    if subtitles {
+    if let Some(anchor) = subtitles {
         state.player.menu = PlayerMenu::Subtitles;
+        state.player.menu_anchor = anchor;
     }
-    if audio {
+    if let Some(anchor) = audio {
         state.player.menu = PlayerMenu::Audio;
+        state.player.menu_anchor = anchor;
     }
     if mute {
         clicked.push(UiAction::ToggleMute);
     }
-    if toggle_full || settings || subtitles || audio || !clicked.is_empty() {
+    if favorite {
+        let player = &mut state.player;
+        player.favorite = !player.favorite;
+        clicked.push(UiAction::SetFavorite {
+            id: player.item_id.clone(),
+            favorite: player.favorite,
+        });
+    }
+    if toggle_full || settings || subtitles.is_some() || audio.is_some() || favorite || !clicked.is_empty() {
         state.player.activity(now);
     }
     actions.extend(clicked);
     backing.hovered() || ui.rect_contains_pointer(rect)
 }
 
-/// The seek bar: rail, hover preview, played fill, chapter marks, playhead,
-/// and a tooltip naming the chapter and time under the pointer.
+/// A jellyfin-web slider in its 1.25em container: the 0.2em track inset by
+/// half a thumb, filled to `ratio` in the accent, and the thumb. Returns the
+/// track's ends.
+fn paint_slider(painter: &egui::Painter, rect: Rect, ratio: f32, buffered: Option<(f32, f32)>, thumb_scale: f32) -> (f32, f32) {
+    let x0 = rect.left() + SLIDER_THUMB / 2.0;
+    let x1 = rect.right() - SLIDER_THUMB / 2.0;
+    let center = rect.top() + SLIDER_HEIGHT / 2.0;
+    let track = Rect::from_min_max(pos2(x0, center - SLIDER_TRACK / 2.0), pos2(x1, center + SLIDER_TRACK / 2.0));
+    painter.rect_filled(track, 0.0, theme::with_alpha(Color32::WHITE, 0.3));
+    if let Some((from, to)) = buffered {
+        let from = x0 + (x1 - x0) * from.clamp(0.0, 1.0);
+        let to = x0 + (x1 - x0) * to.clamp(0.0, 1.0);
+        painter.rect_filled(
+            Rect::from_min_max(pos2(from, track.top()), pos2(to, track.bottom())),
+            0.0,
+            theme::with_alpha(Color32::WHITE, 0.4),
+        );
+    }
+    let head = x0 + (x1 - x0) * ratio.clamp(0.0, 1.0);
+    painter.rect_filled(Rect::from_min_max(track.min, pos2(head, track.bottom())), 0.0, theme::JF_ACCENT);
+    painter.circle_filled(pos2(head, center), SLIDER_THUMB * thumb_scale / 2.0, theme::JF_ACCENT);
+    (x0, x1)
+}
+
+/// The position slider: track, chapter markers, thumb, and the time
+/// bubble over the pointer while hovered.
 fn draw_timeline(
     ui: &mut Ui,
     state: &mut UiState,
     rect: Rect,
-    opacity: f32,
     now: f64,
     actions: &mut Vec<UiAction>,
 ) {
     let response = ui.interact(rect, Id::new("player-timeline"), Sense::click_and_drag());
     widgets::describe_button(&response, true, "Seek");
+    let x0 = rect.left() + SLIDER_THUMB / 2.0;
+    let x1 = rect.right() - SLIDER_THUMB / 2.0;
     let player = &mut state.player;
     let pointer = response.hover_pos().or(response.interact_pointer_pos());
-    let hover_ratio = pointer.map_or(0.0, |pointer| {
-        ((pointer.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0)
-    });
+    let hover_ratio = pointer.map_or(0.0, |pointer| ((pointer.x - x0) / (x1 - x0).max(1.0)).clamp(0.0, 1.0));
     let hover_time = f64::from(hover_ratio) * player.duration.max(1.0);
     let pressed = response.is_pointer_button_down_on() || response.dragged();
-    let active = response.hovered() || pressed;
 
     if response.drag_started() || (pressed && !player.scrubbing) {
         player.scrubbing = true;
@@ -1003,96 +1017,64 @@ fn draw_timeline(
         actions.push(UiAction::SeekAbsolute(player.timeline_position));
     }
 
-    let rail_height = ui.ctx().animate_value_with_time(
-        response.id.with("rail"),
-        if active { 6.0 } else { 4.0 },
-        0.08,
-    );
-    let painter = ui.painter();
-    let center_y = rect.center().y;
-    let rail = Rect::from_center_size(
-        pos2(rect.center().x, center_y),
-        vec2(rect.width(), rail_height),
-    );
-    let radius = rail_height / 2.0;
-    painter.rect_filled(
-        rail,
-        radius,
-        theme::with_alpha(theme::TEXT_BRIGHT, 0.25 * opacity),
-    );
-    if response.hovered() {
-        let hover = Rect::from_min_size(rail.min, vec2(rail.width() * hover_ratio, rail_height));
-        painter.rect_filled(
-            hover,
-            radius,
-            theme::with_alpha(theme::TEXT_BRIGHT, 0.25 * opacity),
-        );
-    }
+    let painter = ui.painter().clone();
     let played = player.played_ratio();
-    painter.rect_filled(
-        Rect::from_min_size(rail.min, vec2(rail.width() * played, rail_height)),
-        radius,
-        theme::ACCENT.gamma_multiply(opacity),
-    );
+    let scale = if response.hovered() || pressed { 1.3 } else { 1.0 };
+    // Chapter markers sit under the thumb: 2×12 px, accent once passed.
+    let duration = player.duration.max(1.0);
     for chapter in &player.chapters {
-        if chapter.time > 0.0 && chapter.time < player.duration {
-            let x = rect.left() + (chapter.time / player.duration.max(1.0)) as f32 * rect.width();
-            painter.rect_filled(
-                Rect::from_center_size(pos2(x, center_y), vec2(2.0, rail_height + 4.0)),
-                1.0,
-                theme::with_alpha(theme::TEXT_BRIGHT, 0.6 * opacity),
-            );
+        let ratio = (chapter.time / duration) as f32;
+        if !(0.0..=1.0).contains(&ratio) {
+            continue;
         }
-    }
-    let head = ui.ctx().animate_value_with_time(
-        response.id.with("head"),
-        if active { 16.0 } else { 12.0 },
-        0.08,
-    );
-    let head_x = (rect.left() + rect.width() * played)
-        .clamp(rect.left() + head / 2.0, rect.right() - head / 2.0);
-    painter.circle_filled(
-        pos2(head_x, center_y),
-        head / 2.0,
-        theme::TEXT_BRIGHT.gamma_multiply(opacity),
-    );
-
-    if active && let Some(pointer) = pointer {
-        let clock = format_playback_time(hover_time);
-        let chapter = player.chapter_title_at(hover_time);
-        let label = if chapter.is_empty() {
-            clock
+        let color = if ratio <= played {
+            theme::JF_ACCENT
         } else {
-            format!("{chapter}  ·  {clock}")
+            theme::with_alpha(Color32::WHITE, 0.3)
         };
-        let galley = widgets::elided(
-            ui,
-            &label,
-            theme::regular(theme::FONT_BODY),
-            theme::TEXT_PRIMARY,
-            360.0,
+        painter.rect_filled(
+            Rect::from_min_size(pos2(x0 + (x1 - x0) * ratio - 1.0, rect.top() + 3.0), vec2(2.0, 12.0)),
+            0.0,
+            color,
         );
-        let width = galley.size().x + 16.0;
-        let x = (pointer.x - width / 2.0).clamp(rect.left(), rect.right() - width);
-        let tip = Rect::from_min_size(pos2(x, rect.top() - 34.0), vec2(width, 26.0));
-        painter.rect_filled(tip, theme::RADIUS_SMALL, theme::OVERLAY_RAISED);
-        widgets::galley_centered(painter, tip, galley);
+    }
+    paint_slider(&painter, rect, played, None, scale);
+
+    if response.hovered() || pressed {
+        let galley = painter.layout_no_wrap(
+            format_playback_time(hover_time),
+            theme::regular(SLIDER_BUBBLE_FONT),
+            Color32::WHITE,
+        );
+        let line = 36.14;
+        let size = vec2(galley.size().x + 1.5 * SLIDER_BUBBLE_FONT, line + SLIDER_BUBBLE_FONT);
+        let center = x0 + (x1 - x0) * hover_ratio;
+        let bubble = Rect::from_min_size(pos2(center - size.x / 2.0, rect.top() - 1.2 * size.y), size);
+        let layer = egui::LayerId::new(egui::Order::Tooltip, Id::new("player-bubble"));
+        let top_painter = ui.ctx().layer_painter(layer);
+        top_painter.rect_filled(bubble, 0.0, Color32::from_gray(40));
+        widgets::galley_on_baseline(
+            &top_painter,
+            bubble.left() + 0.75 * SLIDER_BUBBLE_FONT,
+            jf::baseline(bubble.top() + 0.5 * SLIDER_BUBBLE_FONT, SLIDER_BUBBLE_FONT, line),
+            galley,
+        );
     }
     widgets::pointer_on_hover(&response);
 }
 
-/// Thin rail filled to the level, with a knob. Dragging unmutes, as in
-/// Jellyfin.
+/// The volume slider, jellyfin's: dragging it also unmutes.
 fn draw_volume(
     ui: &mut Ui,
     state: &mut UiState,
     rect: Rect,
-    opacity: f32,
     now: f64,
     actions: &mut Vec<UiAction>,
 ) {
     let response = ui.interact(rect, Id::new("player-volume"), Sense::click_and_drag());
     widgets::describe_button(&response, true, "Volume");
+    let x0 = rect.left() + SLIDER_THUMB / 2.0;
+    let x1 = rect.right() - SLIDER_THUMB / 2.0;
     let player = &mut state.player;
     if (response.is_pointer_button_down_on() || response.dragged())
         && let Some(pointer) = response.interact_pointer_pos()
@@ -1102,41 +1084,15 @@ fn draw_volume(
             player.muted = false;
             actions.push(UiAction::ToggleMute);
         }
-        let volume = (((pointer.x - rect.left()) / rect.width()).clamp(0.0, 1.0) * 100.0).round();
+        let volume = (((pointer.x - x0) / (x1 - x0)).clamp(0.0, 1.0) * 100.0).round();
         if volume != player.volume {
             player.volume = volume;
             actions.push(UiAction::SetVolume(volume));
         }
     }
-    let shown = if player.muted {
-        0.0
-    } else {
-        player.volume.clamp(0.0, 100.0)
-    };
-    let painter = ui.painter();
-    let rail = Rect::from_center_size(rect.center(), vec2(rect.width(), 4.0));
-    painter.rect_filled(
-        rail,
-        2.0,
-        theme::with_alpha(theme::TEXT_BRIGHT, 0.3 * opacity),
-    );
-    painter.rect_filled(
-        Rect::from_min_size(rail.min, vec2(rail.width() * shown / 100.0, 4.0)),
-        2.0,
-        theme::TEXT_BRIGHT.gamma_multiply(opacity),
-    );
-    let knob = if response.hovered() || response.dragged() {
-        14.0
-    } else {
-        10.0
-    };
-    let x = (rect.left() + rect.width() * shown / 100.0)
-        .clamp(rect.left() + knob / 2.0, rect.right() - knob / 2.0);
-    painter.circle_filled(
-        pos2(x, rect.center().y),
-        knob / 2.0,
-        theme::TEXT_BRIGHT.gamma_multiply(opacity),
-    );
+    let shown = if player.muted { 0.0 } else { player.volume.clamp(0.0, 100.0) / 100.0 };
+    let scale = if response.hovered() || response.dragged() { 1.3 } else { 1.0 };
+    paint_slider(ui.painter(), rect, shown, None, scale);
     widgets::pointer_on_hover(&response);
 }
 
@@ -1152,7 +1108,7 @@ fn draw_floating(
     let lift = ui.ctx().animate_value_with_time(
         Id::new("player-floating-lift"),
         if state.player.controls_visible() {
-            BOTTOM_HEIGHT
+            OSD_BOTTOM - OSD_CONTROLS_TOP + 16.0
         } else {
             40.0
         },
@@ -1321,306 +1277,94 @@ fn draw_floating(
 }
 
 /// The open pop-up menu, over a full-window catcher that closes it.
-fn draw_menus(ui: &mut Ui, state: &mut UiState, screen: Rect, actions: &mut Vec<UiAction>) {
+/// The OSD's menus, as jellyfin-web's action sheets on the button that
+/// opened them: Settings (with each setting's value), its speed, aspect and
+/// repeat lists, and the titled audio and subtitle lists.
+fn draw_menus(ui: &mut Ui, state: &mut UiState, _screen: Rect, actions: &mut Vec<UiAction>) {
+    use super::dialogs::{self, SheetItem};
     let player = &mut state.player;
     if player.menu == PlayerMenu::None {
         return;
     }
-    let catcher = ui.interact(screen, Id::new("player-menu-catcher"), Sense::click());
-    let speed_detail = SPEED_LABELS[player.speed_index.min(SPEED_LABELS.len() - 1)].to_owned();
-    let aspect_detail = ASPECT_LABELS[player.aspect_index.min(ASPECT_LABELS.len() - 1)].to_owned();
-    let speed_options = SPEED_LABELS.map(str::to_owned);
-    let aspect_options = ASPECT_LABELS.map(str::to_owned);
-    let settings_options = ["Playback speed".to_owned(), "Aspect ratio".to_owned()];
-    let (heading, options, details, selected, drills, can_go_back, footer): (
-        &str,
-        &[String],
-        Vec<String>,
-        Option<usize>,
-        bool,
-        bool,
-        &str,
-    ) = match player.menu {
-        PlayerMenu::Audio => (
-            "Audio",
-            &player.audio_options,
-            Vec::new(),
-            usize::try_from(player.audio_index).ok(),
-            false,
-            false,
-            "",
-        ),
-        PlayerMenu::Subtitles => (
-            "Subtitles",
-            &player.subtitle_options,
-            Vec::new(),
-            usize::try_from(player.subtitle_index).ok(),
-            false,
-            false,
-            "",
-        ),
+    let speed = SPEED_LABELS[player.speed_index.min(SPEED_LABELS.len() - 1)];
+    let aspect = ASPECT_LABELS[player.aspect_index.min(ASPECT_LABELS.len() - 1)];
+    let item = |label, checked: bool| SheetItem { label, icon: None, checked, aside: None };
+    let (title, items): (Option<&str>, Vec<SheetItem<'_>>) = match player.menu {
         PlayerMenu::Settings => (
-            "Settings",
-            &settings_options,
-            vec![speed_detail, aspect_detail],
             None,
-            true,
-            false,
-            player.decode_label.as_str(),
+            vec![
+                SheetItem { label: "Aspect Ratio", icon: None, checked: false, aside: Some(aspect) },
+                SheetItem { label: "Playback Speed", icon: None, checked: false, aside: Some(speed) },
+                SheetItem { label: "Repeat Mode", icon: None, checked: false, aside: Some(player.repeat.label()) },
+            ],
         ),
         PlayerMenu::Speed => (
-            "Playback speed",
-            &speed_options,
-            Vec::new(),
-            Some(player.speed_index),
-            false,
-            true,
-            "",
+            None,
+            SPEED_LABELS.iter().enumerate().map(|(index, label)| item(label, index == player.speed_index)).collect(),
         ),
         PlayerMenu::Aspect => (
-            "Aspect ratio",
-            &aspect_options,
-            Vec::new(),
-            Some(player.aspect_index),
-            false,
-            true,
-            "",
+            None,
+            ASPECT_LABELS.iter().enumerate().map(|(index, label)| item(label, index == player.aspect_index)).collect(),
+        ),
+        PlayerMenu::Repeat => (
+            None,
+            RepeatMode::ALL.iter().map(|mode| item(mode.label(), *mode == player.repeat)).collect(),
+        ),
+        PlayerMenu::Audio => (
+            Some("Audio"),
+            player
+                .audio_options
+                .iter()
+                .enumerate()
+                .map(|(index, label)| item(label, i32::try_from(index).ok() == Some(player.audio_index)))
+                .collect(),
+        ),
+        PlayerMenu::Subtitles => (
+            Some("Subtitles"),
+            player
+                .subtitle_options
+                .iter()
+                .enumerate()
+                .map(|(index, label)| item(label, i32::try_from(index).ok() == Some(player.subtitle_index)))
+                .collect(),
         ),
         PlayerMenu::None => unreachable!("returned above"),
     };
-    let picked = menu(
-        ui,
-        screen,
-        heading,
-        options,
-        &details,
-        selected,
-        drills,
-        can_go_back,
-        footer,
-    );
+    let id = Id::new(("player-menu", player.menu as u8));
+    let (picked, close) = dialogs::action_sheet(ui.ctx(), id, player.menu_anchor, title, &items, None);
+    drop(items);
     let player = &mut state.player;
-    match picked {
-        MenuPick::Back => {
-            player.menu = PlayerMenu::Settings;
+    let menu = player.menu;
+    if close {
+        player.menu = PlayerMenu::None;
+    }
+    let Some(index) = picked else { return };
+    match menu {
+        PlayerMenu::Settings => {
+            player.menu = [PlayerMenu::Aspect, PlayerMenu::Speed, PlayerMenu::Repeat][index.min(2)];
         }
-        MenuPick::Row(index) => match player.menu {
-            PlayerMenu::Audio => {
-                player.menu = PlayerMenu::None;
-                player.audio_index = i32::try_from(index).unwrap_or(0);
-                actions.push(UiAction::SelectAudio(player.audio_index));
-            }
-            PlayerMenu::Subtitles => {
-                player.menu = PlayerMenu::None;
-                player.subtitle_index = i32::try_from(index).unwrap_or(0);
-                actions.push(UiAction::SelectSubtitle(player.subtitle_index));
-            }
-            PlayerMenu::Settings => {
-                player.menu = if index == 0 {
-                    PlayerMenu::Speed
-                } else {
-                    PlayerMenu::Aspect
-                };
-            }
-            PlayerMenu::Speed => {
-                player.menu = PlayerMenu::None;
-                player.speed_index = index;
-                actions.push(UiAction::SetSpeed(index));
-            }
-            PlayerMenu::Aspect => {
-                player.menu = PlayerMenu::None;
-                player.aspect_index = index;
-                actions.push(UiAction::SetAspect(index));
-            }
-            PlayerMenu::None => {}
-        },
-        MenuPick::Nothing => {
-            if catcher.clicked() || ui.input(|input| input.key_pressed(egui::Key::Escape)) {
-                player.menu = PlayerMenu::None;
-            }
+        PlayerMenu::Speed => {
+            player.speed_index = index;
+            actions.push(UiAction::SetSpeed(index));
         }
-    }
-}
-
-enum MenuPick {
-    Nothing,
-    Back,
-    Row(usize),
-}
-
-/// One of the player's pop-up lists, in the style of Jellyfin's OSD action
-/// sheets: `selected` rows get a check, `details` fill a right-hand column,
-/// `drills` marks rows that open a submenu.
-#[allow(clippy::too_many_arguments)]
-fn menu(
-    ui: &mut Ui,
-    screen: Rect,
-    heading: &str,
-    options: &[String],
-    details: &[String],
-    selected: Option<usize>,
-    drills: bool,
-    can_go_back: bool,
-    footer: &str,
-) -> MenuPick {
-    const WIDTH: f32 = 300.0;
-    const ROW: f32 = 40.0;
-    let list_height = (options.len() as f32 * ROW).min(320.0);
-    let footer_galley = (!footer.is_empty()).then(|| {
-        widgets::wrapped(
-            ui,
-            footer,
-            theme::regular(theme::FONT_CAPTION),
-            theme::TEXT_FAINT,
-            WIDTH - 24.0,
-            None,
-        )
-    });
-    let height = 6.0
-        + 40.0
-        + 1.0
-        + list_height
-        + footer_galley
-            .as_ref()
-            .map_or(0.0, |galley| 8.0 + galley.size().y + 4.0)
-        + 6.0;
-    let rect = Rect::from_min_size(
-        pos2(
-            screen.right() - WIDTH - 24.0,
-            screen.bottom() - height - 90.0,
-        ),
-        vec2(WIDTH, height),
-    );
-    // Swallows clicks between rows so they do not close the menu.
-    ui.interact(rect, Id::new(("player-menu", heading)), Sense::click());
-    let painter = ui.painter().clone();
-    widgets::drop_shadow(
-        &painter,
-        rect,
-        theme::RADIUS_MEDIUM,
-        16.0,
-        0.0,
-        theme::with_alpha(theme::SCRIM, 0.5),
-    );
-    painter.rect_filled(rect, theme::RADIUS_MEDIUM, theme::OVERLAY_RAISED);
-    let mut pick = MenuPick::Nothing;
-
-    let header = Rect::from_min_size(rect.min + vec2(0.0, 6.0), vec2(WIDTH, 40.0));
-    let header_response = ui.interact(
-        header,
-        Id::new(("player-menu-back", heading)),
-        if can_go_back {
-            Sense::click()
-        } else {
-            Sense::hover()
-        },
-    );
-    if can_go_back && header_response.hovered() {
-        painter.rect_filled(header, 0.0, theme::with_alpha(theme::TEXT_BRIGHT, 0.08));
-    }
-    let mut x = header.left() + 12.0;
-    if can_go_back {
-        icons::paint_centered(
-            &painter,
-            Icon::ArrowBack,
-            pos2(x + 10.0, header.center().y),
-            20.0,
-            theme::TEXT_BRIGHT,
-        );
-        x += 28.0;
-        widgets::describe_button(&header_response, true, "Back");
-        widgets::pointer_on_hover(&header_response);
-        if header_response.clicked() {
-            pick = MenuPick::Back;
+        PlayerMenu::Aspect => {
+            player.aspect_index = index;
+            actions.push(UiAction::SetAspect(index));
         }
+        PlayerMenu::Repeat => {
+            player.repeat = RepeatMode::ALL[index.min(2)];
+            actions.push(UiAction::SetRepeat(player.repeat));
+        }
+        PlayerMenu::Audio => {
+            player.audio_index = i32::try_from(index).unwrap_or(0);
+            actions.push(UiAction::SelectAudio(player.audio_index));
+        }
+        PlayerMenu::Subtitles => {
+            player.subtitle_index = i32::try_from(index).unwrap_or(0);
+            actions.push(UiAction::SelectSubtitle(player.subtitle_index));
+        }
+        PlayerMenu::None => {}
     }
-    painter.text(
-        pos2(x, header.center().y),
-        Align2::LEFT_CENTER,
-        heading,
-        theme::bold(theme::FONT_SUBTITLE),
-        theme::TEXT_PRIMARY,
-    );
-    painter.rect_filled(
-        Rect::from_min_size(pos2(rect.left(), header.bottom()), vec2(WIDTH, 1.0)),
-        0.0,
-        theme::BORDER,
-    );
-
-    let list = Rect::from_min_size(
-        pos2(rect.left(), header.bottom() + 1.0),
-        vec2(WIDTH, list_height),
-    );
-    let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list));
-    list_ui.set_clip_rect(list);
-    egui::ScrollArea::vertical()
-        .id_salt(("player-menu-list", heading))
-        .max_height(list_height)
-        .auto_shrink(false)
-        .show(&mut list_ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            for (index, option) in options.iter().enumerate() {
-                let (row, response) = ui.allocate_exact_size(vec2(WIDTH, ROW), Sense::click());
-                widgets::describe_button(&response, true, option);
-                let painter = ui.painter();
-                if response.hovered() || response.has_focus() {
-                    painter.rect_filled(row, 0.0, theme::with_alpha(theme::TEXT_BRIGHT, 0.08));
-                }
-                if selected == Some(index) {
-                    icons::paint_centered(
-                        painter,
-                        Icon::Check,
-                        pos2(row.left() + 22.0, row.center().y),
-                        20.0,
-                        theme::ACCENT_BRIGHT,
-                    );
-                }
-                let mut right = row.right() - 12.0;
-                if drills {
-                    icons::paint_centered(
-                        painter,
-                        Icon::ChevronRight,
-                        pos2(right - 10.0, row.center().y),
-                        20.0,
-                        theme::TEXT_MUTED,
-                    );
-                    right -= 30.0;
-                }
-                if let Some(detail) = details.get(index).filter(|detail| !detail.is_empty()) {
-                    let galley = widgets::elided(
-                        ui,
-                        detail,
-                        theme::regular(theme::FONT_BODY),
-                        theme::TEXT_MUTED,
-                        120.0,
-                    );
-                    right -= galley.size().x;
-                    widgets::galley_v_centered(painter, right, row.center().y, galley);
-                    right -= 10.0;
-                }
-                let label_left = row.left() + 12.0 + 20.0 + 10.0;
-                let galley = widgets::elided(
-                    ui,
-                    option,
-                    theme::regular(theme::FONT_BODY_LARGE),
-                    theme::TEXT_PRIMARY,
-                    right - label_left,
-                );
-                widgets::galley_v_centered(painter, label_left, row.center().y, galley);
-                widgets::pointer_on_hover(&response);
-                if response.clicked() {
-                    pick = MenuPick::Row(index);
-                }
-            }
-        });
-    if let Some(galley) = footer_galley {
-        painter.galley(
-            pos2(rect.left() + 12.0, list.bottom() + 8.0),
-            galley,
-            Color32::WHITE,
-        );
-    }
-    pick
 }
 
 #[cfg(test)]
@@ -1661,21 +1405,33 @@ mod tests {
     }
 
     #[test]
-    fn chapter_titles_follow_the_time() {
-        let player = PlayerVm {
-            chapters: vec![
-                ChapterMarker {
-                    time: 0.0,
-                    title: "Opening".to_owned(),
-                },
-                ChapterMarker {
-                    time: 60.0,
-                    title: "Act One".to_owned(),
-                },
-            ],
-            ..PlayerVm::default()
+    fn menus_list_jellyfin_streams_played_by_their_mpv_tracks() {
+        let track = |id: i64, source: Option<i64>, title: &str, external: bool| PlayerTrack {
+            id,
+            label: format!("mpv {id}"),
+            source_index: source,
+            language: Some("fra".to_owned()),
+            title: Some(title.to_owned()),
+            external_filename: external.then(|| format!("/tmp/{id}.srt")),
         };
-        assert_eq!(player.chapter_title_at(30.0), "Opening");
-        assert_eq!(player.chapter_title_at(61.0), "Act One");
+        let streams = vec![
+            (3, "Subtitle".to_owned(), "French SDH - SubRip".to_owned()),
+            (4, "Subtitle".to_owned(), "French Full - SubRip".to_owned()),
+            (1, "Audio".to_owned(), "French - E-AC-3".to_owned()),
+        ];
+        let tracks = vec![
+            // Embedded: Jellyfin's stream 3, and a WebVTT track it skips.
+            track(1, Some(3), "French SDH", false),
+            track(2, Some(5), "French SDH - WebVTT", false),
+            // Downloaded copies of streams 3 and 4.
+            track(3, Some(0), "French SDH - SubRip", true),
+            track(4, Some(0), "French Full - SubRip", true),
+        ];
+        let listed = jellyfin_tracks(&streams, "Subtitle", tracks);
+        // Stream 3 plays from the file itself, stream 4 from its copy.
+        assert_eq!(listed.iter().map(|track| track.id).collect::<Vec<_>>(), [1, 4]);
+        assert_eq!(listed[0].label, "French SDH - SubRip");
+        // No stream list: mpv's tracks as they are.
+        assert_eq!(jellyfin_tracks(&[], "Audio", vec![track(7, Some(1), "x", false)]).len(), 1);
     }
 }

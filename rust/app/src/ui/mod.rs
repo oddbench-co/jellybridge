@@ -248,8 +248,10 @@ fn detail_art(image: &ImageRef, max_width: u32) -> images::Art {
     }
 }
 
+/// A running time as jellyfin-web writes it ("42:37", "1:02:03"), whole
+/// seconds floored like its getDisplayRunningTime.
 pub(crate) fn format_playback_time(seconds: f64) -> String {
-    let total = seconds.max(0.0).round() as u64;
+    let total = seconds.max(0.0).floor() as u64;
     let hours = total / 3600;
     let minutes = (total % 3600) / 60;
     let seconds = total % 60;

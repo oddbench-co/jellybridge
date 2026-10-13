@@ -14,13 +14,11 @@ pub enum Icon {
     Play,
     Pause,
     Replay,
-    Forward,
     SkipPrevious,
     SkipNext,
     VolumeUp,
     VolumeOff,
     Audiotrack,
-    Subtitles,
     Settings,
     Check,
     ChevronRight,
@@ -60,6 +58,10 @@ pub enum Icon {
     FolderOpen,
     PlaylistAdd,
     ContentCopy,
+    Undo,
+    Redo,
+    FastRewind,
+    FastForward,
     Info,
     Remove,
 }
@@ -74,9 +76,6 @@ impl Icon {
             Icon::Replay => {
                 "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"
             }
-            Icon::Forward => {
-                "M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"
-            }
             Icon::SkipPrevious => "M6 6h2v12H6zm3.5 6l8.5 6V6z",
             Icon::SkipNext => "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z",
             Icon::VolumeUp => {
@@ -87,9 +86,6 @@ impl Icon {
             }
             Icon::Audiotrack => {
                 "M12 3v9.28c-.47-.17-.97-.28-1.5-.28C8.01 12 6 14.01 6 16.5S8.01 21 10.5 21c2.31 0 4.2-1.75 4.45-4H15V6h4V3h-7z"
-            }
-            Icon::Subtitles => {
-                "M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z"
             }
             Icon::Settings => {
                 "M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
@@ -129,6 +125,14 @@ impl Icon {
                 "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
             }
             Icon::Download => "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z",
+            Icon::Undo => {
+                "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z"
+            }
+            Icon::Redo => {
+                "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7l-3.6 3.6z"
+            }
+            Icon::FastRewind => "M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z",
+            Icon::FastForward => "M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z",
             Icon::PlaylistAdd => "M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z",
             Icon::ContentCopy => {
                 "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
@@ -271,13 +275,19 @@ mod tests {
             Icon::Play,
             Icon::Pause,
             Icon::Replay,
-            Icon::Forward,
+            Icon::Undo,
+            Icon::Redo,
+            Icon::FastRewind,
+            Icon::FastForward,
+            Icon::PlaylistAdd,
+            Icon::ContentCopy,
+            Icon::Info,
+            Icon::Remove,
             Icon::SkipPrevious,
             Icon::SkipNext,
             Icon::VolumeUp,
             Icon::VolumeOff,
             Icon::Audiotrack,
-            Icon::Subtitles,
             Icon::Settings,
             Icon::Check,
             Icon::ChevronRight,

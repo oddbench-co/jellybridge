@@ -14,7 +14,7 @@ const server = (session.serverUrl || session.server_url).replace(/\/$/, '');
 const token = session.token, userId = session.userId || session.user_id;
 const info = await (await fetch(server + '/System/Info/Public')).json();
 const profile = mkdtempSync((process.env.TMPDIR || '/tmp') + '/jellybridge-parity-');
-const chrome = spawn('/usr/bin/chromium', ['--headless=new', '--remote-debugging-port=9333', `--user-data-dir=${profile}`, '--force-color-profile=srgb', '--disable-gpu', '--mute-audio', 'about:blank'], { stdio: 'ignore' });
+const chrome = spawn('/usr/bin/chromium', ['--headless=new', '--remote-debugging-port=9333', `--user-data-dir=${profile}`, '--force-color-profile=srgb', '--disable-gpu', '--mute-audio', '--autoplay-policy=no-user-gesture-required', 'about:blank'], { stdio: 'ignore' });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let target;
 for (let i = 0; i < 50 && !target; i++) { await sleep(100); try { target = (await (await fetch('http://127.0.0.1:9333/json')).json()).find(t => t.type === 'page'); } catch {} }
@@ -22,16 +22,24 @@ const ws = new WebSocket(target.webSocketDebuggerUrl);
 await new Promise(r => ws.onopen = r);
 let id = 0; const pending = new Map();
 const requests = [];
-ws.onmessage = e => { const m = JSON.parse(e.data); if (m.method === 'Network.requestWillBeSent') requests.push(m.params.request.method + ' ' + m.params.request.url); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
+ws.onmessage = e => { const m = JSON.parse(e.data); if (m.method === 'Fetch.requestPaused') ws.send(JSON.stringify({ id: ++id, method: 'Fetch.fulfillRequest', params: { requestId: m.params.requestId, responseCode: 204, responseHeaders: [{ name: 'Access-Control-Allow-Origin', value: '*' }] } })); if (m.method === 'Network.requestWillBeSent') requests.push(m.params.request.method + ' ' + m.params.request.url); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
 const send = (method, params = {}) => new Promise(r => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 await send('Emulation.setDeviceMetricsOverride', { width: +width, height: +height, deviceScaleFactor: 1.5, mobile: false, screenWidth: +(process.env.SCREEN_W || 2560), screenHeight: +(process.env.SCREEN_H || 1440) });
 await send('Page.enable');
+// Like the app's JELLYBRIDGE_NO_PLAYBACK_REPORTS: playing something here
+// must not move the user's resume points or mark anything played.
+// The reports are answered here with an empty success (failing them stops
+// jellyfin-web's player), so they never reach the server.
+await send('Network.enable');
+await send('Fetch.enable', { patterns: ['*/Sessions/Playing*', '*/PlayingItems/*', '*/PlayedItems/*', '*/UserPlayedItems/*'].map(urlPattern => ({ urlPattern })) });
 await send('Page.navigate', { url: server + '/web/' });
 await sleep(1500);
+// Video streams capped at 1.5 Mbps (no bitrate test): a player test then
+// costs the server a small transcode, not a 4K one.
 // NO_CREDENTIALS=1: a signed-out browser (the server is still known, so
 // jellyfin-web opens its sign-in page for it).
 const creds = { Servers: [{ ManualAddress: server, LocalAddress: server, Id: info.Id, Name: info.ServerName, ...(process.env.NO_CREDENTIALS ? {} : { UserId: userId, AccessToken: token }), DateLastAccessed: Date.now(), LastConnectionMode: 2, manualAddressOnly: true }] };
-await send('Runtime.evaluate', { expression: `localStorage.setItem('jellyfin_credentials', ${JSON.stringify(JSON.stringify(creds))}); localStorage.setItem('enableAutoLogin','true'); localStorage.setItem('_deviceId2','jellybridge-rust-desktop');` });
+await send('Runtime.evaluate', { expression: `localStorage.setItem('jellyfin_credentials', ${JSON.stringify(JSON.stringify(creds))}); localStorage.setItem('enableAutoLogin','true'); localStorage.setItem('_deviceId2','jellybridge-rust-desktop'); for (const net of ['true','false']) { localStorage.setItem('enableautobitratebitrate-Video-' + net, 'false'); localStorage.setItem('maxbitrate-Video-' + net, '1500000'); }` });
 await send('Page.navigate', { url: server + '/web/index.html#/home' });
 await sleep(500);
 await send('Page.reload', { ignoreCache: false });
@@ -45,7 +53,7 @@ for (const line of readFileSync(stepsPath, 'utf8').split('\n')) {
   else if (cmd === 'move') await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: +rest[0], y: +rest[1] });
   else if (cmd === 'click') { for (const type of ['mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x: +rest[0], y: +rest[1], button: 'left', clickCount: 1 }); }
   else if (cmd === 'net') { await send('Network.enable'); requests.length = 0; }
-  else if (cmd === 'requests') { for (const r of requests) if (!rest[0] || r.includes(rest[0])) console.log(r.replace(/api_key=[^&]+/, 'api_key=…')); requests.length = 0; }
+  else if (cmd === 'requests') { for (const r of requests) if (!rest[0] || r.includes(rest[0])) console.log(r.replace(/(api_?key|token)=[^&]+/gi, '$1=…')); requests.length = 0; }
   else if (cmd === 'size') { await send('Emulation.setDeviceMetricsOverride', { width: +rest[0], height: +rest[1], deviceScaleFactor: 1.5, mobile: false, screenWidth: +(process.env.SCREEN_W || 2560), screenHeight: +(process.env.SCREEN_H || 1440) }); }
   else if (cmd === 'fullshot') { const m = await send('Runtime.evaluate', { expression: 'document.documentElement.scrollHeight', returnByValue: true }); const h = m.result.result.value; const r = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: +(process.env.VIEW_W || 2536), height: h, scale: 1 } }); writeFileSync(rest[0], Buffer.from(r.result.data, 'base64')); }
   else if (cmd === 'shot') { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(rest[0], Buffer.from(r.result.data, 'base64')); }

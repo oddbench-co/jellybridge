@@ -1276,7 +1276,7 @@ fn draw_dialog(
                 .map(|view| dialogs::SheetItem {
                     label: view.label(),
                     icon: None,
-                    checked: *view == grid.settings.view,
+                    checked: *view == grid.settings.view, aside: None,
                 })
                 .collect::<Vec<_>>();
             let anchor = buttons.view.unwrap_or(Rect::from_min_size(
@@ -1284,7 +1284,7 @@ fn draw_dialog(
                 vec2(41.0, 41.0),
             ));
             let (picked, close) =
-                dialogs::action_sheet(&ctx, Id::new("grid-view-sheet"), anchor, &items, None);
+                dialogs::action_sheet(&ctx, Id::new("grid-view-sheet"), anchor, None, &items, None);
             if let Some(index) = picked {
                 let mut next = grid.settings.clone();
                 next.view = ViewMode::ALL[index];

@@ -112,7 +112,7 @@ pub struct PersonData {
     pub image: Option<ImageRef>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamData {
     pub index: i32,
     pub kind: String,
