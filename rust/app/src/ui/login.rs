@@ -82,7 +82,7 @@ fn lu(value: f32) -> f32 {
 pub fn draw(ui: &mut Ui, state: &mut UiState, actions: &mut Vec<UiAction>) {
     let screen = ui.max_rect();
     ui.painter().rect_filled(screen, 0.0, theme::JF_BG);
-    // The header: just the Jellyfin logo.
+    // The header: just the JellyBridge logo.
     let metrics = jf::header_metrics(screen.width());
     // Without the back button the header is only as tall as the logo and
     // its 0.8em padding, shorter than the library pages' header.

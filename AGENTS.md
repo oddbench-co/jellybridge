@@ -56,6 +56,9 @@ installed to play, not to build. Performance work follows
 - `scripts/vm-test/` — headless QEMU VMs that install each package on a
   distro's live ISO and run a scripted scenario; see
   `docs/rust-port/platform-matrix.md`.
+- `scripts/make-logo.py` — draws the icon and logo as code and regenerates
+  `rust/app/assets/icon.{svg,png,icns}` and `logo.{svg,png}`; edit the drawing
+  there, never the PNGs.
 - `scripts/package-rust-app-personal.sh` — self-contained personal macOS
   package (see `docs/rust-port/packaging.md`).
 

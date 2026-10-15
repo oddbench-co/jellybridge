@@ -9,9 +9,8 @@ client and is not affiliated with or endorsed by the Jellyfin project.
 
 | Component | Licence | Source |
 | --- | --- | --- |
-| Noto Sans fonts | SIL Open Font License 1.1 (`rust/app/assets/fonts/LICENSE-NotoSans.txt`) | https://github.com/notofonts/latin-greek-cyrillic |
+| Noto Sans fonts (UI text, and the outlines of the logo wordmark) | SIL Open Font License 1.1 (`rust/app/assets/fonts/LICENSE-NotoSans.txt`) | https://github.com/notofonts/latin-greek-cyrillic |
 | Material icons (glyph outlines) | Apache License 2.0 | https://github.com/google/material-design-icons |
-| Jellyfin logo ("banner-light") | CC BY-SA 4.0 (`rust/app/assets/LICENSE-jellyfin-logo.txt`) | https://github.com/jellyfin/jellyfin-ux |
 | Rust crates (see `Cargo.lock`) | Mostly MIT / Apache-2.0, as declared by each crate | https://crates.io |
 
 ## Linux packages (.deb, .rpm, AppImage, tarball)

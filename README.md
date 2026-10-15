@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="JellyBridge" width="280"></p>
+
 # JellyBridge
 
 JellyBridge is a native Rust/egui desktop client for Jellyfin with embedded
@@ -205,7 +207,7 @@ manually with `rm ~/.config/jellybridge/session.json`.
 ## License
 
 JellyBridge is free software under the GNU General Public License v3.0 or
-later (`LICENSE`). Bundled fonts, icons, the Jellyfin logo and the native
+later (`LICENSE`). Bundled fonts, icons and the native
 media libraries keep their own licences; see `THIRD-PARTY-NOTICES.md`.
 JellyBridge is an independent client, not affiliated with or endorsed by the
 Jellyfin project.

@@ -1,4 +1,0 @@
-assets/jellyfin-banner-light.png is the Jellyfin logo ("banner-light"), from
-jellyfin-web (https://github.com/jellyfin/jellyfin-web), part of the Jellyfin
-project's artwork (https://github.com/jellyfin/jellyfin-ux), licensed under
-CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/).

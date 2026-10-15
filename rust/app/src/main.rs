@@ -29,14 +29,15 @@ use ui::app::{JellyBridgeApp, UiAction};
 const APP_ID: &str = "co.oddbench.JellyBridge";
 
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
-/// jellyfin-web's header logo (CC BY-SA 4.0, see assets/LICENSE-jellyfin-logo.txt).
-const LOGO_PNG: &[u8] = include_bytes!("../assets/jellyfin-banner-light.png");
+/// The JellyBridge badge and wordmark, drawn where jellyfin-web shows its logo
+/// (made by scripts/make-logo.py).
+const LOGO_PNG: &[u8] = include_bytes!("../assets/brand.png");
 
 /// The window icon and the brand mark drawn in the UI, decoded once.
 struct DecodedIcon {
     window: egui::IconData,
     /// The header logo, downscaled to twice its drawn size: drawing the
-    /// 1302 px original at ~100 px would alias.
+    /// 783 px original at ~130 px would alias.
     brand: egui::ColorImage,
 }
 
