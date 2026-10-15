@@ -153,10 +153,12 @@ fn push(input: &mut RawInput, step: Step) {
 
 fn parse_line(line: &str) -> Option<(f64, Step)> {
     let line = line.split('#').next()?.trim();
-    let mut parts = line.splitn(3, char::is_whitespace);
-    let at: f64 = parts.next()?.parse().ok()?;
-    let command = parts.next()?;
-    let rest = parts.next().unwrap_or("").trim();
+    // Columns may be aligned with any run of spaces or tabs.
+    let (at, line) = line.split_once(char::is_whitespace)?;
+    let at: f64 = at.parse().ok()?;
+    let line = line.trim_start();
+    let (command, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    let rest = rest.trim();
     let numbers = || -> Option<(f32, f32)> {
         let mut values = rest.split_whitespace().map(|value| value.parse::<f32>());
         Some((values.next()?.ok()?, values.next()?.ok()?))
@@ -230,5 +232,16 @@ mod tests {
         );
         assert!(parse_line("# a comment").is_none());
         assert!(parse_line("1 bogus").is_none());
+    }
+
+    #[test]
+    fn aligned_columns_parse_like_single_spaces() {
+        assert!(
+            matches!(parse_line("3.0  shot   /tmp/a.png"), Some((at, Step::Shot(path))) if at == 3.0 && path == "/tmp/a.png")
+        );
+        assert!(matches!(
+            parse_line("4.0\tback"),
+            Some((_, Step::Action(_)))
+        ));
     }
 }

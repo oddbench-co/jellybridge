@@ -183,6 +183,8 @@ pub struct JellyBridgeApp {
     last_input: Instant,
     /// A Back key or mouse button arrived; handled on the next frame.
     back_pending: bool,
+    /// Whether the window was checked against its monitor yet (see `fit_to_monitor`).
+    fit_checked: bool,
 }
 
 impl JellyBridgeApp {
@@ -213,6 +215,35 @@ impl JellyBridgeApp {
             measure: super::measure::Measure::from_env(),
             last_input: Instant::now(),
             back_pending: false,
+            fit_checked: false,
+        }
+    }
+
+    /// The window opens at 1280x800 points, which overflows a smaller screen
+    /// (a 1366x768 laptop, a VM's 1280x800): the bottom of every page and the
+    /// player's controls would sit off-screen. Once the monitor is known --
+    /// on Wayland only after the first frame is shown -- a window that does
+    /// not fit is maximized instead. Runs once.
+    fn fit_to_monitor(&mut self, frame: &eframe::Frame) {
+        if self.fit_checked {
+            return;
+        }
+        let Some(window) = frame.winit_window() else {
+            self.fit_checked = true;
+            return;
+        };
+        let Some(monitor) = window.current_monitor() else {
+            return;
+        };
+        self.fit_checked = true;
+        let (screen, outer) = (monitor.size(), window.outer_size());
+        if outer.width > screen.width || outer.height > screen.height {
+            tracing::info!(
+                screen = format!("{}x{}", screen.width, screen.height),
+                window = format!("{}x{}", outer.width, outer.height),
+                "window larger than the screen: maximizing"
+            );
+            window.set_maximized(true);
         }
     }
 
@@ -547,6 +578,7 @@ impl eframe::App for JellyBridgeApp {
         if let Some(window) = frame.winit_window() {
             window.pre_present_notify();
         }
+        self.fit_to_monitor(frame);
         self.queue.drain(&mut self.state);
         if self.state.images.upload_ready(ui.ctx()) {
             ui.ctx().request_repaint();

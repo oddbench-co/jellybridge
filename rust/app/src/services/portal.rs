@@ -118,6 +118,57 @@ pub fn pick_image(title: &str) -> Result<Option<PathBuf>, PortalError> {
 }
 
 /// A `file://` URI as a path, percent escapes decoded.
+/// A blocking error dialog for failures that happen before (or instead of)
+/// the window, where nothing else could show them. Best effort: without a
+/// dialog tool the message only reaches the log.
+#[cfg(windows)]
+pub fn show_error_dialog(message: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    let wide = |text: &str| text.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (text, caption) = (wide(message), wide("JellyBridge"));
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the call;
+    // a null owner window is allowed.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        )
+    };
+}
+
+/// A blocking error dialog (see the Windows version). Linux has no dialog
+/// API below the toolkits, so it asks the desktop's own tool.
+#[cfg(not(windows))]
+pub fn show_error_dialog(message: &str) {
+    let attempts: [(&str, &[&str]); 2] = [
+        (
+            "zenity",
+            &[
+                "--error",
+                "--title=JellyBridge",
+                "--no-markup",
+                "--width=420",
+                "--text",
+            ],
+        ),
+        ("kdialog", &["--title", "JellyBridge", "--error"]),
+    ];
+    for (program, args) in attempts {
+        let shown = std::process::Command::new(program)
+            .args(args)
+            .arg(message)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if shown {
+            return;
+        }
+    }
+    eprintln!("{message}");
+}
+
 #[cfg(target_os = "linux")]
 fn file_path(uri: &str) -> Option<PathBuf> {
     let url = url::Url::parse(uri).ok()?;

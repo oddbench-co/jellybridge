@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=JellyBridge
+GenericName=Jellyfin Client
+Comment=Watch your Jellyfin library in a native desktop app
+Exec=jellybridge
+Icon=dev.nk.jellybridge
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=jellyfin;media;movies;series;video;player;
+StartupWMClass=dev.nk.jellybridge

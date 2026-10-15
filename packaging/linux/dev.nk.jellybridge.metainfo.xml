@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.nk.jellybridge</id>
+  <name>JellyBridge</name>
+  <summary>Native desktop client for Jellyfin</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="co.oddbench">
+    <name>Oddbench</name>
+  </developer>
+  <description>
+    <p>
+      JellyBridge browses and plays your Jellyfin library in a fast native window:
+      home, libraries, search, detail pages and a full player with subtitles and
+      hardware-accelerated decoding. All common video codecs are included, so
+      nothing else needs to be installed.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.nk.jellybridge.desktop</launchable>
+  <url type="homepage">https://github.com/oddbench-co/jellybridge</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-15"/>
+  </releases>
+</component>

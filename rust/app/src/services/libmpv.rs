@@ -194,13 +194,21 @@ fn load() -> Result<Api, String> {
         match unsafe { Library::new(&path) } {
             Ok(library) => Some(library),
             Err(error) => {
-                errors.push(format!("{path}: {error}"));
+                // Windows puts the reason (e.g. "module not found, os error
+                // 126") in the source, not in the message.
+                match std::error::Error::source(&error) {
+                    Some(source) => errors.push(format!("{path}: {error}: {source}")),
+                    None => errors.push(format!("{path}: {error}")),
+                }
                 None
             }
         }
     });
     let Some(library) = library else {
-        return Err(format!("libmpv was not found ({})", errors.join("; ")));
+        tracing::error!(attempts = errors.join("; "), "libmpv could not be loaded");
+        let bundled_present =
+            cfg!(windows) && std::path::Path::new(&origin).join(CANDIDATES[0]).exists();
+        return Err(load_failure_message(&errors, bundled_present));
     };
     let api =
         unsafe { resolve(library) }.map_err(|error| format!("libmpv is incomplete: {error}"))?;
@@ -220,6 +228,48 @@ fn load() -> Result<Api, String> {
         "libmpv loaded"
     );
     Ok(api)
+}
+
+/// What the user is told when no candidate loads: which piece is missing and
+/// what to do about it, instead of the loader's raw text (that goes to the log).
+///
+/// `bundled_present`: the library file sits beside the executable but did not
+/// load (Windows), so it is not "missing" -- something it needs is.
+fn load_failure_message(errors: &[String], bundled_present: bool) -> String {
+    if bundled_present {
+        let reason = errors
+            .first()
+            .and_then(|error| error.rsplit(": ").next())
+            .unwrap_or("unknown error");
+        return format!(
+            "the video player library (libmpv-2.dll) is installed but Windows could not \
+             load it ({reason}). Reinstall JellyBridge; if that does not help, install \
+             your graphics driver."
+        );
+    }
+    // dlopen names the file it could not open: the candidate itself when the
+    // player library is absent, or one of its own dependencies.
+    let missing_dependency = errors.iter().find_map(|error| {
+        let (path, detail) = error.split_once(": ")?;
+        let candidate = std::path::Path::new(path).file_name()?.to_str()?;
+        let (missing, _) = detail.split_once(": cannot open shared object file")?;
+        (missing != candidate).then(|| missing.to_owned())
+    });
+    if let Some(library) = missing_dependency {
+        return format!(
+            "a system library the video player needs is missing ({library}). \
+             Install it with your distribution's package manager, then try again."
+        );
+    }
+    if cfg!(target_os = "linux") {
+        "the video player library (libmpv) is missing. Reinstall JellyBridge, \
+         or install your distribution's mpv package."
+            .to_owned()
+    } else if cfg!(windows) {
+        "libmpv-2.dll is missing from the JellyBridge folder. Reinstall JellyBridge.".to_owned()
+    } else {
+        "the video player library (libmpv) is missing. Reinstall JellyBridge.".to_owned()
+    }
 }
 
 /// SAFETY: every symbol is declared with the signature mpv's headers give it.
@@ -537,5 +587,40 @@ unsafe fn property_value<'a>(property: &'a mpv_event_property) -> Option<Value<'
 impl Drop for Mpv {
     fn drop(&mut self) {
         unsafe { (self.api.destroy)(self.handle()) };
+    }
+}
+
+#[cfg(test)]
+mod load_failure_tests {
+    use super::load_failure_message;
+
+    #[test]
+    fn names_a_missing_dependency() {
+        let errors = vec![
+            "/opt/jb/bin/../lib/jellybridge/lib/libmpv.so.2: libva-drm.so.2: cannot open shared object file: No such file or directory".to_owned(),
+        ];
+        let message = load_failure_message(&errors, false);
+        assert!(message.contains("(libva-drm.so.2)"), "{message}");
+    }
+
+    #[test]
+    fn says_the_player_library_itself_is_missing() {
+        let errors = vec![
+            "libmpv.so.2: libmpv.so.2: cannot open shared object file: No such file or directory"
+                .to_owned(),
+        ];
+        let message = load_failure_message(&errors, false);
+        assert!(!message.contains("system library"), "{message}");
+        assert!(message.contains("missing"), "{message}");
+    }
+
+    #[test]
+    fn a_present_library_that_fails_is_not_called_missing() {
+        let errors = vec![
+            "libmpv-2.dll: LoadLibraryExW failed: The specified module could not be found. (os error 126)".to_owned(),
+        ];
+        let message = load_failure_message(&errors, true);
+        assert!(message.contains("is installed but"), "{message}");
+        assert!(message.contains("os error 126"), "{message}");
     }
 }

@@ -397,7 +397,6 @@ fn build_mpv() -> Result<(Mpv, NonNull<mpv_handle>), PlayerCreateError> {
     core.set_option("config", "no")?;
     core.set_option("terminal", "no")?;
     core.set_option("input-default-bindings", "no")?;
-    core.set_option("osc", "no")?;
     core.set_option("keep-open", "yes")?;
     // Automated test and measurement runs play real media, and must not
     // make sound on the machine they run on.
@@ -411,7 +410,11 @@ fn build_mpv() -> Result<(Mpv, NonNull<mpv_handle>), PlayerCreateError> {
     // only ever be dead weight. Measured: seven threads and their VMs.
     // `config = no` above does not cover these -- they are built in, not
     // loaded from the config directory.
+    // These options only exist in an mpv built with Lua; the bundled Linux
+    // libmpv is built without it (so there is nothing to switch off), and
+    // setting one there fails with "option not found".
     for option in [
+        "osc",
         "ytdl",
         "load-scripts",
         "load-stats-overlay",
@@ -422,7 +425,13 @@ fn build_mpv() -> Result<(Mpv, NonNull<mpv_handle>), PlayerCreateError> {
         "load-context-menu",
         "load-auto-profiles",
     ] {
-        core.set_option(option, "no")?;
+        match core.set_option(option, "no") {
+            Err(super::libmpv::Error::Mpv {
+                code: OPTION_NOT_FOUND,
+                ..
+            }) => {}
+            other => other?,
+        }
     }
     if let Some(interop) = super::render::preferred_hwdec_interop() {
         tracing::info!(interop, "libmpv hardware-decode interop");
@@ -493,6 +502,9 @@ fn worker_main(
         }
     }
 }
+
+/// `MPV_ERROR_OPTION_NOT_FOUND` from mpv's client.h.
+const OPTION_NOT_FOUND: i32 = -5;
 
 enum WorkerExit {
     Shutdown,

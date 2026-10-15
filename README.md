@@ -39,8 +39,30 @@ instead of server-side transcoding.
 
 - A Jellyfin server reachable from the desktop machine and a user account.
 - Rust (pinned by `rust-toolchain.toml`) via rustup.
-- libmpv (`brew install mpv` on macOS; distribution packages on Linux). It is
-  loaded when something first plays, so browsing works without it.
+- To build and run from source: libmpv (`brew install mpv` on macOS; the
+  distribution's mpv package on Linux). It is loaded when something first
+  plays, so browsing works without it. The packages under Install bring their
+  own.
+
+## Install
+
+Every package carries what playback needs (the Arch one uses Arch's own mpv),
+so nothing else has to be installed. Checked in VMs on the systems listed in
+`docs/rust-port/platform-matrix.md`.
+
+| System | File | How |
+| --- | --- | --- |
+| Ubuntu 22.04+, Debian 12+, Linux Mint, Pop!_OS, elementary OS | `jellybridge_<v>_amd64.deb` | Open it in the Software app, or `sudo apt install ./jellybridge_<v>_amd64.deb` |
+| Fedora, openSUSE | `jellybridge-<v>-1.x86_64.rpm` | `sudo dnf install ./jellybridge-*.rpm` or `sudo zypper install ./jellybridge-*.rpm` |
+| Arch, Manjaro, EndeavourOS | `jellybridge-<v>-1-x86_64.pkg.tar.zst` | `sudo pacman -U jellybridge-*.pkg.tar.zst` |
+| Any other distribution (glibc 2.35+) | `JellyBridge-<v>-x86_64.AppImage` | Make it executable and run it; nothing is installed |
+| Any distribution, no root | `jellybridge-<v>-x86_64.tar.gz` | Unpack, run `./install.sh` (installs to `~/.local`; `./uninstall.sh` removes it) |
+| Windows 10 / 11 (x64) | `JellyBridge-<v>-setup.exe` | Run it; installs for the current user, no administrator prompt. Remove it in Settings > Apps |
+| Windows, no install | `JellyBridge-<v>-portable.zip` | Unpack anywhere and run `jellybridge.exe` |
+
+JellyBridge draws with OpenGL 2.0 or newer, which every current graphics
+driver provides. Settings and the sign-in stay in `~/.config/jellybridge`
+(`%APPDATA%\JellyBridge` on Windows) when the app is removed.
 
 ## How To Run
 
@@ -83,6 +105,19 @@ scripts/cargo-env.sh run
 ```
 
 ## Packaging
+
+Linux and Windows packages are built in throwaway containers (podman or
+docker); nothing is installed on the host:
+
+```bash
+scripts/build-linux.sh     # portable bundle: Ubuntu 22.04 base (glibc 2.35), LGPL libmpv built in
+scripts/package-linux.sh   # .deb, .rpm, AppImage, tarball, Arch package -> target/linux/dist/
+scripts/build-windows.sh   # jellybridge.exe, setup.exe and portable zip -> target/windows/dist/
+```
+
+The first `build-linux.sh` builds FFmpeg, dav1d, libass, libplacebo, libva and
+mpv from source (about 15 minutes, cached afterwards). How they were tested,
+and how to rerun the tests in VMs, is in `docs/rust-port/platform-matrix.md`.
 
 For a self-contained personal macOS arm64 build with the complete installed
 Homebrew mpv/FFmpeg codec graph embedded:

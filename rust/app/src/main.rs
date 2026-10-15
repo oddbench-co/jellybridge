@@ -312,7 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         stage = "event_loop_start",
         "startup_stage"
     );
-    eframe::run_native(
+    let window = eframe::run_native(
         "JellyBridge",
         options,
         Box::new(move |creation| {
@@ -345,7 +345,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 brand_icon,
             )))
         }),
-    )?;
+    );
+    if let Err(error) = window {
+        // Launched from a menu there is no terminal to read stderr in (and a
+        // Windows release build has no console at all), so say it in a dialog.
+        tracing::error!(%error, "could not open the window");
+        let detail = error.to_string();
+        let lower = detail.to_lowercase();
+        let advice = if ["opengl", "glutin", "gl context", "egl", "wgl", "glx"]
+            .iter()
+            .any(|needle| lower.contains(needle))
+        {
+            "It draws with OpenGL 2.0 or newer, which comes with your graphics \
+             driver: install or update the driver and start JellyBridge again."
+        } else {
+            "Start it from a desktop session (Wayland, X11 or Windows desktop)."
+        };
+        services::portal::show_error_dialog(&format!(
+            "JellyBridge could not open its window. {advice}\n\nDetails: {detail}"
+        ));
+        return Err(error.into());
+    }
 
     // The window has torn down mpv and its render context (`on_exit`); shut
     // down the proxy and the runtime.

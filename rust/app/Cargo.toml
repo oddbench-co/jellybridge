@@ -35,11 +35,16 @@ url = "=2.5.7"
 # comes in through the accessibility stack.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+# Client-side window decorations on Wayland. GNOME (Ubuntu, Fedora
+# Workstation, Debian, elementary) draws no title bar for Wayland clients, so
+# without these the window has no close, move or resize handles there.
+# eframe pulls winit in with default features off, which drops them.
+winit = { version = "=0.30.13", default-features = false, features = ["wayland-csd-adwaita"] }
 
 # Windows' own file dialog for "Add Image"; windows-sys already comes in
 # through winit.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
 
 [package.metadata.packager]
 product-name = "JellyBridge"

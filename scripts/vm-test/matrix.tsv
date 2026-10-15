@@ -1,0 +1,14 @@
+# name	install mode(s)	ISO URL (official live image: the distro's default desktop)
+ubuntu-2404	package	https://releases.ubuntu.com/noble/ubuntu-24.04.5.1-desktop-amd64.iso
+ubuntu-2204	package	https://releases.ubuntu.com/jammy/ubuntu-22.04.5-desktop-amd64.iso
+fedora-44	package	https://download.fedoraproject.org/pub/fedora/linux/releases/44/Workstation/x86_64/iso/Fedora-Workstation-Live-44-1.7.x86_64.iso
+manjaro-kde	package,appimage,tar	https://download.manjaro.org/kde/26.1.0/manjaro-kde-26.1.0-260812-linux71.iso
+ubuntu-2604	package	https://releases.ubuntu.com/resolute/ubuntu-26.04.1-desktop-amd64.iso
+debian-13	package	https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/debian-live-13.7.0-amd64-gnome.iso
+debian-12	package	https://cdimage.debian.org/cdimage/archive/12.15.0-live/amd64/iso-hybrid/debian-live-12.15.0-amd64-gnome.iso
+fedora-44-kde	package	https://download.fedoraproject.org/pub/fedora/linux/releases/44/KDE/x86_64/iso/Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso
+tumbleweed	package	https://download.opensuse.org/tumbleweed/iso/openSUSE-Tumbleweed-KDE-Live-x86_64-Current.iso
+mint-223	package	https://mirrors.edge.kernel.org/linuxmint/stable/22.3/linuxmint-22.3-cinnamon-64bit.iso
+popos-2404	package	https://iso.pop-os.org/24.04/amd64/intel/20/pop-os_24.04_amd64_intel_20.iso
+elementary-81	package	https://dl.elementaryos.org/MTc5MjAyNDM0MA==/elementaryos-8.1-stable-amd64.20260219.iso
+endeavouros	package,appimage	https://mirror.alpix.eu/endeavouros/iso/EndeavourOS_Titan-Nova-2026.08.15.iso

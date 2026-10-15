@@ -47,8 +47,15 @@ installed to play, not to build. Performance work follows
 - `scripts/cargo-env.sh test --locked` — run the test suite.
 - `scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings` — lint.
 - `scripts/cargo-env.sh run` — launch the app.
-- `scripts/build-windows.sh` — cross-builds the Windows exe in a container
-  (podman or docker); ship it with `libmpv-2.dll` beside it.
+- `scripts/build-windows.sh` — cross-builds the Windows exe, a per-user NSIS
+  installer and a portable zip in a container (podman or docker), with
+  `libmpv-2.dll` and the Vulkan loader beside the exe.
+- `scripts/build-linux.sh` then `scripts/package-linux.sh` — the portable
+  Linux bundle (Ubuntu 22.04 base, LGPL libmpv + libva bundled) and the
+  .deb/.rpm/AppImage/tarball/Arch packages, all in containers.
+- `scripts/vm-test/` — headless QEMU VMs that install each package on a
+  distro's live ISO and run a scripted scenario; see
+  `docs/rust-port/platform-matrix.md`.
 - `scripts/package-rust-app-personal.sh` — self-contained personal macOS
   package (see `docs/rust-port/packaging.md`).
 

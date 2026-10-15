@@ -1,0 +1,10 @@
+# Scripted run inside a test VM (times in seconds from the first frame).
+# Only the two items cleared for testing: Bookish S1:E1 and Starsky & Hutch.
+3.0 shot @SHOTS@/01-home.png
+4.0 detail Series @SERIES_ID@
+9.0 shot @SHOTS@/02-detail.png
+10.0 search
+11.0 search Bookish
+14.0 shot @SHOTS@/03-search.png
+15.0 play @EPISODE_ID@
+40.0 shot @SHOTS@/04-player.png

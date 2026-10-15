@@ -18,6 +18,15 @@ signature, audits for missing or build-machine-linked libraries, and creates a
 self-contained DMG. This graph includes GPL-enabled FFmpeg components and is
 not an audited public-release artifact.
 
+## Linux and Windows packages
+
+`scripts/build-linux.sh` builds the portable Linux bundle (the layout below,
+under `target/linux/bundle/usr`) and `scripts/package-linux.sh` wraps it as
+.deb, .rpm, AppImage and tarball, plus a native Arch package that uses the
+system mpv. `scripts/build-windows.sh` makes the Windows installer and
+portable zip. Results and the VM test procedure: `platform-matrix.md`. The
+Windows libmpv is still a GPL third-party build (personal use only).
+
 ## Native bundle contract (public release, not yet exercised)
 
 The audited-release workflow was proven during the feasibility gate with
