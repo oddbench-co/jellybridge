@@ -23,3 +23,7 @@ target/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Stray build output of other tools
+.gradle/
+build/

@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>dev.nk.jellybridge</id>
+  <id>co.oddbench.JellyBridge</id>
   <name>JellyBridge</name>
   <summary>Native desktop client for Jellyfin</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>GPL-3.0-or-later</project_license>
   <developer id="co.oddbench">
     <name>Oddbench</name>
   </developer>
@@ -16,7 +16,7 @@
       nothing else needs to be installed.
     </p>
   </description>
-  <launchable type="desktop-id">dev.nk.jellybridge.desktop</launchable>
+  <launchable type="desktop-id">co.oddbench.JellyBridge.desktop</launchable>
   <url type="homepage">https://github.com/oddbench-co/jellybridge</url>
   <content_rating type="oars-1.1"/>
   <releases>

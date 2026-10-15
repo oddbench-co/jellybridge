@@ -48,7 +48,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_C
 
 [package.metadata.packager]
 product-name = "JellyBridge"
-identifier = "dev.nk.jellybridge"
+identifier = "co.oddbench.JellyBridge"
 category = "Video"
 icons = [
     "assets/icon.png",

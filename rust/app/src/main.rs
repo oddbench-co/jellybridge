@@ -26,7 +26,7 @@ use ui::app::{JellyBridgeApp, UiAction};
 /// installed package all agree. Without it the Wayland surface carries no app
 /// id at all, and anything that identifies windows by class -- window rules,
 /// taskbars, launch-or-focus keybinds -- can only fall back to the title.
-const APP_ID: &str = "dev.nk.jellybridge";
+const APP_ID: &str = "co.oddbench.JellyBridge";
 
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 /// jellyfin-web's header logo (CC BY-SA 4.0, see assets/LICENSE-jellyfin-logo.txt).

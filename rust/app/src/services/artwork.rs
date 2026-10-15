@@ -184,7 +184,7 @@ mod tests {
                 "tag-1",
                 400
             ),
-            Path::new("/cache/90216ab486b4413e.jpg")
+            Path::new("/cache/700bf2f367ad9135.jpg")
         );
     }
 

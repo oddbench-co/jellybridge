@@ -25,7 +25,8 @@ under `target/linux/bundle/usr`) and `scripts/package-linux.sh` wraps it as
 .deb, .rpm, AppImage and tarball, plus a native Arch package that uses the
 system mpv. `scripts/build-windows.sh` makes the Windows installer and
 portable zip. Results and the VM test procedure: `platform-matrix.md`. The
-Windows libmpv is still a GPL third-party build (personal use only).
+Windows libmpv is a GPL third-party build, allowed by JellyBridge's
+GPL-3.0-or-later licence; its sources are listed in `THIRD-PARTY-NOTICES.md`.
 
 ## Native bundle contract (public release, not yet exercised)
 

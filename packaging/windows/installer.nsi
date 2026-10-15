@@ -1,6 +1,6 @@
 ; JellyBridge per-user installer. Built by scripts/build-windows.sh with
 ; makensis -DVERSION=x.y.z -DSTAGE=<dir with jellybridge.exe, libmpv-2.dll,
-; vulkan-1.dll, VulkanRT-License.txt, jellybridge.ico> -DOUTFILE=<path>.
+; vulkan-1.dll, VulkanRT-License.txt, LICENSE.txt, THIRD-PARTY-NOTICES.txt, jellybridge.ico> -DOUTFILE=<path>.
 ; Per-user: no administrator prompt, installs to %LOCALAPPDATA%\Programs.
 Unicode true
 SetCompressor /SOLID lzma
@@ -41,6 +41,8 @@ Section "JellyBridge"
     File "${STAGE}\libmpv-2.dll"
     File "${STAGE}\vulkan-1.dll"
     File "${STAGE}\VulkanRT-License.txt"
+    File "${STAGE}\LICENSE.txt"
+    File "${STAGE}\THIRD-PARTY-NOTICES.txt"
     File "${STAGE}\jellybridge.ico"
     WriteUninstaller "$INSTDIR\uninstall.exe"
     CreateShortcut "$SMPROGRAMS\JellyBridge.lnk" "$INSTDIR\jellybridge.exe" "" "$INSTDIR\jellybridge.ico"
@@ -67,6 +69,8 @@ Section "Uninstall"
     Delete "$INSTDIR\libmpv-2.dll"
     Delete "$INSTDIR\vulkan-1.dll"
     Delete "$INSTDIR\VulkanRT-License.txt"
+    Delete "$INSTDIR\LICENSE.txt"
+    Delete "$INSTDIR\THIRD-PARTY-NOTICES.txt"
     Delete "$INSTDIR\jellybridge.ico"
     Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"

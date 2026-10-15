@@ -201,3 +201,11 @@ when each item loads and shown in the player status line.
 
 The saved session may be missing, invalid, or revoked. Log in again, or reset
 manually with `rm ~/.config/jellybridge/session.json`.
+
+## License
+
+JellyBridge is free software under the GNU General Public License v3.0 or
+later (`LICENSE`). Bundled fonts, icons, the Jellyfin logo and the native
+media libraries keep their own licences; see `THIRD-PARTY-NOTICES.md`.
+JellyBridge is an independent client, not affiliated with or endorsed by the
+Jellyfin project.

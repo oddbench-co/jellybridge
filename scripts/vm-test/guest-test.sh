@@ -72,9 +72,9 @@ status "installed"
 
 {
     echo "# desktop entry"
-    for d in /usr/share/applications "$HOME/.local/share/applications"; do ls -l "$d/dev.nk.jellybridge.desktop" 2>/dev/null; done
-    command -v desktop-file-validate >/dev/null && desktop-file-validate /usr/share/applications/dev.nk.jellybridge.desktop 2>&1
-    echo "# icons"; ls /usr/share/icons/hicolor/*/apps/dev.nk.jellybridge.png "$HOME"/.local/share/icons/hicolor/*/apps/dev.nk.jellybridge.png 2>/dev/null
+    for d in /usr/share/applications "$HOME/.local/share/applications"; do ls -l "$d/co.oddbench.JellyBridge.desktop" 2>/dev/null; done
+    command -v desktop-file-validate >/dev/null && desktop-file-validate /usr/share/applications/co.oddbench.JellyBridge.desktop 2>&1
+    echo "# icons"; ls /usr/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png "$HOME"/.local/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png 2>/dev/null
     if [[ "$MODE" != appimage ]]; then
         real="$(readlink -f "$BIN")"
         echo "# ldd $real"; ldd "$real" | grep -E 'not found' || echo "all resolved"
@@ -110,7 +110,7 @@ package)
     elif command -v dnf >/dev/null; then $SUDO dnf remove -y jellybridge >/dev/null
     elif command -v zypper >/dev/null; then $SUDO zypper --non-interactive remove jellybridge >/dev/null
     elif command -v pacman >/dev/null; then $SUDO pacman -R --noconfirm jellybridge >/dev/null; fi
-    left="$(ls -d /usr/bin/jellybridge /usr/lib/jellybridge /usr/share/applications/dev.nk.jellybridge.desktop 2>/dev/null)" ;;
+    left="$(ls -d /usr/bin/jellybridge /usr/lib/jellybridge /usr/share/applications/co.oddbench.JellyBridge.desktop 2>/dev/null)" ;;
 tar)
     (cd "$W/jellybridge-${VERSION}-x86_64" && ./uninstall.sh)
     left="$(ls -d "$HOME/.local/bin/jellybridge" "$HOME/.local/lib/jellybridge" 2>/dev/null)" ;;

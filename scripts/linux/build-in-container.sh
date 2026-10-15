@@ -207,13 +207,15 @@ for lib in "$BUNDLE"/usr/lib/jellybridge/lib/*.so.*; do
     chmod 755 "$lib"
 done
 LINUX=/src/packaging/linux
-install -Dm644 "$LINUX/dev.nk.jellybridge.desktop" "$BUNDLE/usr/share/applications/dev.nk.jellybridge.desktop"
-install -Dm644 "$LINUX/dev.nk.jellybridge.metainfo.xml" "$BUNDLE/usr/share/metainfo/dev.nk.jellybridge.metainfo.xml"
+install -Dm644 "$LINUX/co.oddbench.JellyBridge.desktop" "$BUNDLE/usr/share/applications/co.oddbench.JellyBridge.desktop"
+install -Dm644 "$LINUX/co.oddbench.JellyBridge.metainfo.xml" "$BUNDLE/usr/share/metainfo/co.oddbench.JellyBridge.metainfo.xml"
 for size in 32 48 64 128 256 512; do
     mkdir -p "$BUNDLE/usr/share/icons/hicolor/${size}x${size}/apps"
     convert /src/rust/app/assets/icon.png -resize "${size}x${size}" \
-        "$BUNDLE/usr/share/icons/hicolor/${size}x${size}/apps/dev.nk.jellybridge.png"
+        "$BUNDLE/usr/share/icons/hicolor/${size}x${size}/apps/co.oddbench.JellyBridge.png"
 done
+install -Dm644 /src/LICENSE "$BUNDLE/usr/share/doc/jellybridge/LICENSE"
+install -Dm644 /src/THIRD-PARTY-NOTICES.md "$BUNDLE/usr/share/doc/jellybridge/THIRD-PARTY-NOTICES.md"
 install -Dm644 /src/rust/app/assets/LICENSE-jellyfin-logo.txt "$BUNDLE/usr/share/doc/jellybridge/LICENSE-jellyfin-logo.txt"
 printf 'mpv %s (LGPL, -Dgpl=false)\nFFmpeg %s (LGPL)\ndav1d %s\nlibass %s\nlibplacebo %s\nnv-codec-headers %s\n' \
     "$MPV" "$FFMPEG" "$DAV1D" "$LIBASS" "$LIBPLACEBO" "$NVHEADERS" > "$BUNDLE/usr/share/doc/jellybridge/native-libraries.txt"

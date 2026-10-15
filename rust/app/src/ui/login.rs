@@ -542,7 +542,10 @@ mod tests {
     #[test]
     fn a_bare_host_gets_a_scheme() {
         assert_eq!(normalize_host("jellyfin.local"), "http://jellyfin.local");
-        assert_eq!(normalize_host(" https://jellyfin.local/ "), "https://jellyfin.local");
+        assert_eq!(
+            normalize_host(" https://jellyfin.local/ "),
+            "https://jellyfin.local"
+        );
         assert_eq!(
             normalize_host("192.168.1.10:8096"),
             "http://192.168.1.10:8096"

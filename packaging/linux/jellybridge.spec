@@ -5,7 +5,7 @@ Name:           jellybridge
 Version:        %{jb_version}
 Release:        1
 Summary:        Native desktop client for Jellyfin
-License:        LicenseRef-Proprietary
+License:        GPL-3.0-or-later
 URL:            https://github.com/oddbench-co/jellybridge
 ExclusiveArch:  x86_64
 AutoReqProv:    yes
@@ -36,7 +36,7 @@ cp -a %{jb_bundle}/usr %{buildroot}/
 %files
 /usr/bin/jellybridge
 /usr/lib/jellybridge
-/usr/share/applications/dev.nk.jellybridge.desktop
-/usr/share/metainfo/dev.nk.jellybridge.metainfo.xml
-/usr/share/icons/hicolor/*/apps/dev.nk.jellybridge.png
+/usr/share/applications/co.oddbench.JellyBridge.desktop
+/usr/share/metainfo/co.oddbench.JellyBridge.metainfo.xml
+/usr/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png
 /usr/share/doc/jellybridge

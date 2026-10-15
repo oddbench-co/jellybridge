@@ -4,9 +4,9 @@
 # delete those folders too for a clean slate.
 set -eu
 PREFIX="${PREFIX:-$HOME/.local}"
-rm -f "$PREFIX/bin/jellybridge" "$PREFIX/share/applications/dev.nk.jellybridge.desktop" \
-      "$PREFIX/share/metainfo/dev.nk.jellybridge.metainfo.xml"
+rm -f "$PREFIX/bin/jellybridge" "$PREFIX/share/applications/co.oddbench.JellyBridge.desktop" \
+      "$PREFIX/share/metainfo/co.oddbench.JellyBridge.metainfo.xml"
 rm -rf "$PREFIX/lib/jellybridge" "$PREFIX/share/doc/jellybridge"
-rm -f "$PREFIX"/share/icons/hicolor/*/apps/dev.nk.jellybridge.png
+rm -f "$PREFIX"/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q "$PREFIX/share/applications" || true
 echo "JellyBridge is removed."

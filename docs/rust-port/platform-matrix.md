@@ -80,6 +80,7 @@ All in `scripts/vm-test/`; VMs are headless (nothing appears on screen).
 ```bash
 scripts/build-linux.sh && scripts/package-linux.sh
 scripts/vm-test/download-isos.sh            # live ISOs from matrix.tsv (~60 GB)
+export JB_TEST_SERIES_ID=<series id> JB_TEST_EPISODE_ID=<episode id> JB_TEST_SEARCH=<title>
 scripts/vm-test/prepare.sh                  # stage packages + test session, start the payload server
 scripts/vm-test/vm.py start ubuntu-2404 ~/.local/share/jellybridge-vmtest/iso/ubuntu-2404.iso
 scripts/vm-test/vm.py shot ubuntu-2404 /tmp/s.png   # look, then open a terminal in the guest:

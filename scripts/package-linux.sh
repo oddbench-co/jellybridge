@@ -69,9 +69,9 @@ appimage() {
         chmod +x $tool
         app=/tmp/JellyBridge.AppDir; rm -rf $app; cp -a /src/target/linux/bundle $app
         ln -s usr/bin/jellybridge $app/AppRun
-        cp $app/usr/share/applications/dev.nk.jellybridge.desktop $app/
-        cp $app/usr/share/icons/hicolor/256x256/apps/dev.nk.jellybridge.png $app/dev.nk.jellybridge.png
-        ln -s dev.nk.jellybridge.png $app/.DirIcon
+        cp $app/usr/share/applications/co.oddbench.JellyBridge.desktop $app/
+        cp $app/usr/share/icons/hicolor/256x256/apps/co.oddbench.JellyBridge.png $app/co.oddbench.JellyBridge.png
+        ln -s co.oddbench.JellyBridge.png $app/.DirIcon
         out=/src/target/linux/dist/JellyBridge-$VERSION-x86_64.AppImage
         ARCH=x86_64 $tool --appimage-extract-and-run --no-appstream $app $out >/dev/null 2>&1 \
             || ARCH=x86_64 $tool --appimage-extract-and-run --no-appstream $app $out

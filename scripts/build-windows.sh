@@ -9,9 +9,9 @@
 #     -> target/windows/dist/JellyBridge-<version>-portable.zip
 #
 # libmpv-2.dll comes from a pinned shinchiro/mpv-winbuild-cmake build (cached,
-# since upstream prunes old releases). It is a GPL build: fine for personal
-# use, to be replaced by an LGPL build before any public release
-# (docs/rust-port/native-dependency-policy.md).
+# since upstream prunes old releases). It is a GPL build, which JellyBridge's
+# GPL-3.0-or-later licence allows; its sources are listed in
+# THIRD-PARTY-NOTICES.md, which ships beside it.
 set -euo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$(command -v podman || command -v docker)" || { echo "needs podman or docker" >&2; exit 2; }
@@ -59,11 +59,13 @@ fi
         cp /src/target/windows/x86_64-pc-windows-gnu/release/jellybridge.exe $stage/
         7z e -y -o$stage "$MPV_ARCHIVE" libmpv-2.dll >/dev/null
         7z e -y -o$stage "$VULKAN_ARCHIVE" "*/x64/vulkan-1.dll" "*/VulkanRT-License.txt" -r >/dev/null
+        cp /src/LICENSE $stage/LICENSE.txt
+        cp /src/THIRD-PARTY-NOTICES.md $stage/THIRD-PARTY-NOTICES.txt
         convert /src/rust/app/assets/icon.png -define icon:auto-resize=256,64,48,32,16 $stage/jellybridge.ico
         dist=/src/target/windows/dist; mkdir -p $dist
         makensis -V2 -DVERSION=$VERSION -DSTAGE=$stage \
             -DOUTFILE=$dist/JellyBridge-$VERSION-setup.exe /src/packaging/windows/installer.nsi
         rm -f $dist/JellyBridge-$VERSION-portable.zip
-        (cd $stage && zip -q -9 $dist/JellyBridge-$VERSION-portable.zip jellybridge.exe libmpv-2.dll vulkan-1.dll VulkanRT-License.txt)
+        (cd $stage && zip -q -9 $dist/JellyBridge-$VERSION-portable.zip jellybridge.exe libmpv-2.dll vulkan-1.dll VulkanRT-License.txt LICENSE.txt THIRD-PARTY-NOTICES.txt)
     '
 ls -la "$PROJECT_DIR/target/windows/dist"
