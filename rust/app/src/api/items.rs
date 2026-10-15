@@ -387,13 +387,15 @@ impl JellyfinApi {
     }
 
     /// The direct stream URL jellyfin-web's "Copy Stream URL" copies. It
-    /// carries the access token, as jellyfin-web's does.
+    /// carries the access token, as jellyfin-web's does: as `ApiKey`, the
+    /// only query name Jellyfin 12 accepts, and as `api_key` for servers
+    /// older than 10.10.
     pub fn stream_url(&self, item_id: &str) -> String {
         format!(
-            "{}Videos/{}/stream?static=true&api_key={}",
+            "{}Videos/{}/stream?static=true&ApiKey={token}&api_key={token}",
             self.server,
             encode_path_segment(item_id),
-            self.session.token
+            token = self.session.token
         )
     }
 

@@ -195,7 +195,7 @@ pub async fn prepare_playback(
 
     let stream_url = raw_stream_url(&config, media_source_id)?;
     let mut headers = HeaderMap::new();
-    headers.insert("x-emby-authorization", authorization.clone());
+    headers.insert(reqwest::header::AUTHORIZATION, authorization.clone());
     let proxy = start_proxy(
         client.clone(),
         PlaybackOrigin {
@@ -240,7 +240,7 @@ async fn request_playback_info(
     url.query_pairs_mut().append_pair("UserId", &config.user_id);
     let response = client
         .post(url)
-        .header("x-emby-authorization", authorization.clone())
+        .header(reqwest::header::AUTHORIZATION, authorization.clone())
         .json(&PlaybackInfoRequest {
             device_profile: mpv_device_profile(),
         })
@@ -516,7 +516,7 @@ impl TemporarySubtitles {
     ) -> Result<PathBuf, PlaybackError> {
         let response = client
             .get(url)
-            .header("x-emby-authorization", authorization)
+            .header(reqwest::header::AUTHORIZATION, authorization)
             .send()
             .await
             .map_err(PlaybackError::SubtitleRequest)?;
@@ -682,7 +682,7 @@ mod tests {
                         async move {
                             let authorized = request
                                 .headers()
-                                .get("x-emby-authorization")
+                                .get(reqwest::header::AUTHORIZATION)
                                 .and_then(|value| value.to_str().ok())
                                 .is_some_and(|value| value.contains("Token=\"test-token\""));
                             if !authorized

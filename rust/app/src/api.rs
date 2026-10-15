@@ -1295,7 +1295,7 @@ impl JellyfinApi {
         Ok(self
             .http
             .request(method, url)
-            .header("x-emby-authorization", self.authorization.clone()))
+            .header(reqwest::header::AUTHORIZATION, self.authorization.clone()))
     }
 
     async fn send_json<T: DeserializeOwned>(
@@ -2345,6 +2345,32 @@ struct ItemMediaStream {
 
 #[cfg(test)]
 mod tests {
+    /// Jellyfin 12 accepts only the standard header: a request carrying the
+    /// legacy X-Emby-Authorization alone is refused with 401.
+    #[test]
+    fn requests_authenticate_with_the_standard_header() {
+        let api = JellyfinApi::from_session(StoredSession {
+            server_url: "http://jellyfin.local".into(),
+            token: "abc123".into(),
+            user_id: "user".into(),
+        })
+        .unwrap();
+        let request = api
+            .request(Method::GET, "Users/Me")
+            .unwrap()
+            .build()
+            .unwrap();
+        let value = request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .unwrap();
+        assert!(value.to_str().unwrap().starts_with("MediaBrowser "));
+        assert!(value.to_str().unwrap().contains("Token=\"abc123\""));
+        assert!(request.headers().get("x-emby-authorization").is_none());
+        let url = api.stream_url("item");
+        assert!(url.contains("ApiKey=abc123") && url.contains("api_key=abc123"));
+    }
+
     /// Builds a row the way the server sends one, so the grouping tests
     /// exercise the real deserialization as well.
     use super::*;
