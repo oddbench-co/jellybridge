@@ -25,6 +25,11 @@ A failed build can be rerun from the Actions tab. To build again from a fixed
 commit, delete the draft release and the tag (`git push --delete origin
 v0.1.0`), then tag again.
 
+To test the packages without a release, run the workflow by hand: Actions →
+Release → Run workflow, or `gh workflow run release.yml --ref main -f
+macos=false` (leave out `-f macos=false` to build the .dmg files too). The
+files are attached to the run as artifacts; no tag or release is created.
+
 ## What the workflow builds
 
 | Job | Runner | Files |

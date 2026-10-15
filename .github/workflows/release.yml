@@ -5,11 +5,20 @@
 #
 # The tag must match `version` in rust/app/Cargo.toml. macOS signing and
 # notarization need repository secrets; see docs/RELEASING.md.
+#
+# Run it by hand (Actions tab, or `gh workflow run release.yml -f macos=false`)
+# to build the packages of any branch as workflow artifacts, without a release.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: Also build the macOS .dmg files (needs the signing secrets)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -30,7 +39,7 @@ jobs:
         name: Tag matches Cargo.toml
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' rust/app/Cargo.toml | head -1)"
-          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == push && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in rust/app/Cargo.toml"
             exit 1
           fi
@@ -86,6 +95,7 @@ jobs:
   macos:
     name: macOS ${{ matrix.arch }}
     needs: version
+    if: github.event_name == 'push' || inputs.macos
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +177,7 @@ jobs:
   release:
     name: Draft release
     needs: [version, linux, windows, macos]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
