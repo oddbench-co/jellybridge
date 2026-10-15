@@ -23,18 +23,30 @@ pub use pages::{home_shelves, library_route, merge_home_shelves};
 const CLIENT_NAME: &str = "JellyBridge";
 const CLIENT_VERSION: &str = "0.1.0-rust";
 const DEVICE_NAME: &str = "Desktop";
-const DEVICE_ID: &str = "jellybridge-rust-desktop";
+/// Used only if this install's own id can neither be read nor made.
+const FALLBACK_DEVICE_ID: &str = "jellybridge-rust-desktop";
 
-/// The device id this client reports: `JELLYBRIDGE_DEVICE_ID` when set, so
-/// a test instance signing in never takes over (and signs out) the user's
-/// own app, which Jellyfin would do for a second sign-in from one device.
-fn device_id() -> &'static str {
+/// The device id this client reports: `JELLYBRIDGE_DEVICE_ID` when set (test
+/// instances), else this install's own (see
+/// [`crate::services::session::load_or_create_device_id`]). Read from disk
+/// once; the launch prefetch resolves it off the main thread.
+pub(crate) fn device_id() -> &'static str {
+    use crate::services::session;
     static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     ID.get_or_init(|| {
-        std::env::var("JELLYBRIDGE_DEVICE_ID")
+        if let Some(id) = std::env::var("JELLYBRIDGE_DEVICE_ID")
             .ok()
             .filter(|id| !id.trim().is_empty())
-            .unwrap_or_else(|| DEVICE_ID.to_owned())
+        {
+            return id;
+        }
+        session::load_or_create_device_id()
+            .or_else(|error| {
+                // A fresh id for this run still never signs out another install.
+                tracing::warn!(%error, "device id not saved; using one for this run");
+                session::new_device_id()
+            })
+            .unwrap_or_else(|_| FALLBACK_DEVICE_ID.to_owned())
     })
 }
 // Fields for list queries. `RecursiveItemCount` is deliberately absent: it

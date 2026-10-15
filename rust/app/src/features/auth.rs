@@ -45,6 +45,8 @@ pub fn prefetch_home(
     let (snapshot_sender, snapshot) = tokio::sync::oneshot::channel();
     let task = runtime.spawn(async move {
         let loaded = tokio::task::spawn_blocking(|| {
+            // Its file is read here, not on the first request's thread.
+            crate::api::device_id();
             SessionStore::for_current_user().and_then(|store| store.load())
         })
         .await;

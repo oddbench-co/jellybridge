@@ -283,6 +283,72 @@ impl SettingsStore {
     }
 }
 
+/// This install's Jellyfin device id, made once and kept in `device-id`
+/// beside the session.
+///
+/// Jellyfin signs out every other token of a user on the same device id when
+/// that user signs in, so one id shared by every install meant signing in on
+/// one computer signed out all the others.
+pub fn load_or_create_device_id() -> Result<String, SessionError> {
+    device_id_in(&config_directory()?)
+}
+
+fn device_id_in(directory: &Path) -> Result<String, SessionError> {
+    let path = directory.join("device-id");
+    if let Some(id) = read_device_id(&path)? {
+        return Ok(id);
+    }
+    let id = new_device_id()?;
+    secure_directory(directory)?;
+    match secure_create(&path) {
+        Ok(mut file) => {
+            file.write_all(format!("{id}\n").as_bytes())?;
+            file.sync_all()?;
+            Ok(id)
+        }
+        // Another instance made it first: its id wins.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if let Some(existing) = read_device_id(&path)? {
+                return Ok(existing);
+            }
+            // Unreadable contents: replace them.
+            let temporary = directory.join(format!(".device-id.tmp-{}", std::process::id()));
+            let _ = fs::remove_file(&temporary);
+            let mut file = secure_create(&temporary)?;
+            file.write_all(format!("{id}\n").as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, &path)?;
+            Ok(id)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn read_device_id(path: &Path) -> Result<Option<String>, SessionError> {
+    refuse_symlink(path)?;
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let id = text.trim();
+    let valid = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    Ok(valid.then(|| id.to_owned()))
+}
+
+/// A fresh random device id.
+pub fn new_device_id() -> Result<String, SessionError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes).map_err(std::io::Error::other)?;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    Ok(format!("jellybridge-{hex}"))
+}
+
 fn config_directory() -> Result<PathBuf, SessionError> {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
         Ok(PathBuf::from(path).join("jellybridge"))
@@ -380,6 +446,22 @@ fn timestamp_nanos() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_id_is_made_once_and_kept() {
+        let directory = test_directory("device-id");
+        let first = device_id_in(&directory).unwrap();
+        assert!(first.starts_with("jellybridge-") && first.len() == 44);
+        assert_eq!(device_id_in(&directory).unwrap(), first);
+        let other = test_directory("device-id-other");
+        assert_ne!(device_id_in(&other).unwrap(), first);
+        fs::write(directory.join("device-id"), b"bad id \"\n").unwrap();
+        let replaced = device_id_in(&directory).unwrap();
+        assert_ne!(replaced, first);
+        assert_eq!(device_id_in(&directory).unwrap(), replaced);
+        let _ = fs::remove_dir_all(directory);
+        let _ = fs::remove_dir_all(other);
+    }
 
     fn test_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
