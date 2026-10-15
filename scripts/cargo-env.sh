@@ -6,12 +6,19 @@ PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 development_mpv_prefix="${JELLYBRIDGE_DEVELOPMENT_MPV_PREFIX:-}"
 pkg_paths=()
 case "$(uname -s)/$(uname -m)" in
-    Darwin/arm64)
+    Darwin/arm64 | Darwin/x86_64)
         if ! command -v brew >/dev/null 2>&1; then
             echo "Homebrew is required for the macOS build" >&2
             exit 2
         fi
-        rustup_bin="$(brew --prefix rustup)/bin"
+        # Homebrew's rustup on a developer Mac; CI runners have their own.
+        if brew --prefix --installed rustup >/dev/null 2>&1; then
+            rustup_bin="$(brew --prefix rustup)/bin"
+        else
+            rustup_path="$(command -v rustup || true)"
+            [[ -n "$rustup_path" ]] || { echo "rustup is required for the macOS build" >&2; exit 2; }
+            rustup_bin="$(dirname -- "$rustup_path")"
+        fi
         if [[ -z "$development_mpv_prefix" ]]; then
             mpv_prefix="$(brew --prefix mpv)"
         else
@@ -28,8 +35,12 @@ case "$(uname -s)/$(uname -m)" in
                 fi
             done
         fi
-        rust_host="aarch64-apple-darwin"
-        export MACOSX_DEPLOYMENT_TARGET="13.0"
+        if [[ "$(uname -m)" == arm64 ]]; then
+            rust_host="aarch64-apple-darwin"
+        else
+            rust_host="x86_64-apple-darwin"
+        fi
+        export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-13.0}"
         export LIBRARY_PATH="$mpv_prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
         export DYLD_FALLBACK_LIBRARY_PATH="$mpv_prefix/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
         ;;

@@ -1,0 +1,188 @@
+# Builds every release package when a version tag is pushed, and puts them in
+# a draft GitHub release to review and publish:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The tag must match `version` in rust/app/Cargo.toml. macOS signing and
+# notarization need repository secrets; see docs/RELEASING.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Tag matches Cargo.toml
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' rust/app/Cargo.toml | head -1)"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in rust/app/Cargo.toml"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux packages
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      # mpv, FFmpeg, dav1d, libass, libplacebo and libva take ~15 minutes to
+      # build; the result only changes with the pinned versions.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/jellybridge-linux-build/native
+            ~/.cache/jellybridge-linux-build/tools
+          key: linux-native-${{ hashFiles('scripts/linux/build-in-container.sh') }}
+      - name: Build the portable bundle
+        run: scripts/build-linux.sh
+      - name: Package .deb, .rpm, AppImage, tarball and Arch package
+        run: scripts/package-linux.sh deb rpm appimage tar arch
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: target/linux/dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows installer
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      # The pinned libmpv build is kept here too: upstream deletes old builds.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/jellybridge-windows-build/mpv
+            ~/.cache/jellybridge-windows-build/vulkan
+          key: windows-downloads-${{ hashFiles('scripts/build-windows.sh') }}
+      - name: Cross-build setup.exe and portable zip
+        run: scripts/build-windows.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: target/windows/dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check signing secrets
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          missing=()
+          for name in CERT CERT_PASSWORD API_KEY API_KEY_ID API_ISSUER_ID; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if ((${#missing[@]})); then
+            echo "::error::macOS releases are signed and notarized; add the secrets in docs/RELEASING.md (missing: ${missing[*]})"
+            exit 1
+          fi
+      - name: Install mpv, dylibbundler and Rust
+        run: |
+          brew install mpv dylibbundler
+          rustup toolchain install 1.98.0 --profile minimal
+      - name: Import the Developer ID certificate
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "$CERT" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          # Search the signing keychain first, keeping the existing ones.
+          existing=()
+          while IFS= read -r line; do existing+=("$(echo "$line" | tr -d ' "')"); done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          rm -f "$RUNNER_TEMP/cert.p12"
+          identity="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+          if [[ -z "$identity" ]]; then
+            echo "::error::the certificate has no Developer ID Application identity"
+            exit 1
+          fi
+          echo "MACOS_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build, sign and notarize the .dmg
+        env:
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          export APPLE_API_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo "$API_KEY" | base64 --decode > "$APPLE_API_KEY_PATH"
+          scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: target/macos/dist/*.dmg
+          if-no-files-found: error
+      - name: Remove the signing keychain and key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/AuthKey.p8"
+
+  release:
+    name: Draft release
+    needs: [version, linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "JellyBridge $VERSION" --generate-notes

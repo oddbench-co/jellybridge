@@ -16,12 +16,15 @@ set -euo pipefail
 PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$(command -v podman || command -v docker)" || { echo "needs podman or docker" >&2; exit 2; }
 MPV_BUILD="20261014/mpv-dev-x86_64-20261014-git-ec38361c56.7z"
-MPV_SHA256="${JB_WINDOWS_MPV_SHA256:-}"
+# Checksums of the files tested in the Windows VMs: a changed download fails
+# the build instead of shipping.
+MPV_SHA256="325555b4e0b1d87fb7c92c96010776581599c64e4988052cb9d05e130b52f939"
 # The Khronos Vulkan loader: this libmpv imports vulkan-1.dll, which GPU
 # drivers install, so a PC without vendor drivers (and Windows 10 without
 # them) cannot load libmpv at all. JellyBridge renders through OpenGL and
 # never creates a Vulkan instance; the loader only satisfies the import.
 VULKAN_RT=1.4.363.0
+VULKAN_SHA256="a25a927aa8b9f0371048f1861cf88ac3b9bc9b1fb332c42d897c8ab32695769a"
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$PROJECT_DIR/rust/app/Cargo.toml" | head -1)"
 # Crates and the libmpv archive are cached between builds; the toolchain is
 # reinstalled each time.
@@ -33,7 +36,7 @@ if [[ ! -s "$MPV_ARCHIVE" ]]; then
         "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/$MPV_BUILD"
     mv "$MPV_ARCHIVE.part" "$MPV_ARCHIVE"
 fi
-[[ -z "$MPV_SHA256" ]] || echo "$MPV_SHA256  $MPV_ARCHIVE" | sha256sum -c --quiet
+echo "$MPV_SHA256  $MPV_ARCHIVE" | sha256sum -c --quiet
 mkdir -p "$CACHE/vulkan"
 VULKAN_ARCHIVE="$CACHE/vulkan/vulkan-runtime-components-$VULKAN_RT.zip"
 if [[ ! -s "$VULKAN_ARCHIVE" ]]; then
@@ -41,6 +44,7 @@ if [[ ! -s "$VULKAN_ARCHIVE" ]]; then
         "https://sdk.lunarg.com/sdk/download/$VULKAN_RT/windows/vulkan-runtime-components.zip?u="
     mv "$VULKAN_ARCHIVE.part" "$VULKAN_ARCHIVE"
 fi
+echo "$VULKAN_SHA256  $VULKAN_ARCHIVE" | sha256sum -c --quiet
 "$ENGINE" run --rm \
     -v "$PROJECT_DIR:/src" \
     -v "$CACHE/registry:/usr/local/cargo/registry" \

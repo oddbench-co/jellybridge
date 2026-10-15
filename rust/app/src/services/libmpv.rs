@@ -169,7 +169,7 @@ const CANDIDATES: &[&str] = &[
 ];
 #[cfg(target_os = "macos")]
 const CANDIDATES: &[&str] = &[
-    // The self-contained bundle (scripts/package-rust-app-personal.sh).
+    // The app bundle (scripts/package-macos.sh).
     "$ORIGIN/../Frameworks/libmpv.2.dylib",
     "/opt/homebrew/lib/libmpv.2.dylib",
     "/usr/local/lib/libmpv.2.dylib",

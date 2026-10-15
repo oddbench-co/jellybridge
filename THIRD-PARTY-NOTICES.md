@@ -43,3 +43,14 @@ The Arch package uses the system's mpv instead and bundles none of these.
 The complete corresponding source for these binaries is available from the
 links above; on request (support@oddbench.co) we provide it for the exact
 versions shipped.
+
+## macOS .dmg
+
+The app embeds Homebrew's mpv (libmpv) and its full library graph, as
+installed on the build machine: FFmpeg (built with GPL parts), libass,
+libplacebo, LuaJIT, HarfBuzz, FreeType, fribidi and their dependencies, each
+under its own licence (GPL-2.0-or-later, LGPL-2.1-or-later, MIT, BSD, ISC,
+zlib and similar). Versions are those of the Homebrew formulae at build
+time; sources: https://github.com/Homebrew/homebrew-core (formula recipes),
+https://github.com/mpv-player/mpv and https://ffmpeg.org. On request
+(support@oddbench.co) we provide the corresponding source for any release.

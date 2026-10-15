@@ -3,20 +3,28 @@
 Release packaging is fail-closed. The local Homebrew/system mpv graph may run
 a development binary, but it cannot enter a public package.
 
-## Personal full-codec macOS package
+## macOS package
 
-The repository provides an explicitly personal-use workflow for macOS arm64:
+`scripts/package-macos.sh` builds `JellyBridge.app` and a .dmg for the Mac's
+own CPU (arm64 or x86_64):
 
 ```bash
 brew install mpv dylibbundler
-scripts/package-rust-app-personal.sh
+scripts/package-macos.sh
 ```
 
-It embeds the complete installed Homebrew mpv dependency graph, rewrites every
-dependency to the app's `Contents/Frameworks` directory, applies an ad-hoc
-signature, audits for missing or build-machine-linked libraries, and creates a
-self-contained DMG. This graph includes GPL-enabled FFmpeg components and is
-not an audited public-release artifact.
+It embeds Homebrew's complete mpv dependency graph in
+`Contents/Frameworks`, rewrites every reference to it, and fails if a library
+is missing or still points at the build machine. Homebrew builds its
+libraries for the macOS they are installed on, so that version is the app's
+minimum (`LSMinimumSystemVersion`). With `MACOS_SIGNING_IDENTITY` it signs
+with the hardened runtime (entitlements in `packaging/macos/`), and with the
+`APPLE_API_*` variables it notarizes and staples the .dmg; without them the
+app is signed ad hoc for local use. The graph includes GPL FFmpeg parts,
+allowed by JellyBridge's GPL-3.0-or-later licence.
+
+Releases are built by `.github/workflows/release.yml`; see
+`docs/RELEASING.md`.
 
 ## Linux and Windows packages
 

@@ -59,8 +59,11 @@ installed to play, not to build. Performance work follows
 - `scripts/make-logo.py` — draws the icon and logo as code and regenerates
   `rust/app/assets/icon.{svg,png,icns}` and `logo.{svg,png}`; edit the drawing
   there, never the PNGs.
-- `scripts/package-rust-app-personal.sh` — self-contained personal macOS
-  package (see `docs/rust-port/packaging.md`).
+- `scripts/package-macos.sh` — the macOS .app and .dmg for the Mac's CPU,
+  signed and notarized when the Apple credentials are set (see
+  `docs/rust-port/packaging.md`).
+- `.github/workflows/release.yml` — pushing a `v<version>` tag builds every
+  package and drafts a GitHub release; see `docs/RELEASING.md`.
 
 ## Coding Style & Naming Conventions
 

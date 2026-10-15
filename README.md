@@ -2,7 +2,7 @@
 
 <p align="center">
   A fast, native desktop client for <a href="https://jellyfin.org">Jellyfin</a>, with a built-in mpv player.<br>
-  Linux and Windows. Free software under GPL-3.0.
+  Linux, Windows and macOS. Free software under GPL-3.0.
 </p>
 
 <p align="center"><img src="docs/screenshots/home.jpg" alt="JellyBridge home screen with My Media, Continue Watching and Next Up" width="900"></p>
@@ -75,12 +75,15 @@ package includes everything playback needs.
 | Linux, without root | `jellybridge-<version>-x86_64.tar.gz` | Unpack and run `./install.sh` (installs to `~/.local`) |
 | Windows 10 and 11 | `JellyBridge-<version>-setup.exe` | Run it. Installs for your user only, no administrator prompt |
 | Windows, no install | `JellyBridge-<version>-portable.zip` | Unpack anywhere and run `jellybridge.exe` |
+| macOS 14+ on Apple Silicon | `JellyBridge-<version>-macos-arm64.dmg` | Open it and drag JellyBridge to Applications |
+| macOS 15+ on Intel | `JellyBridge-<version>-macos-x86_64.dmg` | Open it and drag JellyBridge to Applications |
 
 Each package was installed and tested on the systems listed in
 [docs/rust-port/platform-matrix.md](docs/rust-port/platform-matrix.md):
 Ubuntu, Debian, Fedora, openSUSE, Mint, Pop!_OS, elementary, Manjaro,
-EndeavourOS, Windows 10 and Windows 11. JellyBridge needs a graphics driver
-with OpenGL 2.0 or newer, which every current driver provides.
+EndeavourOS, Windows 10 and Windows 11. The macOS builds are signed and
+notarized by Apple. JellyBridge needs a graphics driver with OpenGL 2.0 or
+newer, which every current driver provides.
 
 Until the first release is published, build the packages yourself (see
 [Building packages](#building-packages)).
@@ -140,6 +143,9 @@ terminal, it prints the reason there too.
 | Settings | `~/.config/jellybridge/settings.json` | `%APPDATA%\JellyBridge\settings.json` |
 | Artwork cache | `~/.cache/jellybridge/` | `%LOCALAPPDATA%\JellyBridge\` |
 
+On macOS the files are in `~/.config/jellybridge/` and
+`~/.cache/jellybridge/`, as on Linux.
+
 Uninstalling leaves these in place, so a reinstall keeps you signed in. Sign
 Out in the app removes the sign-in. The session file holds an access token to
 your server: keep it private and never commit it.
@@ -171,7 +177,11 @@ nothing is installed on your machine:
 scripts/build-linux.sh      # portable bundle on an Ubuntu 22.04 base (glibc 2.35), with libmpv and codecs
 scripts/package-linux.sh    # .deb, .rpm, AppImage, tarball and Arch package -> target/linux/dist/
 scripts/build-windows.sh    # setup.exe and portable zip -> target/windows/dist/
+scripts/package-macos.sh    # on a Mac: .app and .dmg for its CPU -> target/macos/dist/
 ```
+
+Releases are built by GitHub Actions when a version tag is pushed; see
+[docs/RELEASING.md](docs/RELEASING.md).
 
 The first `build-linux.sh` compiles mpv, FFmpeg, dav1d, libass, libplacebo
 and libva from source (about 15 minutes, cached afterwards). The VM test

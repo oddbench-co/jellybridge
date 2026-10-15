@@ -46,19 +46,6 @@ winit = { version = "=0.30.13", default-features = false, features = ["wayland-c
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
 
-[package.metadata.packager]
-product-name = "JellyBridge"
-identifier = "co.oddbench.JellyBridge"
-category = "Video"
-icons = [
-    "assets/icon.png",
-    "assets/icon.icns",
-]
-formats = ["app", "dmg", "deb", "appimage"]
-
-[package.metadata.packager.macos]
-minimum-system-version = "13.0"
-
 [[bin]]
 name = "jellybridge"
 path = "src/main.rs"
