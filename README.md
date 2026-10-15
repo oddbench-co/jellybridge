@@ -1,213 +1,219 @@
-<p align="center"><img src="logo.png" alt="JellyBridge" width="280"></p>
+<p align="center"><img src="logo.png" alt="JellyBridge" width="260"></p>
 
-# JellyBridge
+<p align="center">
+  A fast, native desktop client for <a href="https://jellyfin.org">Jellyfin</a>, with a built-in mpv player.<br>
+  Linux and Windows. Free software under GPL-3.0.
+</p>
 
-JellyBridge is a native Rust/egui desktop client for Jellyfin with embedded
-libmpv video playback. It is a lightweight alternative to browser or
-Electron-based Jellyfin clients, with a strong preference for direct play
-instead of server-side transcoding.
+<p align="center"><img src="docs/screenshots/home.jpg" alt="JellyBridge home screen with My Media, Continue Watching and Next Up" width="900"></p>
 
-## What It Does
+JellyBridge looks and works like Jellyfin's own web app, but runs as a real
+desktop program instead of a browser tab. It shows your Home screen about a
+tenth of a second after launch, uses around 120 MB of memory while you browse,
+and plays your files as they are, through [mpv](https://mpv.io), so the server
+never has to transcode.
 
-- Logs in to a Jellyfin server with username and password and restores the
-  saved session on startup.
-- Shows a Home dashboard with libraries, Continue Watching, Next Up, latest
-  media, favorites, and recently added media as horizontally scrollable
-  shelves.
-- Browses Jellyfin libraries and nested folders as adaptive 2:3 poster grids.
-- Searches globally from Home and recursively inside folders, updating after a
-  300 ms typing pause. Results are capped at 120 items and show the server
-  total when more exist.
-- Sorts by name, date added, release date, and rating; Compact/Normal/Large
-  density settings persist locally.
-- Shows movie, series, season, and episode detail pages with posters,
-  backdrops, metadata, ratings, genres, cast, studios, runtime, watched state,
-  resume progress, and unwatched counts.
-- Plays media in an embedded libmpv surface through a token-hiding local
-  loopback proxy, so mpv never sees Jellyfin credentials.
-- Restores resume positions, downloads external text subtitles with
-  authentication, and remembers per-title audio/subtitle track preferences.
-- Marks items watched/unwatched and favorite/unfavorite from the UI.
+## Why JellyBridge
 
-## What It Does Not Do Yet
+- **Fast.** Scrolling keeps up with 240 Hz displays, and an idle window
+  draws nothing and uses next to no CPU. The numbers, and how they were
+  measured, are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+- **Plays your files directly.** mpv decodes H.264, HEVC, AV1, VP9, 10-bit
+  and HDR video from the original file, with hardware decoding where your GPU
+  supports it. Your server's CPU stays idle and the picture is never
+  re-encoded.
+- **Nothing extra to install.** The packages bring their own player and
+  codecs; you do not need to install mpv or FFmpeg.
+- **Familiar.** Pages, cards, menus and settings follow jellyfin-web, so
+  everything is where you expect it.
+- **Private.** It talks only to your server. Your access token never reaches
+  the player: mpv streams through a local proxy that adds it.
 
-- No transcoding fallback. JellyBridge expects mpv to direct play the media.
-- No playback progress reporting back to Jellyfin (the retired Kotlin client
-  had it; see `docs/rust-port/parity-matrix.md`).
-- No Live TV, DVR, offline downloads, or multi-server account switcher.
-- No app settings screen, playlist, or collection management yet.
+## Screenshots
 
-## Requirements
+| Library | Item page | Player |
+| --- | --- | --- |
+| <img src="docs/screenshots/library.jpg" alt="Movies library as a poster grid" width="300"> | <img src="docs/screenshots/detail.jpg" alt="Film page with backdrop, logo, ratings and media info" width="300"> | <img src="docs/screenshots/player.jpg" alt="Player with seek bar and controls" width="300"> |
 
-- A Jellyfin server reachable from the desktop machine and a user account.
-- Rust (pinned by `rust-toolchain.toml`) via rustup.
-- To build and run from source: libmpv (`brew install mpv` on macOS; the
-  distribution's mpv package on Linux). It is loaded when something first
-  plays, so browsing works without it. The packages under Install bring their
-  own.
+Screenshots use Jellyfin's [public demo server](https://demo.jellyfin.org).
+
+## Features
+
+- **Home** with your libraries, Continue Watching, Next Up and the latest
+  additions, arranged by your Jellyfin Home settings.
+- **Libraries** as poster grids with sorting, filters, an A–Z jump bar and
+  Suggestions, Favorites, Collections and Genres tabs.
+- **Search** across the whole server, with results as you type.
+- **Item pages** for films, series, seasons, episodes and people: backdrop,
+  logo, ratings, media info, cast and crew, trailers and similar titles.
+- **Player** with resume, audio and subtitle tracks (embedded and external),
+  chapters, playback speed, previous and next episode, and skip buttons for
+  intros, recaps and outros where the server has detected them.
+- **Progress that syncs**: positions, watched state and favorites are saved
+  on the server, so you can continue on any other device.
+- **Playlists and collections**: add items to them from any item's menu.
+- **Sign-in** with a password or Quick Connect, and you stay signed in.
+- **Settings** for profile, display, Home sections, playback and subtitle
+  appearance, as in jellyfin-web.
+
+JellyBridge is built for video. It does not (yet) offer transcoding for files
+mpv cannot play, Live TV, SyncPlay, casting, offline sync or server
+administration; music and books can be browsed but have no dedicated player.
 
 ## Install
 
-Every package carries what playback needs (the Arch one uses Arch's own mpv),
-so nothing else has to be installed. Checked in VMs on the systems listed in
-`docs/rust-port/platform-matrix.md`.
+Download the file for your system from the
+[Releases page](https://github.com/oddbench-co/jellybridge/releases). Every
+package includes everything playback needs.
 
-| System | File | How |
+| System | File | How to install |
 | --- | --- | --- |
-| Ubuntu 22.04+, Debian 12+, Linux Mint, Pop!_OS, elementary OS | `jellybridge_<v>_amd64.deb` | Open it in the Software app, or `sudo apt install ./jellybridge_<v>_amd64.deb` |
-| Fedora, openSUSE | `jellybridge-<v>-1.x86_64.rpm` | `sudo dnf install ./jellybridge-*.rpm` or `sudo zypper install ./jellybridge-*.rpm` |
-| Arch, Manjaro, EndeavourOS | `jellybridge-<v>-1-x86_64.pkg.tar.zst` | `sudo pacman -U jellybridge-*.pkg.tar.zst` |
-| Any other distribution (glibc 2.35+) | `JellyBridge-<v>-x86_64.AppImage` | Make it executable and run it; nothing is installed |
-| Any distribution, no root | `jellybridge-<v>-x86_64.tar.gz` | Unpack, run `./install.sh` (installs to `~/.local`; `./uninstall.sh` removes it) |
-| Windows 10 / 11 (x64) | `JellyBridge-<v>-setup.exe` | Run it; installs for the current user, no administrator prompt. Remove it in Settings > Apps |
-| Windows, no install | `JellyBridge-<v>-portable.zip` | Unpack anywhere and run `jellybridge.exe` |
+| Ubuntu 22.04+, Debian 12+, Linux Mint, Pop!_OS, elementary OS | `jellybridge_<version>_amd64.deb` | Open it with the Software app, or `sudo apt install ./jellybridge_*_amd64.deb` |
+| Fedora, openSUSE | `jellybridge-<version>-1.x86_64.rpm` | `sudo dnf install ./jellybridge-*.rpm` or `sudo zypper install ./jellybridge-*.rpm` |
+| Arch, Manjaro, EndeavourOS | `jellybridge-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U jellybridge-*.pkg.tar.zst` (uses Arch's own mpv) |
+| Any other Linux (glibc 2.35+) | `JellyBridge-<version>-x86_64.AppImage` | Make it executable and run it |
+| Linux, without root | `jellybridge-<version>-x86_64.tar.gz` | Unpack and run `./install.sh` (installs to `~/.local`) |
+| Windows 10 and 11 | `JellyBridge-<version>-setup.exe` | Run it. Installs for your user only, no administrator prompt |
+| Windows, no install | `JellyBridge-<version>-portable.zip` | Unpack anywhere and run `jellybridge.exe` |
 
-JellyBridge draws with OpenGL 2.0 or newer, which every current graphics
-driver provides. Settings and the sign-in stay in `~/.config/jellybridge`
-(`%APPDATA%\JellyBridge` on Windows) when the app is removed.
+Each package was installed and tested on the systems listed in
+[docs/rust-port/platform-matrix.md](docs/rust-port/platform-matrix.md):
+Ubuntu, Debian, Fedora, openSUSE, Mint, Pop!_OS, elementary, Manjaro,
+EndeavourOS, Windows 10 and Windows 11. JellyBridge needs a graphics driver
+with OpenGL 2.0 or newer, which every current driver provides.
 
-## How To Run
+Until the first release is published, build the packages yourself (see
+[Building packages](#building-packages)).
 
-All cargo invocations go through the wrapper script, which points pkg-config
-at the local libmpv installation:
+## Getting started
 
-```bash
-scripts/cargo-env.sh run --release
-```
+1. Start JellyBridge from your app menu.
+2. Enter your server's address, for example `192.168.1.10:8096` or
+   `https://jellyfin.example.com`.
+3. Sign in with your Jellyfin username and password, or use Quick Connect
+   from a device where you are already signed in.
 
-The first launch shows the login screen. Enter the Jellyfin server URL (for
-example `http://localhost:8096`), username, and password.
+Tested with Jellyfin 10.11 and 12.
 
-After login, JellyBridge saves the server URL, access token, and user ID under
-`~/.config/jellybridge/session.json`. Use Sign out in the app to clear it.
+## Keyboard shortcuts in the player
 
-## Player Hotkeys
-
-- `Space`, `K`, or `P`: play/pause.
-- `Left`/`Right`: seek 5 seconds; hold `Shift` to seek 30 seconds.
-- `Up`/`Down`: change volume by 5; `9`/`0` use 2-point steps.
-- `M`: mute, `F`: toggle fullscreen, `Esc`: leave fullscreen.
-- `A`: cycle audio tracks, `J`: cycle subtitles.
-- `Home`/`End`: jump to the start/end; `Q`: stop playback and return.
-
-## Development Commands
-
-```bash
-# Build
-scripts/cargo-env.sh build --locked
-
-# Run the test suite
-scripts/cargo-env.sh test --locked
-
-# Lint
-scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings
-
-# Run the app
-scripts/cargo-env.sh run
-```
-
-## Packaging
-
-Linux and Windows packages are built in throwaway containers (podman or
-docker); nothing is installed on the host:
-
-```bash
-scripts/build-linux.sh     # portable bundle: Ubuntu 22.04 base (glibc 2.35), LGPL libmpv built in
-scripts/package-linux.sh   # .deb, .rpm, AppImage, tarball, Arch package -> target/linux/dist/
-scripts/build-windows.sh   # jellybridge.exe, setup.exe and portable zip -> target/windows/dist/
-```
-
-The first `build-linux.sh` builds FFmpeg, dav1d, libass, libplacebo, libva and
-mpv from source (about 15 minutes, cached afterwards). How they were tested,
-and how to rerun the tests in VMs, is in `docs/rust-port/platform-matrix.md`.
-
-For a self-contained personal macOS arm64 build with the complete installed
-Homebrew mpv/FFmpeg codec graph embedded:
-
-```bash
-brew install mpv dylibbundler
-scripts/package-rust-app-personal.sh
-```
-
-The script creates `target/release/JellyBridge.app` and a compressed
-`JellyBridge_<version>_aarch64_self-contained.dmg`. It verifies code
-signatures, dependency paths, embedded-library completeness, and the final DMG
-checksum. This personal package is ad-hoc signed, not notarized, and includes
-GPL-enabled Homebrew components; do not use it as the public release artifact.
-
-## Project Structure
-
-```text
-rust/app
-├── build.rs                 rpath link arguments for the bundled libmpv
-├── assets/                  application icon, UI fonts (Noto Sans, as jellyfin-web)
-├── src/
-│   ├── main.rs              composition root: startup, wiring, teardown
-│   ├── app.rs               AppState/AppContext (no UI types)
-│   ├── api.rs               Jellyfin HTTP client
-│   ├── features/            use-cases by feature: auth, catalog, detail, playback
-│   ├── services/            infrastructure: artwork cache, session storage,
-│   │                        playback preparation, mpv worker, loopback proxy,
-│   │                        GL render bridge
-│   └── ui/                  the only module that knows egui:
-│       ├── mod.rs           UiHandle (update queue), UiState view model
-│       ├── app.rs           the window: drains updates, draws, dispatches UiActions
-│       ├── theme.rs         design tokens (palette, radii, type) and fonts
-│       ├── widgets.rs       shared drawing: text, artwork, shelves, buttons
-│       ├── images.rs        artwork fetch/decode pipeline + texture LRU cache
-│       └── login/top_bar/catalog/detail/player.rs   the screens
-```
-
-Dependency direction: `src/ui` → `app.rs` + `features/` → `services/`, and
-features reach the window only through `UiHandle`. Only `src/ui` (plus the mpv
-render bridge in `services/render.rs`) may import `egui`/`eframe`.
-
-## Configuration Files
-
-```text
-~/.config/jellybridge/session.json    server URL, access token, user ID
-~/.config/jellybridge/settings.json   card density, sort, track preferences
-~/.cache/jellybridge/                 artwork disk cache
-```
-
-These files can contain Jellyfin server URLs, access tokens, and user IDs. Do
-not commit real local configuration or tokens.
+| Key | Action |
+| --- | --- |
+| `Space`, `K` | Play or pause |
+| `←` / `→` | Back 10 s / forward 30 s (with `Shift`: 5 s) |
+| `J` / `L` | Back 10 s / forward 30 s |
+| `0`–`9` | Jump to 0 %–90 % of the video |
+| `Home` / `End` | Jump to the start / end |
+| `↑` / `↓` | Volume up / down |
+| `M` | Mute |
+| `F` | Fullscreen |
+| `A` / `C` | Next audio track / next subtitle track |
+| `<` / `>` | Slower / faster |
+| `Page Up` / `Page Down` | Next / previous chapter |
+| `Shift+N` / `Shift+P` | Next / previous episode |
+| `Esc` | Leave fullscreen, or leave the player |
+| `Q` | Leave the player |
 
 ## Troubleshooting
 
-### Build fails to find libmpv
+**A video will not play, or the picture is black.** JellyBridge plays the
+original file and never asks the server to transcode. mpv falls back to
+software decoding for formats your GPU cannot decode (10-bit H.264, 4:2:2
+chroma and similar). To rule out hardware decoding, start it with
+`JELLYBRIDGE_HWDEC=no jellybridge`; `JELLYBRIDGE_HWDEC=auto` allows modes the
+default (`auto-safe`) leaves out. The player's status line shows which decoder
+is in use.
 
-Install mpv (`brew install mpv`) and always build through
-`scripts/cargo-env.sh`, which exports the right `PKG_CONFIG_PATH`.
+**JellyBridge asks me to sign in again.** The server no longer accepts the
+saved sign-in, usually because it was signed out from the server's dashboard
+or the password changed. Sign in again.
 
-### Direct play fails
+**It will not start.** If your graphics driver lacks OpenGL 2.0, JellyBridge
+shows a message saying so; install or update the driver. Started from a
+terminal, it prints the reason there too.
 
-JellyBridge intentionally does not request transcoding. Confirm that mpv can
-play the file format, the server can serve the file, the machine can reach the
-server URL used at login, and the user has access to the item.
+## Your data
 
-### Video is black, or a specific item will not decode
+| What | Linux | Windows |
+| --- | --- | --- |
+| Sign-in (server address, access token, user id) | `~/.config/jellybridge/session.json` | `%APPDATA%\JellyBridge\session.json` |
+| Settings | `~/.config/jellybridge/settings.json` | `%APPDATA%\JellyBridge\settings.json` |
+| Artwork cache | `~/.cache/jellybridge/` | `%LOCALAPPDATA%\JellyBridge\` |
 
-JellyBridge direct-plays the original file, so mpv falls back to software
-decoding for anything the GPU will not take -- 10-bit H.264, 4:2:2 or 4:4:4
-chroma, and similar. `JELLYBRIDGE_HWDEC` overrides mpv's `hwdec` setting for a
-run; it defaults to `auto-safe`. Set it to `no` to force software decoding, or
-to `auto` to allow the copy-back modes `auto-safe` excludes:
+Uninstalling leaves these in place, so a reinstall keeps you signed in. Sign
+Out in the app removes the sign-in. The session file holds an access token to
+your server: keep it private and never commit it.
 
-    JELLYBRIDGE_HWDEC=no jellybridge
+## Building from source
 
-The chosen mode is logged at startup, and the path mpv actually took is logged
-when each item loads and shown in the player status line.
+You need [rustup](https://rustup.rs) (the toolchain version is pinned by
+`rust-toolchain.toml`) and, to play media, libmpv from your system's mpv
+package (`sudo apt install libmpv-dev`, `sudo pacman -S mpv`,
+`brew install mpv`). Browsing works without libmpv; it is loaded on the first
+play.
 
-### Login keeps returning to the auth screen
+Run every cargo command through `scripts/cargo-env.sh`, which pins the
+toolchain and points the build at libmpv:
 
-The saved session may be missing, invalid, or revoked. Log in again, or reset
-manually with `rm ~/.config/jellybridge/session.json`.
+```bash
+scripts/cargo-env.sh run --release                                  # run the app
+scripts/cargo-env.sh test --locked                                  # tests
+scripts/cargo-env.sh clippy --all-targets --locked -- -D warnings   # lint
+scripts/cargo-env.sh fmt --all                                      # format
+```
+
+### Building packages
+
+The release packages are built in throwaway containers (podman or docker), so
+nothing is installed on your machine:
+
+```bash
+scripts/build-linux.sh      # portable bundle on an Ubuntu 22.04 base (glibc 2.35), with libmpv and codecs
+scripts/package-linux.sh    # .deb, .rpm, AppImage, tarball and Arch package -> target/linux/dist/
+scripts/build-windows.sh    # setup.exe and portable zip -> target/windows/dist/
+```
+
+The first `build-linux.sh` compiles mpv, FFmpeg, dav1d, libass, libplacebo
+and libva from source (about 15 minutes, cached afterwards). The VM test
+harness that checks the packages on each distribution is described in
+[docs/rust-port/platform-matrix.md](docs/rust-port/platform-matrix.md).
+
+## How it is built
+
+JellyBridge is written in Rust. The interface is drawn with
+[egui](https://github.com/emilk/egui) on OpenGL, and libmpv renders video into
+the same window. Network and disk work runs on a tokio runtime, off the
+thread that draws, so the window never waits on the server.
+
+```text
+rust/app/src
+├── main.rs        startup and wiring
+├── api.rs, api/   Jellyfin HTTP client
+├── features/      what the app does: sign-in, pages, playback, settings
+├── services/      artwork cache, session storage, mpv, the playback proxy
+└── ui/            everything on screen (the only code that uses egui)
+```
+
+More detail: [docs/PERFORMANCE.md](docs/PERFORMANCE.md) (what was measured
+and optimized),
+[docs/jellyfin-web-reference.md](docs/jellyfin-web-reference.md) (how the
+interface follows jellyfin-web) and [docs/rust-port/](docs/rust-port/)
+(packaging, native dependencies, test matrix).
+
+## Contributing
+
+Bug reports and pull requests are welcome. Before opening a pull request, run
+the tests, clippy and rustfmt as above; [AGENTS.md](AGENTS.md) describes the
+code layout, conventions and test scripts in more depth. Changes that touch
+startup, scrolling or playback should come with before and after numbers from
+`JELLYBRIDGE_MEASURE` (see [docs/PERFORMANCE.md](docs/PERFORMANCE.md)).
 
 ## License
 
-JellyBridge is free software under the GNU General Public License v3.0 or
-later (`LICENSE`). Bundled fonts, icons and the native
-media libraries keep their own licences; see `THIRD-PARTY-NOTICES.md`.
-JellyBridge is an independent client, not affiliated with or endorsed by the
-Jellyfin project.
+JellyBridge is free software: you can redistribute it and modify it under the
+terms of the [GNU General Public License v3.0](LICENSE) or later. Bundled
+fonts, icons and media libraries keep their own licences, listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+JellyBridge is an independent project, not affiliated with or endorsed by the
+Jellyfin project. Jellyfin is a trademark of the Jellyfin project.
