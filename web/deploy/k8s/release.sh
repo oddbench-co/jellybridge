@@ -8,12 +8,16 @@ export ARGOCD_PASSWORD
 REPO=oddbench-co/jellybridge
 APP=jellybridge-site
 CTX="${KUBE_CONTEXT:-ip-api-prod}"
-SHA="$(git rev-parse origin/main 2>/dev/null || git rev-parse HEAD)"
-RUN="$(gh run list -R "$REPO" --workflow Website --commit "$SHA" --json databaseId --jq '.[0].databaseId' || true)"
+# Commits that only touch web/deploy/k8s build nothing, so wait for whichever "Website" run is still
+# going on main, then take the newest open deploy PR rather than one named after the latest commit.
+RUN="$(gh run list -R "$REPO" --workflow Website --branch main --status in_progress --json databaseId --jq '.[0].databaseId' || true)"
 [ -n "$RUN" ] && gh run watch "$RUN" -R "$REPO" --exit-status --interval 20 | tail -3
-PR="$(gh pr list -R "$REPO" --head "deploy-site/$SHA" --json number --jq '.[0].number' || true)"
-[ -n "$PR" ] || { echo "no deploy PR for $SHA (CI still running, or the commit did not change web/)"; exit 1; }
-gh pr merge -R "$REPO" "$PR" --merge --delete-branch
+PR="$(gh pr list -R "$REPO" --label deploy --state open --json number,createdAt --jq 'sort_by(.createdAt) | last | .number // empty' || true)"
+if [ -n "$PR" ]; then
+  gh pr merge -R "$REPO" "$PR" --merge --delete-branch
+else
+  echo "no open deploy PR: syncing main as it is (e.g. a change to the manifests only)"
+fi
 TOKEN=$(curl -sk -m 15 -X POST "$ARGOCD_URL/api/v1/session" -H 'Content-Type: application/json' \
   -d "$(python3 -c 'import json,os;print(json.dumps({"username":"admin","password":os.environ["ARGOCD_PASSWORD"]}))')" \
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
