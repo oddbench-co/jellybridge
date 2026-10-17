@@ -30,7 +30,7 @@ spec:
         runAsGroup: 65532
       containers:
         - name: jellybridge-site
-          image: ghcr.io/oddbench-co/jellybridge-site:latest
+          image: ghcr.io/oddbench-co/jellybridge-site:709539f2f774e25771282729a54030781041a641
           ports:
             - containerPort: 8080
           env:
