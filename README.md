@@ -2,7 +2,8 @@
 
 <p align="center">
   A fast, native desktop client for <a href="https://jellyfin.org">Jellyfin</a>, with a built-in mpv player.<br>
-  Linux, Windows and macOS. Free software under GPL-3.0.
+  Linux, Windows and macOS. Free software under GPL-3.0.<br>
+  <a href="https://jellybridge.oddbench.co">jellybridge.oddbench.co</a>
 </p>
 
 <p align="center"><img src="docs/screenshots/home.jpg" alt="JellyBridge home screen with My Media, Continue Watching and Next Up" width="900"></p>
@@ -211,6 +212,11 @@ and optimized),
 [docs/jellyfin-web-reference.md](docs/jellyfin-web-reference.md) (how the
 interface follows jellyfin-web) and [docs/rust-port/](docs/rust-port/)
 (packaging, native dependencies, test matrix).
+
+## Website
+
+The project site at [jellybridge.oddbench.co](https://jellybridge.oddbench.co) is a separate Rust
+crate in [web/](web/), with its own tests and deploy; see [web/README.md](web/README.md).
 
 ## Contributing
 

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container">
+  <p class="eyebrow">Features</p>
+  <h1 class="display">Built for a better Jellyfin experience.</h1>
+  <p class="lead">Native performance. Direct play with mpv. The familiar Jellyfin interface. No browser, no transcoding, no bloat.</p>
+</header>
+
+<section class="container feature-split" aria-label="Main features">
+  <ul class="rows">
+    {%- for f in features %}
+    <li>
+      <span class="tile-icon">{{ crate::pages::icon(f.icon)|safe }}</span>
+      <div>
+        <h2>{{ f.title }}</h2>
+        <p>{{ f.body|safe }}</p>
+      </div>
+    </li>
+    {%- endfor %}
+  </ul>
+  <figure class="tilted window">
+    <img src="{{ crate::pages::screen("library", 1280) }}" srcset="{{ crate::pages::srcset("library") }}" sizes="(min-width: 960px) 560px, 92vw"
+         alt="Movies library shown as a poster grid with sort and filter controls" width="1280" height="690" loading="lazy">
+  </figure>
+</section>
+
+<section class="section" aria-labelledby="everything">
+  <div class="container">
+    <h2 id="everything" class="title">And everything you expect from Jellyfin.</h2>
+    <dl class="feature-list">
+      {%- for (title, body) in more %}
+      <div><dt>{{ title }}</dt><dd>{{ body }}</dd></div>
+      {%- endfor %}
+    </dl>
+    <p class="note">JellyBridge is built for video. It does not (yet) offer transcoding for files mpv cannot play, Live TV, SyncPlay, casting, offline sync or server administration; music and books can be browsed but have no dedicated player.</p>
+    <div class="actions">
+      <a class="btn btn--primary" href="/download">Download JellyBridge</a>
+      <a class="btn btn--secondary" href="/screenshots">See screenshots</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

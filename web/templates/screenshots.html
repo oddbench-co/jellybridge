@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container">
+  <p class="eyebrow">Screenshots</p>
+  <h1 class="display">The familiar interface.<br>Native performance.</h1>
+  <p class="lead">Looks and feels like Jellyfin's web app, with the speed and efficiency of a native desktop client.</p>
+</header>
+
+<section class="container carousel" aria-roledescription="carousel" aria-label="Screenshots" data-carousel>
+  <div class="carousel__stage">
+    <button class="carousel__arrow carousel__arrow--prev" type="button" data-carousel-prev hidden aria-label="Previous screenshot">{{ crate::pages::icon("chevron-left")|safe }}</button>
+    <ul class="carousel__track" tabindex="0" aria-label="Screenshots, scroll sideways">
+      {%- for s in shots %}
+      <li id="shot-{{ s.stem }}" class="carousel__slide" aria-roledescription="slide" aria-label="{{ loop.index }} of {{ shots.len() }}">
+        <figure class="window">
+          <img src="{{ crate::pages::screen(s.stem, 1280) }}" srcset="{{ crate::pages::srcset(s.stem) }}" sizes="(min-width: 1000px) 920px, 92vw"
+               alt="{{ s.alt }}" width="1280" height="690"{% if !loop.first %} loading="lazy"{% endif %}>
+        </figure>
+      </li>
+      {%- endfor %}
+    </ul>
+    <button class="carousel__arrow carousel__arrow--next" type="button" data-carousel-next hidden aria-label="Next screenshot">{{ crate::pages::icon("chevron-right")|safe }}</button>
+  </div>
+  <ul class="carousel__thumbs">
+    {%- for s in shots %}
+    <li><a href="#shot-{{ s.stem }}"{% if loop.first %} aria-current="true"{% endif %} data-carousel-thumb>
+      <img src="{{ crate::pages::screen(s.stem, 640) }}" alt="" width="640" height="345" loading="lazy">
+      <span class="visually-hidden">Show {{ s.title }}</span>
+    </a></li>
+    {%- endfor %}
+  </ul>
+</section>
+
+<section class="container" aria-label="What you see">
+  <ul class="captions">
+    {%- for s in shots %}
+    <li>
+      <span class="tile-icon tile-icon--small">{{ crate::pages::icon(s.icon)|safe }}</span>
+      <div><h2>{{ s.title }}</h2><p>{{ s.caption }}</p></div>
+    </li>
+    {%- endfor %}
+  </ul>
+</section>
+
+<section class="section" aria-labelledby="player">
+  <div class="container split">
+    <div>
+      <p class="eyebrow">The player</p>
+      <h2 id="player" class="title">Powerful mpv playback, inside the app.</h2>
+      <p>Audio and subtitle tracks, chapters, playback speed, next episode and skip buttons for intros and recaps. Every control has a <a href="/docs/keyboard-shortcuts">keyboard shortcut</a>.</p>
+    </div>
+    <figure class="window">
+      <img src="{{ crate::pages::screen("player", 1280) }}" srcset="{{ crate::pages::srcset("player") }}" sizes="(min-width: 960px) 560px, 92vw"
+           alt="Video player with seek bar, track menus and playback controls" width="1280" height="690" loading="lazy">
+    </figure>
+  </div>
+</section>
+<p class="container note">Screenshots use Jellyfin's <a href="https://demo.jellyfin.org">public demo server</a>.</p>
+{% endblock %}

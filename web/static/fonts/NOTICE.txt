@@ -1,0 +1,5 @@
+Fonts served by jellybridge.oddbench.co, under the SIL Open Font License 1.1 (see OFL.txt).
+
+Inter            Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+
+Latin subset as packaged by Fontsource (https://fontsource.org).

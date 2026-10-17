@@ -1,0 +1,145 @@
+name: Website
+
+# The website in web/ (jellybridge.oddbench.co). Tests it, runs the end-to-end and visual suite, builds
+# the image and hands it to the deploy process: the bump job rewrites the image tag in
+# web/deploy/k8s/deployment.yaml and opens a pull request; merging it is the deploy (ArgoCD syncs that
+# folder). web/deploy/k8s is excluded from the trigger, otherwise the merged bump would build again.
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', '.github/workflows/site.yml', '!web/deploy/k8s/**', '!web/tools/**', '!web/**/*.md', '!web/design.png']
+  pull_request:
+    paths: ['web/**', '.github/workflows/site.yml', '!web/deploy/k8s/**', '!web/tools/**', '!web/**/*.md', '!web/design.png']
+  workflow_dispatch:
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/oddbench-co/jellybridge-site
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: web
+      - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-binary
+          path: web/target/release/jellybridge-site
+          retention-days: 1
+
+  # Every page in Chromium, Firefox and WebKit at phone, tablet and desktop sizes, in the same
+  # container the baselines were made in, so screenshots compare pixel for pixel.
+  e2e:
+    needs: test
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-binary
+          path: web/target/release
+      - name: Start the site
+        run: |
+          chmod +x target/release/jellybridge-site
+          PORT=8090 BIND=127.0.0.1 target/release/jellybridge-site &
+          node -e 'const t=Date.now();(async function w(){try{if((await fetch("http://127.0.0.1:8090/healthz")).ok)return}catch{}if(Date.now()-t>10000)process.exit(1);setTimeout(w,100)})()'
+      - name: Run Playwright
+        working-directory: web/e2e
+        env:
+          CI: "1"
+          HOME: /root
+        run: |
+          npm ci
+          npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            web/e2e/report
+            web/e2e/results
+          retention-days: 7
+
+  build:
+    needs: e2e
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # The full commit sha, so the manifest names exactly the commit it runs.
+          tags: |
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: web
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=site
+          cache-to: type=gha,mode=max,scope=site
+
+  # The deploy hand-off: bump the image in the deployment manifest and open a PR. Merging it deploys.
+  bump:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update deployment file
+        run: |
+          sed -i "s|image: ghcr.io/oddbench-co/jellybridge-site:[^ ]*|image: ghcr.io/oddbench-co/jellybridge-site:${GITHUB_SHA}|" \
+            deploy/k8s/deployment.yaml
+          git diff --stat
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: deploy-site/${{ github.sha }}
+          commit-message: "Deploy the website at ${{ github.sha }}"
+          title: "Deploy the website at ${{ github.sha }}"
+          body: |
+            Bumps `web/deploy/k8s/deployment.yaml` to the image built from ${{ github.sha }}.
+            Merge to deploy: ArgoCD syncs `web/deploy/k8s` onto the production cluster.
+          labels: deploy
+          delete-branch: true

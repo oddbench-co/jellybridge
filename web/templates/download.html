@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container narrow">
+  <p class="eyebrow">Download</p>
+  <h1 class="display">Get JellyBridge.</h1>
+  {%- if released %}
+  <p class="lead">Choose your platform. Every package includes the player and codecs it needs.</p>
+  {%- else %}
+  <p class="lead">Choose your platform and join the first release. Version {{ version }} is ready, and the public release is coming soon.</p>
+  {%- endif %}
+</header>
+
+<section class="container narrow download" aria-label="Packages">
+  <div class="release">
+    <h2>Version {{ version }}
+      {%- if released %} <span class="pill pill--ok">Latest</span>{% else %} <span class="pill">Pre-release</span>{% endif %}</h2>
+    {%- if released %}
+    <p>Free and open source. Checksums for every file are in <code>SHA256SUMS.txt</code> on the <a href="{{ crate::content::RELEASES }}">release page</a>.</p>
+    {%- else %}
+    <p>The release pipeline is ready and every package has been tested; the first public release is being prepared. In the meantime you can build JellyBridge from source.</p>
+    <div class="actions">
+      <a class="btn btn--primary" href="/docs/building-from-source">Build from source</a>
+      <a class="btn btn--secondary" href="{{ crate::content::RELEASES }}">{{ crate::pages::icon("github")|safe }}Releases on GitHub</a>
+    </div>
+    {%- endif %}
+  </div>
+
+  <ul class="platforms">
+    {%- for v in platforms %}
+    <li id="{{ v.p.id }}" class="platform" data-os="{{ v.p.id }}">
+      <span class="platform__icon">{{ crate::pages::icon(v.p.icon)|safe }}</span>
+      <div class="platform__body">
+        <h2>{{ v.p.name }} <span class="platform__req">{{ v.p.requirement }}</span><span class="pill pill--ok platform__yours" hidden>Your system</span></h2>
+        <ul class="packages">
+          {%- for l in v.links %}
+          <li><strong>{{ l.label }}</strong> <span>{{ l.note }}</span></li>
+          {%- endfor %}
+        </ul>
+      </div>
+      {%- if released %}
+      <details class="menu">
+        <summary class="btn btn--primary">Download{{ crate::pages::icon("chevron-down")|safe }}</summary>
+        <ul class="menu__list">
+          {%- for l in v.links %}
+          <li><a href="{{ l.href }}">{{ l.label }}</a></li>
+          {%- endfor %}
+        </ul>
+      </details>
+      {%- else %}
+      <span class="platform__soon">Coming with {{ version }}</span>
+      {%- endif %}
+    </li>
+    {%- endfor %}
+  </ul>
+
+  <section class="requirements" aria-labelledby="requirements">
+    <h2 id="requirements">{{ crate::pages::icon("chip")|safe }}System requirements</h2>
+    <ul>
+      {%- for r in requirements %}
+      <li>{{ r }}</li>
+      {%- endfor %}
+    </ul>
+    <p>Installation steps for each package are in the <a href="/docs/installation">installation guide</a>.</p>
+  </section>
+</section>
+{% endblock %}

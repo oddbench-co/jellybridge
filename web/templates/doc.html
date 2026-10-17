@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container">
+  <p class="eyebrow">Documentation</p>
+  {%- if doc.slug.is_empty() %}
+  <h1 class="display">Learn and get started.</h1>
+  <p class="lead">Everything you need to install, configure and use JellyBridge.</p>
+  {%- else %}
+  <h1 class="display">{{ doc.title }}</h1>
+  <p class="lead">{{ doc.summary }}</p>
+  {%- endif %}
+</header>
+
+<div class="container docs">
+  <nav class="docs__nav" aria-label="Documentation">
+    {%- for g in groups %}
+    <h2>{{ g.label }}</h2>
+    <ul>
+      {%- for d in g.docs %}
+      <li><a href="{{ d.path() }}"{% if d.slug == doc.slug %} aria-current="page"{% endif %}>{{ d.title }}</a></li>
+      {%- endfor %}
+    </ul>
+    {%- endfor %}
+  </nav>
+
+  <article class="docs__article">
+    {%- if doc.slug.is_empty() %}
+    <h2 class="docs__lead-title">{{ doc.title }}</h2>
+    <p>{{ doc.summary }}</p>
+    {%- endif %}
+    <div class="prose">{{ doc.body|safe }}</div>
+
+    <nav class="pager" aria-label="Previous and next page">
+      {%- if let Some(p) = prev %}
+      <a class="pager__prev" href="{{ p.path() }}"><span>Previous</span>{{ p.title }}</a>
+      {%- endif %}
+      {%- if let Some(n) = next %}
+      <a class="pager__next" href="{{ n.path() }}"><span>Next</span>{{ n.title }}</a>
+      {%- endif %}
+    </nav>
+
+    <aside class="help">
+      <div>
+        <h2>Need help?</h2>
+        <p>Check the <a href="/faq">FAQ</a> or open an issue on GitHub.</p>
+      </div>
+      <a class="btn btn--secondary" href="{{ crate::content::ISSUES }}">{{ crate::pages::icon("github")|safe }}Open an issue</a>
+    </aside>
+  </article>
+</div>
+{% endblock %}

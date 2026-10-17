@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block main %}
+<section class="hero">
+  <div class="container hero__grid">
+    <div class="hero__copy">
+      <ul class="badges" aria-label="At a glance">
+        <li><span class="dot" aria-hidden="true"></span>Open source</li>
+        <li>{{ crate::pages::icon("scale")|safe }}GPL-3.0-or-later</li>
+        <li>{{ crate::pages::icon("rust")|safe }}Built with Rust</li>
+      </ul>
+      <h1 class="display">The native desktop client for Jellyfin.</h1>
+      <p class="lead">Beautiful. Fast. Lightweight. Direct play, always.</p>
+      <div class="actions">
+        <a class="btn btn--primary" href="/download" data-os-download><span data-os-label>Download</span>{{ crate::pages::icon("arrow-down")|safe }}</a>
+        <a class="btn btn--secondary" href="{{ crate::content::REPO }}">{{ crate::pages::icon("github")|safe }}View on GitHub</a>
+      </div>
+      <ul class="os-row" aria-label="Available for">
+        {%- for p in platforms %}
+        <li><a href="/download#{{ p.id }}">{{ crate::pages::icon(p.icon)|safe }}{{ p.name }}</a></li>
+        {%- endfor %}
+      </ul>
+    </div>
+    <div class="hero__art">
+      <div class="window window--back">
+        <img src="{{ crate::pages::screen("library", 640) }}" alt="" width="640" height="345" fetchpriority="low">
+      </div>
+      <div class="window window--left">
+        <img src="{{ crate::pages::screen("home", 640) }}" alt="" width="640" height="345" fetchpriority="low">
+      </div>
+      <div class="window window--front">
+        <img src="{{ crate::pages::screen("player", 1280) }}" srcset="{{ crate::pages::srcset("player") }}" sizes="(min-width: 960px) 440px, 72vw"
+             alt="JellyBridge playing a film, with the seek bar and player controls" width="1280" height="690" fetchpriority="high">
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="container" aria-label="Highlights">
+  <ul class="highlights">
+    {%- for h in highlights %}
+    <li>
+      <span class="tile-icon tile-icon--plain">{{ crate::pages::icon(h.icon)|safe }}</span>
+      <strong>{{ h.title }}</strong>
+      <span>{{ h.note }}</span>
+    </li>
+    {%- endfor %}
+  </ul>
+</section>
+
+<section class="section" aria-labelledby="why">
+  <div class="container">
+    <p class="eyebrow">Why JellyBridge</p>
+    <h2 id="why" class="title">Built for a better Jellyfin experience.</h2>
+    <ul class="cards">
+      {%- for f in features %}
+      <li class="card">
+        <span class="tile-icon">{{ crate::pages::icon(f.icon)|safe }}</span>
+        <h3>{{ f.title }}</h3>
+        <p>{{ f.body|safe }}</p>
+      </li>
+      {%- endfor %}
+    </ul>
+    <p class="more"><a class="text-link" href="/features">All features{{ crate::pages::icon("arrow-right")|safe }}</a></p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+   <div class="cta">
+    <div>
+      <h2 class="title">Get JellyBridge.</h2>
+      <p>Free for Linux, Windows and macOS. Sign in to your server and everything is there.</p>
+    </div>
+    <div class="actions">
+      <a class="btn btn--primary" href="/download">Download</a>
+      <a class="btn btn--secondary" href="/docs">Read the docs</a>
+    </div>
+   </div>
+  </div>
+</section>
+{% endblock %}

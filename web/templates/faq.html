@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container narrow">
+  <p class="eyebrow">FAQ</p>
+  <h1 class="display">Frequently asked questions.</h1>
+  <p class="lead">Common questions about JellyBridge, installation, playback, compatibility and more.</p>
+</header>
+
+<section class="container narrow" aria-label="Questions">
+  <div class="search" data-faq-filter hidden>
+    {{ crate::pages::icon("search")|safe }}
+    <label class="visually-hidden" for="faq-search">Search questions</label>
+    <input id="faq-search" type="search" placeholder="Search questions…" autocomplete="off">
+  </div>
+  <div class="faq">
+    {%- for f in faqs %}
+    <details>
+      <summary>{{ f.question }}{{ crate::pages::icon("chevron-down")|safe }}</summary>
+      <p>{{ f.answer|safe }}</p>
+    </details>
+    {%- endfor %}
+  </div>
+  <p class="faq__empty" data-faq-empty hidden aria-live="polite">No matching questions. Try another word, or <a href="{{ crate::content::ISSUES }}">ask on GitHub</a>.</p>
+
+  <aside class="help">
+    <div>
+      <h2>Still have a question?</h2>
+      <p>The <a href="/docs">documentation</a> goes into more detail, or ask on GitHub.</p>
+    </div>
+    <a class="btn btn--secondary" href="{{ crate::content::ISSUES }}">{{ crate::pages::icon("github")|safe }}Ask on GitHub</a>
+  </aside>
+</section>
+{% endblock %}

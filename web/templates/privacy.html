@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container narrow">
+  <p class="eyebrow">Privacy</p>
+  <h1 class="display">Your data stays with you.</h1>
+  <p class="lead">JellyBridge is designed with privacy in mind. It only talks to your Jellyfin server and never collects personal data.</p>
+</header>
+
+<section class="container narrow" aria-label="How JellyBridge treats your data">
+  <ul class="rows">
+    {%- for p in points %}
+    <li>
+      <span class="tile-icon tile-icon--round">{{ crate::pages::icon(p.icon)|safe }}</span>
+      <div><h2>{{ p.title }}</h2><p>{{ p.body }}</p></div>
+    </li>
+    {%- endfor %}
+  </ul>
+
+  <a class="link-card" href="/docs/file-locations">
+    <span class="tile-icon tile-icon--small">{{ crate::pages::icon("file")|safe }}</span>
+    <span><strong>What JellyBridge stores on your computer</strong><span>Your sign-in, settings and the artwork cache, and where to find them.</span></span>
+    {{ crate::pages::icon("arrow-right")|safe }}
+  </a>
+
+  <section class="note-block" aria-labelledby="website">
+    <h2 id="website">This website</h2>
+    <p>This website sets no cookies and loads nothing from other sites{% if head.integrations.ahrefs_analytics.is_some() %}, except Ahrefs Web Analytics, which counts page views without cookies or personal data{% endif %}. It is run by <a href="https://oddbench.co">Oddbench</a>; the <a href="https://oddbench.co/legal/privacy">Oddbench privacy notice</a> applies.</p>
+  </section>
+</section>
+{% endblock %}

@@ -1,0 +1,92 @@
+# jellybridge.oddbench.co on the ip-api production cluster (single-node k3s, Traefik v2, cert-manager).
+# CI builds the image and opens a PR that bumps the tag below; ArgoCD syncs this folder after the merge.
+# Do not `kubectl apply` by hand: ArgoCD reverts drift. The ghcr-secret pull secret is copied into the
+# namespace once by bootstrap.sh.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jellybridge-site
+  namespace: jellybridge
+spec:
+  replicas: 1
+  # Stateless (all content is compiled in), so a rolling update with a surge pod means zero downtime.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: jellybridge-site
+  template:
+    metadata:
+      labels:
+        app: jellybridge-site
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: jellybridge-site
+          image: ghcr.io/oddbench-co/jellybridge-site:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: SITE_URL
+              value: "https://jellybridge.oddbench.co"
+            - name: RUST_LOG
+              value: "info"
+            # Ownership tokens (public; they ship in every page's <head>): Google Search Console URL-prefix
+            # property https://jellybridge.oddbench.co/ and Ahrefs, both verified by HTML tag. One token per
+            # account, the same on every Oddbench site.
+            - name: GOOGLE_SITE_VERIFICATION
+              value: kEnB7HKbFHKiisNOPJCCAfjSvO6n37l2MpF0dxwdVXs
+            - name: AHREFS_SITE_VERIFICATION
+              value: da5d126ce1d30d3cf425e959514725b1d53b9518851e361fcc5fc2874c53fd6e
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 1
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+          # Pages are rendered and compressed once at startup; then a request is a lookup.
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "20m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+      imagePullSecrets:
+        - name: ghcr-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jellybridge-site
+  namespace: jellybridge
+spec:
+  selector:
+    app: jellybridge-site
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: ClusterIP

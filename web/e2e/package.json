@@ -1,0 +1,13 @@
+{
+  "name": "jellybridge-site-e2e",
+  "private": true,
+  "description": "End-to-end and visual tests for the JellyBridge website (see ../README.md)",
+  "scripts": {
+    "test": "playwright test",
+    "update": "playwright test --update-snapshots"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.64.1"
+  }
+}

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ head.title }}</title>
+<meta name="description" content="{{ head.description }}">
+{%- if let Some(token) = head.integrations.google %}
+<meta name="google-site-verification" content="{{ token }}">
+{%- endif %}
+{%- if let Some(token) = head.integrations.ahrefs %}
+<meta name="ahrefs-site-verification" content="{{ token }}">
+{%- endif %}
+{%- if head.index %}
+<link rel="canonical" href="{{ head.canonical() }}">
+{%- else %}
+<meta name="robots" content="noindex, follow">
+{%- endif %}
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="JellyBridge">
+<meta property="og:title" content="{{ head.title }}">
+<meta property="og:description" content="{{ head.description }}">
+<meta property="og:url" content="{{ head.canonical() }}">
+<meta property="og:image" content="{{ head.image() }}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="JellyBridge: the native desktop client for Jellyfin">
+<meta property="og:locale" content="en_GB">
+<meta name="twitter:card" content="summary_large_image">
+{%- if let Some(ld) = head.json_ld %}
+<script type="application/ld+json">{{ ld|safe }}</script>
+{%- endif %}
+<meta name="theme-color" content="#f5f4ff">
+<link rel="icon" href="{{ crate::assets::url("/static/favicon.svg") }}" type="image/svg+xml">
+<link rel="preload" href="{{ crate::assets::url("/static/fonts/inter-var.woff2") }}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{{ crate::assets::url("/static/css/site.css") }}">
+<script src="{{ crate::assets::url("/static/js/site.js") }}" defer></script>
+{%- if let Some(key) = head.integrations.ahrefs_analytics %}
+<script src="https://analytics.ahrefs.com/analytics.js" data-key="{{ key }}" async></script>
+{%- endif %}
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href="/"{% if head.nav == "home" %} aria-current="page"{% endif %}>
+      <img src="{{ crate::assets::url("/static/img/logo.svg") }}" alt="" width="28" height="28">
+      <span>JellyBridge</span>
+    </a>
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="/features"{% if head.nav == "features" %} aria-current="page"{% endif %}>Features</a></li>
+        <li><a href="/screenshots"{% if head.nav == "screenshots" %} aria-current="page"{% endif %}>Screenshots</a></li>
+        <li><a href="/download"{% if head.nav == "download" %} aria-current="page"{% endif %}>Download</a></li>
+        <li><a href="/docs"{% if head.nav == "docs" %} aria-current="page"{% endif %}>Docs</a></li>
+        <li><a href="{{ crate::content::REPO }}">GitHub</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+{% block main %}{% endblock %}
+</main>
+
+<footer class="site-footer">
+  <div class="container site-footer__grid">
+    <div class="site-footer__brand">
+      <a class="brand" href="/">
+        <img src="{{ crate::assets::url("/static/img/logo.svg") }}" alt="" width="28" height="28" loading="lazy">
+        <span>JellyBridge</span>
+      </a>
+      <p>The native desktop client for Jellyfin. Free software, made by <a href="https://oddbench.co">Oddbench</a>.</p>
+    </div>
+    <nav aria-label="Product">
+      <h2>Product</h2>
+      <ul>
+        <li><a href="/features">Features</a></li>
+        <li><a href="/screenshots">Screenshots</a></li>
+        <li><a href="/download">Download</a></li>
+        <li><a href="/privacy">Privacy</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Help">
+      <h2>Help</h2>
+      <ul>
+        <li><a href="/docs">Documentation</a></li>
+        <li><a href="/faq">FAQ</a></li>
+        <li><a href="/docs/troubleshooting">Troubleshooting</a></li>
+        <li><a href="{{ crate::content::ISSUES }}">Report a bug</a></li>
+      </ul>
+    </nav>
+    <nav aria-label="Project">
+      <h2>Project</h2>
+      <ul>
+        <li><a href="/about">About</a></li>
+        <li><a href="{{ crate::content::REPO }}">Source code</a></li>
+        <li><a href="/docs/contributing">Contributing</a></li>
+        <li><a href="{{ crate::content::RELEASES }}">Releases</a></li>
+      </ul>
+    </nav>
+    <p class="site-footer__base">© 2026 Oddbench · JellyBridge is licensed under GPL-3.0-or-later · <a href="{{ crate::assets::url("/static/fonts/NOTICE.txt") }}">Font licence</a><br>
+      JellyBridge is an independent project, not affiliated with or endorsed by the Jellyfin project. Jellyfin is a trademark of the Jellyfin project.
+      {%- if head.integrations.ahrefs_analytics.is_some() %} Page views on this website are counted with Ahrefs Web Analytics: no cookies, no personal data.{% endif %}</p>
+  </div>
+</footer>
+</body>
+</html>

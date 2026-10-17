@@ -1,0 +1,35 @@
+# Middlewares are per namespace (Traefik does not resolve them across namespaces).
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-to-https
+  namespace: jellybridge
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jellybridge-site
+  namespace: jellybridge
+  annotations:
+    kubernetes.io/ingress.class: "traefik"
+    traefik.ingress.kubernetes.io/router.middlewares: "jellybridge-redirect-to-https@kubernetescrd"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  rules:
+    - host: jellybridge.oddbench.co
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jellybridge-site
+                port:
+                  number: 80
+  tls:
+    - hosts: [jellybridge.oddbench.co]
+      secretName: jellybridge-site-tls

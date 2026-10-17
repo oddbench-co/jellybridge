@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block main %}
+<header class="page-head container narrow">
+  <p class="eyebrow">About</p>
+  <h1 class="display">Built by people who love open media.</h1>
+  <p class="lead">JellyBridge is an independent, open source project by <a href="https://oddbench.co">Oddbench</a>. It exists to give Jellyfin users a fast, lightweight and beautiful native desktop experience.</p>
+</header>
+
+<section class="container narrow" aria-label="What we stand for">
+  <ul class="about-grid">
+    {%- for p in points %}
+    <li>
+      <span class="tile-icon tile-icon--round">{{ crate::pages::icon(p.icon)|safe }}</span>
+      <div><h2>{{ p.title }}</h2><p>{{ p.body }}</p></div>
+    </li>
+    {%- endfor %}
+  </ul>
+  <div class="prose about-text">
+    <p>JellyBridge started from a simple wish: the Jellyfin web app's interface, without the browser around it. It is written in Rust, draws its own interface and plays your files through mpv, so it starts quickly, stays light and never makes your server transcode.</p>
+    <p>The source code, the issue tracker and every release are on <a href="{{ crate::content::REPO }}">GitHub</a>. JellyBridge is not affiliated with the Jellyfin project; it is a client for it, built with respect for what the Jellyfin community has made.</p>
+  </div>
+</section>
+<div class="landscape" aria-hidden="true">
+  <img src="{{ crate::assets::url("/static/img/mountains.svg") }}" alt="" width="1600" height="420" loading="lazy">
+</div>
+{% endblock %}
