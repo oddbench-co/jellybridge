@@ -530,12 +530,12 @@ fn worker_loop(
     slot: &RenderClientSlot,
     event_sink: &impl Fn(PlayerEvent),
 ) -> WorkerExit {
-    let mut pending_load: Option<PendingLoad> = None;
+    let mut load_state = LoadState::default();
     let mut exit = WorkerExit::Shutdown;
     if matches!(first, PlayerCommand::Load { .. }) {
         slot.set_idle(false);
     }
-    if let Err(error) = apply_command(&mpv, first, &mut pending_load, event_sink) {
+    if let Err(error) = apply_command(&mpv, first, &mut load_state, event_sink) {
         event_sink(PlayerEvent::Error(format!(
             "player command failed: {error}"
         )));
@@ -553,7 +553,7 @@ fn worker_loop(
             match receiver.try_recv() {
                 Ok(PlayerCommand::Shutdown) | Err(TryRecvError::Disconnected) => break 'worker,
                 Ok(PlayerCommand::Unload) => {
-                    if !loaded && pending_load.is_none() {
+                    if !loaded && load_state.pending_load.is_none() {
                         exit = WorkerExit::Unloaded;
                         break 'worker;
                     }
@@ -568,8 +568,7 @@ fn worker_loop(
                         // A new item starts with Playback Info closed.
                         stats = false;
                     }
-                    if let Err(error) = apply_command(&mpv, command, &mut pending_load, event_sink)
-                    {
+                    if let Err(error) = apply_command(&mpv, command, &mut load_state, event_sink) {
                         event_sink(PlayerEvent::Error(format!(
                             "player command failed: {error}"
                         )));
@@ -596,7 +595,7 @@ fn worker_loop(
             timeout = 0.0;
             match event {
                 Ok(Event::FileLoaded) => {
-                    if let Some(load) = pending_load.take()
+                    if let Some(load) = load_state.pending_load.take()
                         && let Err(error) = finish_load(&mpv, load)
                     {
                         event_sink(PlayerEvent::Error(format!(
@@ -664,7 +663,7 @@ fn worker_loop(
                     // Stopped with nothing queued: the demuxer cache and the
                     // decoder's buffers were just freed (~180 MB after a 4K
                     // film), but glibc keeps freed pages unless asked.
-                    if pending_load.is_none() {
+                    if load_state.pending_load.is_none() {
                         trim_heap();
                         slot.set_idle(true);
                         event_sink(PlayerEvent::Idle);
@@ -744,12 +743,23 @@ fn configure_observers(mpv: &Mpv) -> Result<(), libmpv::Error> {
     Ok(())
 }
 
+/// What the worker carries from one command to the next for the current file.
+#[derive(Default)]
+struct LoadState {
+    /// Set by `Load`, taken by FileLoaded.
+    pending_load: Option<PendingLoad>,
+    /// The user chose a subtitle track (or none) since this file loaded, so
+    /// a subtitle that finishes downloading later must not override that.
+    subtitle_chosen: bool,
+}
+
 fn apply_command(
     mpv: &Mpv,
     command: PlayerCommand,
-    pending_load: &mut Option<PendingLoad>,
+    state: &mut LoadState,
     event_sink: &impl Fn(PlayerEvent),
 ) -> Result<(), libmpv::Error> {
+    let pending_load = &mut state.pending_load;
     match command {
         PlayerCommand::Prepare | PlayerCommand::Stats(_) => Ok(()),
         PlayerCommand::Configure(options) => {
@@ -773,6 +783,7 @@ fn apply_command(
                 audio_source_index,
                 subtitle_source_index,
             });
+            state.subtitle_chosen = false;
             // Speed is a global option; like Jellyfin, each item starts at 1x.
             mpv.set_property("speed", Value::Double(1.0))?;
             mpv.command(&["loadfile", &uri, "replace"])
@@ -792,13 +803,26 @@ fn apply_command(
             let Some(path) = subtitle.path.to_str() else {
                 return Ok(());
             };
+            // The preference was resolved when playback started; a track the
+            // user has picked since then (including "off") wins over it.
+            let flag = if state.subtitle_chosen {
+                "auto"
+            } else {
+                sub_add_flag(preferred_source_index, &subtitle)
+            };
             mpv.command(&[
                 "sub-add",
                 path,
-                sub_add_flag(preferred_source_index, &subtitle),
+                flag,
                 subtitle.title.as_deref().unwrap_or(""),
                 subtitle.language.as_deref().unwrap_or(""),
             ])?;
+            tracing::debug!(
+                flag,
+                source_index = ?subtitle.source_index,
+                selected_subtitle = ?mpv.get_i64("sid").ok(),
+                "subtitle attached during playback"
+            );
             // The track list is the only thing the subtitle menu is built
             // from, so it has to be re-read for the new entry to appear.
             event_sink(read_tracks(mpv));
@@ -824,8 +848,13 @@ fn apply_command(
             mpv.set_property("panscan", Value::Double(panscan))
         }
         PlayerCommand::SelectAudio(id) => mpv.set_property("aid", Value::Int(id)),
-        PlayerCommand::SelectSubtitle(Some(id)) => mpv.set_property("sid", Value::Int(id)),
-        PlayerCommand::SelectSubtitle(None) => mpv.set_property("sid", Value::Str("no")),
+        PlayerCommand::SelectSubtitle(choice) => {
+            state.subtitle_chosen = true;
+            match choice {
+                Some(id) => mpv.set_property("sid", Value::Int(id)),
+                None => mpv.set_property("sid", Value::Str("no")),
+            }
+        }
         PlayerCommand::Stop => {
             log_frame_drops(mpv);
             mpv.command(&["stop"])
@@ -972,27 +1001,31 @@ fn finish_load(mpv: &Mpv, load: PendingLoad) -> Result<(), libmpv::Error> {
         }
         None => {}
     }
+    tracing::debug!(
+        audio_source_index = ?load.audio_source_index,
+        subtitle_source_index = ?load.subtitle_source_index,
+        selected_audio = ?mpv.get_i64("aid").ok(),
+        selected_subtitle = ?mpv.get_i64("sid").ok(),
+        "tracks selected after load"
+    );
     Ok(())
 }
 
 /// mpv's `sub-add` selection flag for a materialized subtitle.
 ///
-/// This used to be an unconditional `auto`, which mpv defines as "select unless
-/// a subtitle is already selected". That was harmless while every subtitle was
-/// added before playback began, but subtitles now arrive during playback, and
-/// `auto` would turn them on for someone who has them off -- mpv counts
-/// `sid=no` as nothing being selected. So the decision is made here, from the
-/// preference the caller already resolved, and both add paths share it.
+/// Only the subtitle the resolved preference names is selected. Every other
+/// one is added with `auto`, which mpv defines as "don't select the subtitle"
+/// once playback has started (both add paths run after FileLoaded). The other
+/// flag, `cached`, is *not* a quiet add: mpv's manual defines it as "select
+/// the subtitle", deduplicated by file name, so using it here turned every
+/// subtitle on as it finished downloading, even for someone who had them off.
 fn sub_add_flag(
     preferred_source_index: Option<i64>,
     subtitle: &PlayerSubtitleFile,
 ) -> &'static str {
     match preferred_source_index {
         Some(index) if subtitle.source_index == Some(index) => "select",
-        // No stored preference and no default stream: leave the pick to mpv,
-        // which is what this path did before subtitles arrived late.
-        None => "auto",
-        _ => "cached",
+        _ => "auto",
     }
 }
 
@@ -1091,11 +1124,11 @@ mod tests {
         // The subtitle the resolved preference names.
         assert_eq!(sub_add_flag(Some(2), &subtitle(Some(2))), "select");
         // A different track: added so it appears in the menu, not selected.
-        assert_eq!(sub_add_flag(Some(2), &subtitle(Some(3))), "cached");
-        // Subtitles off. `auto` here would turn them on mid-playback, because
-        // mpv reads `sid=no` as nothing being selected.
-        assert_eq!(sub_add_flag(Some(-1), &subtitle(Some(2))), "cached");
-        // No preference and no default stream: unchanged from before, mpv picks.
+        // (`cached` would select it: mpv defines the flag that way.)
+        assert_eq!(sub_add_flag(Some(2), &subtitle(Some(3))), "auto");
+        // Subtitles off: nothing arriving late may turn them on.
+        assert_eq!(sub_add_flag(Some(-1), &subtitle(Some(2))), "auto");
+        // No preference at all: the same, the pick is never left to mpv.
         assert_eq!(sub_add_flag(None, &subtitle(Some(2))), "auto");
     }
 

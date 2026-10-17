@@ -90,6 +90,8 @@ pub struct PreparedPlayback {
     /// Identifies the stream to the server when reporting playback progress.
     pub media_source_id: String,
     pub play_session_id: Option<String>,
+    /// The tracks the server would start this user with.
+    pub track_defaults: ServerTrackDefaults,
     proxy: ProxySession,
     /// Shared with the [`SubtitleFetcher`]: the directory outlives preparation
     /// now that subtitles are materialized after playback has already started,
@@ -213,6 +215,7 @@ pub async fn prepare_playback(
                 .play_session_id
                 .clone()
                 .filter(|id| !id.is_empty()),
+            track_defaults: ServerTrackDefaults::from_source(source),
             proxy,
             _temporary_subtitles: temporary_subtitles.clone(),
         },
@@ -421,6 +424,33 @@ struct MediaSource {
     supports_direct_play: bool,
     #[serde(rename = "MediaStreams", default)]
     media_streams: Vec<MediaStream>,
+    // The server's track choice for this user: the audio language preference
+    // and the subtitle mode (Default, Smart, Only Forced, Always, None) from
+    // the user's Jellyfin settings, applied to this source's streams. These
+    // are what jellyfin-web starts playback with.
+    #[serde(rename = "DefaultAudioStreamIndex", default)]
+    default_audio_stream_index: Option<i32>,
+    #[serde(rename = "DefaultSubtitleStreamIndex", default)]
+    default_subtitle_stream_index: Option<i32>,
+}
+
+/// The server's default audio and subtitle streams for a playback, as
+/// Jellyfin stream indexes. A missing subtitle means the user's subtitle
+/// mode chose none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ServerTrackDefaults {
+    pub audio: Option<i64>,
+    pub subtitle: Option<i64>,
+}
+
+impl ServerTrackDefaults {
+    fn from_source(source: &MediaSource) -> Self {
+        let index = |value: Option<i32>| value.filter(|index| *index >= 0).map(i64::from);
+        Self {
+            audio: index(source.default_audio_stream_index),
+            subtitle: index(source.default_subtitle_stream_index),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

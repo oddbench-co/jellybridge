@@ -10,7 +10,9 @@ use crate::features::detail::{
 };
 use crate::features::now_playing::{NowPlaying, PlayerOverlay, PreviousAction, previous_action};
 use crate::features::progress::{PlaybackReporter, ProgressReport, ReportTarget};
-use crate::services::playback::{PlaybackConfig, SubtitleFetcher, prepare_playback};
+use crate::services::playback::{
+    PlaybackConfig, ServerTrackDefaults, SubtitleFetcher, prepare_playback,
+};
 use crate::services::player::{PlayerCommand, PlayerSubtitleFile, PlayerTrack};
 use crate::services::session::{SettingsStore, StoredSettings};
 use crate::ui;
@@ -303,8 +305,6 @@ fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool
         // Settings are read here, off the UI thread, because the store does
         // blocking file I/O.
         let settings = ctx.settings_store.load().unwrap_or_default();
-        let (audio_source_index, subtitle_source_index) =
-            resolved_playback_sources(&detail, &settings);
         let old = ctx.playback.lock().ok().and_then(|mut slot| slot.take());
         if let Some(old) = old {
             old.shutdown().await;
@@ -322,6 +322,8 @@ fn begin_playback(context: &AppContext, detail: DetailItemData, from_start: bool
         }
         match prepared {
             Ok((prepared, fetcher)) => {
+                let (audio_source_index, subtitle_source_index) =
+                    resolved_playback_sources(&detail, &settings, &prepared.track_defaults);
                 // Doubles as this playback's identity: the proxy's secret path
                 // is fresh for every prepared stream.
                 let local_url = prepared.local_url.clone();
@@ -661,9 +663,16 @@ pub fn finish_report(
     }
 }
 
+/// The audio and subtitle streams a playback starts with, as Jellyfin stream
+/// indexes: the choice remembered for this title, else the server's default
+/// for the user (their language preferences and subtitle mode, as
+/// jellyfin-web uses), else the stream flagged default. The subtitle is
+/// always decided here, `-1` meaning none: left undecided, mpv would apply
+/// its own selection rules and the menu could not show what it picked.
 pub fn resolved_playback_sources(
     item: &DetailItemData,
     settings: &StoredSettings,
+    defaults: &ServerTrackDefaults,
 ) -> (Option<i64>, Option<i64>) {
     let audio = item
         .streams
@@ -682,10 +691,16 @@ pub fn resolved_playback_sources(
         .and_then(|preference| {
             best_preference_match(&audio, &preference.audio_language, &preference.audio_title)
         })
-        .or_else(|| audio.iter().position(|stream| stream.is_default))
-        .or_else(|| (!audio.is_empty()).then_some(0))
         .and_then(|index| audio.get(index))
-        .map(|stream| i64::from(stream.index));
+        .map(|stream| i64::from(stream.index))
+        .or(defaults.audio)
+        .or_else(|| {
+            audio
+                .iter()
+                .find(|stream| stream.is_default)
+                .or_else(|| audio.first())
+                .map(|stream| i64::from(stream.index))
+        });
     let selected_subtitle = if preference.is_some_and(|preference| preference.subtitles_disabled) {
         Some(-1)
     } else {
@@ -697,9 +712,10 @@ pub fn resolved_playback_sources(
                     &preference.subtitle_title,
                 )
             })
-            .or_else(|| subtitles.iter().position(|stream| stream.is_default))
             .and_then(|index| subtitles.get(index))
             .map(|stream| i64::from(stream.index))
+            .or(defaults.subtitle)
+            .or(Some(-1))
     };
     (selected_audio, selected_subtitle)
 }
@@ -967,9 +983,85 @@ mod tests {
             },
         );
 
+        // The remembered choice beats the server's default.
+        let defaults = ServerTrackDefaults {
+            audio: Some(4),
+            subtitle: None,
+        };
         assert_eq!(
-            resolved_playback_sources(&episode, &settings),
+            resolved_playback_sources(&episode, &settings, &defaults),
             (Some(9), Some(12))
+        );
+    }
+
+    #[test]
+    fn without_a_remembered_choice_the_servers_defaults_are_played() {
+        let mut movie = DetailItemData::fixture("movie-1", DetailKind::Movie);
+        movie.streams = vec![
+            StreamData {
+                index: 1,
+                kind: "Audio".into(),
+                label: "English".into(),
+                language: Some("eng".into()),
+                title: None,
+                codec: Some("aac".into()),
+                is_default: true,
+            },
+            StreamData {
+                index: 2,
+                kind: "Audio".into(),
+                label: "German".into(),
+                language: Some("ger".into()),
+                title: None,
+                codec: Some("aac".into()),
+                is_default: false,
+            },
+            StreamData {
+                index: 3,
+                kind: "Subtitle".into(),
+                label: "English".into(),
+                language: Some("eng".into()),
+                title: None,
+                codec: Some("srt".into()),
+                is_default: true,
+            },
+            StreamData {
+                index: 4,
+                kind: "Subtitle".into(),
+                label: "German".into(),
+                language: Some("ger".into()),
+                title: None,
+                codec: Some("srt".into()),
+                is_default: false,
+            },
+        ];
+        let settings = StoredSettings::default();
+
+        // The server applied the user's language preferences and subtitle
+        // mode; its pick wins over the streams' default flags.
+        let defaults = ServerTrackDefaults {
+            audio: Some(2),
+            subtitle: Some(4),
+        };
+        assert_eq!(
+            resolved_playback_sources(&movie, &settings, &defaults),
+            (Some(2), Some(4))
+        );
+        // The server chose no subtitle (say, subtitle mode "None"): that is
+        // an explicit "off", never left for mpv to decide.
+        let defaults = ServerTrackDefaults {
+            audio: Some(2),
+            subtitle: None,
+        };
+        assert_eq!(
+            resolved_playback_sources(&movie, &settings, &defaults),
+            (Some(2), Some(-1))
+        );
+        // Nothing from the server at all: the default-flagged audio, and
+        // still no subtitle.
+        assert_eq!(
+            resolved_playback_sources(&movie, &settings, &ServerTrackDefaults::default()),
+            (Some(1), Some(-1))
         );
     }
 
@@ -994,6 +1086,14 @@ mod tests {
             },
         );
 
-        assert_eq!(resolved_playback_sources(&movie, &settings).1, Some(-1));
+        // Even though the server would start this subtitle.
+        let defaults = ServerTrackDefaults {
+            audio: None,
+            subtitle: Some(5),
+        };
+        assert_eq!(
+            resolved_playback_sources(&movie, &settings, &defaults).1,
+            Some(-1)
+        );
     }
 }
