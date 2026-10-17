@@ -47,6 +47,10 @@ spec:
               value: kEnB7HKbFHKiisNOPJCCAfjSvO6n37l2MpF0dxwdVXs
             - name: AHREFS_SITE_VERIFICATION
               value: da5d126ce1d30d3cf425e959514725b1d53b9518851e361fcc5fc2874c53fd6e
+            # Ahrefs Web Analytics (project "JellyBridge", workspace key): public, ships in every page. Setting it
+            # adds the script and admits analytics.ahrefs.com in the CSP; unset keeps the site free of third parties.
+            - name: AHREFS_ANALYTICS_KEY
+              value: "Jqi/3b4EIV64z2NcAF+CVw"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
