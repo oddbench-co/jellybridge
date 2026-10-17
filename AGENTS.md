@@ -17,7 +17,9 @@ libmpv playback. The single production crate lives in `rust/app`:
   materialization), `libmpv` (libmpv loaded with `dlopen` on first play, not
   linked: see `docs/PERFORMANCE.md`), `player` (mpv worker thread), `proxy` (token-hiding
   loopback proxy), `render` (mpv renders into its own framebuffer inside an
-  egui paint callback and is blitted into the window).
+  egui paint callback and is blitted into the window), `keep_awake` (holds
+  the desktop's idle inhibitor while a video plays: Wayland protocol, D-Bus,
+  Win32 or IOKit, on a thread of its own).
 - `src/ui/` — the only module that knows egui: `UiHandle` (queues closures
   over `UiState` and wakes the window), the view models and presenters per
   screen, `app.rs` (the `eframe::App`: drains updates, draws, dispatches

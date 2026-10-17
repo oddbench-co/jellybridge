@@ -185,6 +185,8 @@ pub struct JellyBridgeApp {
     back_pending: bool,
     /// Whether the window was checked against its monitor yet (see `fit_to_monitor`).
     fit_checked: bool,
+    /// Keeps the computer from locking or sleeping while a video plays.
+    keep_awake: crate::services::keep_awake::KeepAwake,
 }
 
 impl JellyBridgeApp {
@@ -216,6 +218,7 @@ impl JellyBridgeApp {
             last_input: Instant::now(),
             back_pending: false,
             fit_checked: false,
+            keep_awake: crate::services::keep_awake::KeepAwake::new(),
         }
     }
 
@@ -619,6 +622,14 @@ impl eframe::App for JellyBridgeApp {
                 player::draw(ui, &mut self.state, Some(video), &mut actions);
             }
         }
+        // A playing video keeps the computer awake; paused, ended, failed
+        // or left, it may lock and sleep again.
+        let player = &self.state.player;
+        let playing = self.state.screen == Screen::Player
+            && !player.paused
+            && !player.loading
+            && player.status.is_empty();
+        self.keep_awake.set_playing(playing, frame);
         if self.state.screen != Screen::Player {
             super::menu::draw_menu(ui, &mut self.state.menu, &mut actions);
             super::menu::draw_dialog(ui, &mut self.state.item_dialog, &mut actions);

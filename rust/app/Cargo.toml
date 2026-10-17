@@ -35,6 +35,12 @@ url = "=2.5.7"
 # comes in through the accessibility stack.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "=5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
+# The Wayland idle inhibitor that keeps the computer awake during playback
+# (services/keep_awake.rs). The same crates winit already uses, so they add
+# nothing to the binary; `unstable` is where idle-inhibit lives.
+wayland-client = "=0.31.15"
+wayland-backend = { version = "=0.3.17", default-features = false, features = ["client_system"] }
+wayland-protocols = { version = "=0.32.13", features = ["client", "unstable"] }
 # Client-side window decorations on Wayland. GNOME (Ubuntu, Fedora
 # Workstation, Debian, elementary) draws no title bar for Wayland clients, so
 # without these the window has no close, move or resize handles there.
@@ -44,7 +50,7 @@ winit = { version = "=0.30.13", default-features = false, features = ["wayland-c
 # Windows' own file dialog for "Add Image"; windows-sys already comes in
 # through winit.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_System_Power", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
 
 [[bin]]
 name = "jellybridge"

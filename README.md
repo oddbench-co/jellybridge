@@ -48,7 +48,9 @@ Screenshots use Jellyfin's [public demo server](https://demo.jellyfin.org).
   logo, ratings, media info, cast and crew, trailers and similar titles.
 - **Player** with resume, audio and subtitle tracks (embedded and external),
   chapters, playback speed, previous and next episode, and skip buttons for
-  intros, recaps and outros where the server has detected them.
+  intros, recaps and outros where the server has detected them. While a
+  video plays your computer stays awake: no screen lock, blanking or sleep
+  until you pause.
 - **Progress that syncs**: positions, watched state and favorites are saved
   on the server, so you can continue on any other device.
 - **Playlists and collections**: add items to them from any item's menu.

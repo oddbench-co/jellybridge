@@ -4,6 +4,7 @@
 pub mod artwork;
 pub mod dns;
 pub mod home_snapshot;
+pub mod keep_awake;
 pub mod libmpv;
 pub mod playback;
 pub mod player;
