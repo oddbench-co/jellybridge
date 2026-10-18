@@ -1,49 +1,41 @@
 # Maintainer: Oddbench <support@oddbench.co>
-# Native Arch package. Unlike the other Linux packages it does not bundle
-# libmpv: Arch's own mpv is current (libmpv.so.2) and has the full FFmpeg,
-# so the app loads the system one and is updated with the system.
-#
-# Local build from a working tree: JELLYBRIDGE_SRC=/path/to/repo makepkg
+# The AUR package "jellybridge", built from the release source. Unlike the
+# other Linux packages it does not bundle libmpv: Arch's own mpv is current
+# (libmpv.so.2) and has the full FFmpeg, so the app loads the system one and
+# it is updated with the system. "jellybridge-bin" (PKGBUILD-bin) is the
+# prebuilt alternative. scripts/aur.sh fills in the checksum and publishes.
 pkgname=jellybridge
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Native desktop client for Jellyfin'
 arch=('x86_64')
-url='https://github.com/oddbench-co/jellybridge'
+url='https://jellybridge.oddbench.co'
 license=('GPL-3.0-or-later')
 depends=('mpv' 'gcc-libs' 'glibc' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr' 'hicolor-icon-theme')
 makedepends=('cargo' 'imagemagick')
 options=('!lto' '!debug')
-if [[ -n "${JELLYBRIDGE_SRC:-}" ]]; then
-    source=()
-    sha256sums=()
-else
-    source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-    sha256sums=('SKIP')
-fi
-
-_srcdir() {
-    if [[ -n "${JELLYBRIDGE_SRC:-}" ]]; then echo "$JELLYBRIDGE_SRC"; else echo "$srcdir/$pkgname-$pkgver"; fi
-}
+source=("$pkgname-$pkgver.tar.gz::https://github.com/oddbench-co/jellybridge/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
 
 prepare() {
-    cd "$(_srcdir)"
+    cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "$(_srcdir)"
+    cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
-    export CARGO_TARGET_DIR="$srcdir/target"
+    export CARGO_TARGET_DIR=target
     cargo build --frozen --release -p jellybridge-app
 }
 
 package() {
-    cd "$(_srcdir)"
-    install -Dm755 "$srcdir/target/release/jellybridge" "$pkgdir/usr/bin/jellybridge"
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/jellybridge "$pkgdir/usr/bin/jellybridge"
     install -Dm644 packaging/linux/co.oddbench.JellyBridge.desktop "$pkgdir/usr/share/applications/co.oddbench.JellyBridge.desktop"
     install -Dm644 packaging/linux/co.oddbench.JellyBridge.metainfo.xml "$pkgdir/usr/share/metainfo/co.oddbench.JellyBridge.metainfo.xml"
+    install -Dm644 rust/app/assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/co.oddbench.JellyBridge.svg"
     local size
     for size in 32 48 64 128 256 512; do
         install -dm755 "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"

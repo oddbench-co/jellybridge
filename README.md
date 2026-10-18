@@ -71,10 +71,13 @@ package includes everything playback needs.
 
 | System | File | How to install |
 | --- | --- | --- |
+| Any Linux with snap (Ubuntu and others) | Snap Store | `sudo snap install jellybridge` |
+| Arch, Manjaro, EndeavourOS (AUR) | `jellybridge` or `jellybridge-bin` | `yay -S jellybridge` builds against Arch's mpv; `jellybridge-bin` is the prebuilt bundle |
+| Fedora (COPR, system mpv) | `oddbench/jellybridge` | `sudo dnf copr enable oddbench/jellybridge && sudo dnf install jellybridge` (H.264/HEVC need RPM Fusion's ffmpeg) |
 | Ubuntu 22.04+, Debian 12+, Linux Mint, Pop!_OS, elementary OS | `jellybridge_<version>_amd64.deb` | Open it with the Software app, or `sudo apt install ./jellybridge_*_amd64.deb` |
 | Fedora, openSUSE | `jellybridge-<version>-1.x86_64.rpm` | `sudo dnf install ./jellybridge-*.rpm` or `sudo zypper install ./jellybridge-*.rpm` |
 | Arch, Manjaro, EndeavourOS | `jellybridge-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U jellybridge-*.pkg.tar.zst` (uses Arch's own mpv) |
-| Any other Linux (glibc 2.35+) | `JellyBridge-<version>-x86_64.AppImage` | Make it executable and run it |
+| Any other Linux (glibc 2.35+) | `JellyBridge-<version>-x86_64.AppImage` | Make it executable and run it; AppImageUpdate keeps it current |
 | Linux, without root | `jellybridge-<version>-x86_64.tar.gz` | Unpack and run `./install.sh` (installs to `~/.local`) |
 | Windows 10 and 11 | `JellyBridge-<version>-setup.exe` | Run it. Installs for your user only, no administrator prompt |
 | Windows, no install | `JellyBridge-<version>-portable.zip` | Unpack anywhere and run `jellybridge.exe` |
@@ -178,7 +181,7 @@ nothing is installed on your machine:
 
 ```bash
 scripts/build-linux.sh      # portable bundle on an Ubuntu 22.04 base (glibc 2.35), with libmpv and codecs
-scripts/package-linux.sh    # .deb, .rpm, AppImage, tarball and Arch package -> target/linux/dist/
+scripts/package-linux.sh    # .deb, .rpm, AppImage, tarball and Arch package (add "snap" for the snap) -> target/linux/dist/
 scripts/build-windows.sh    # setup.exe and portable zip -> target/windows/dist/
 scripts/package-macos.sh    # on a Mac: .app and .dmg for its CPU -> target/macos/dist/
 ```

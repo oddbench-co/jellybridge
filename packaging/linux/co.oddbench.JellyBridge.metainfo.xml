@@ -15,11 +15,79 @@
       hardware-accelerated decoding. All common video codecs are included, so
       nothing else needs to be installed.
     </p>
+    <p>
+      It follows the layout of Jellyfin's own web app, so everything is where you
+      expect it, and starts in well under a second with a small memory footprint.
+      Playback is done by mpv: audio and subtitle tracks, chapters, playback speed,
+      next episode, and skip buttons for intros and recaps, every control with a
+      keyboard shortcut.
+    </p>
+    <p>
+      JellyBridge is an independent project, not affiliated with the Jellyfin
+      project. It needs a Jellyfin server to connect to (tested with Jellyfin 10.11 and 12).
+    </p>
   </description>
   <launchable type="desktop-id">co.oddbench.JellyBridge.desktop</launchable>
-  <url type="homepage">https://github.com/oddbench-co/jellybridge</url>
+  <provides>
+    <binary>jellybridge</binary>
+  </provides>
+  <url type="homepage">https://jellybridge.oddbench.co</url>
+  <url type="bugtracker">https://github.com/oddbench-co/jellybridge/issues</url>
+  <url type="help">https://jellybridge.oddbench.co/docs</url>
+  <url type="faq">https://jellybridge.oddbench.co/faq</url>
+  <url type="vcs-browser">https://github.com/oddbench-co/jellybridge</url>
+  <url type="contribute">https://jellybridge.oddbench.co/docs/contributing</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#eef0ff</color>
+    <color type="primary" scheme_preference="dark">#312e81</color>
+  </branding>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Home: My Media, Continue Watching and Next Up</caption>
+      <image>https://raw.githubusercontent.com/oddbench-co/jellybridge/main/docs/screenshots/home.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>A library as a poster grid, with sorting and filters</caption>
+      <image>https://raw.githubusercontent.com/oddbench-co/jellybridge/main/docs/screenshots/library.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>A film page with backdrop, ratings, media info and cast</caption>
+      <image>https://raw.githubusercontent.com/oddbench-co/jellybridge/main/docs/screenshots/detail.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>The player: seek bar, track menus and playback controls</caption>
+      <image>https://raw.githubusercontent.com/oddbench-co/jellybridge/main/docs/screenshots/player.jpg</image>
+    </screenshot>
+  </screenshots>
   <content_rating type="oars-1.1"/>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <internet>always</internet>
+  </recommends>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <categories>
+    <category>AudioVideo</category>
+    <category>Video</category>
+    <category>Player</category>
+  </categories>
+  <keywords>
+    <keyword>jellyfin</keyword>
+    <keyword>media</keyword>
+    <keyword>movies</keyword>
+    <keyword>series</keyword>
+    <keyword>video</keyword>
+    <keyword>player</keyword>
+    <keyword>mpv</keyword>
+  </keywords>
   <releases>
-    <release version="0.1.0" date="2026-10-15"/>
+    <release version="0.1.0" date="2026-10-15">
+      <url type="details">https://github.com/oddbench-co/jellybridge/releases/tag/v0.1.0</url>
+      <description>
+        <p>First release: browsing, search, detail pages and playback with the bundled mpv, on Linux, Windows and macOS.</p>
+      </description>
+    </release>
   </releases>
 </component>

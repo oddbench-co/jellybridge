@@ -1,0 +1,30 @@
+# Maintainer: Oddbench <support@oddbench.co>
+# The AUR package "jellybridge-bin": the release's portable Linux bundle,
+# with its own LGPL libmpv (FFmpeg, dav1d, libass and libplacebo linked in),
+# so it installs in seconds and plays everything without further packages.
+# "jellybridge" (PKGBUILD) builds from source against the system mpv instead.
+pkgname=jellybridge-bin
+_pkgname=jellybridge
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Native desktop client for Jellyfin (prebuilt, with bundled libmpv)'
+arch=('x86_64')
+url='https://jellybridge.oddbench.co'
+license=('GPL-3.0-or-later' 'LGPL-2.1-or-later')
+depends=('gcc-libs' 'glibc' 'libglvnd' 'libxkbcommon' 'wayland' 'libx11' 'libxcursor' 'libxi' 'libxrandr'
+         'fontconfig' 'freetype2' 'harfbuzz' 'fribidi' 'libdrm' 'lcms2' 'alsa-lib' 'libpulse' 'zlib' 'hicolor-icon-theme')
+optdepends=('libva-mesa-driver: hardware decoding on AMD and Intel'
+            'intel-media-driver: hardware decoding on recent Intel')
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source=("https://github.com/oddbench-co/jellybridge/releases/download/v$pkgver/$_pkgname-$pkgver-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    cd "$_pkgname-$pkgver-x86_64"
+    cp -a usr "$pkgdir/"
+    install -dm755 "$pkgdir/usr/share/licenses/$pkgname"
+    ln -s ../../doc/jellybridge/LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    ln -s ../../doc/jellybridge/THIRD-PARTY-NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/THIRD-PARTY-NOTICES.md"
+}

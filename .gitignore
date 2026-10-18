@@ -27,3 +27,6 @@ Thumbs.db
 # Stray build output of other tools
 .gradle/
 build/
+
+# Snap built by hand on the host (CI moves it into target/linux/dist)
+/*.snap

@@ -14,6 +14,7 @@ outside the user's config and cache.
 | --- | --- | --- | --- | --- |
 | Ubuntu 22.04.5 LTS | GNOME, X11 | 2.35 | .deb | pass |
 | Ubuntu 24.04.5 LTS | GNOME | 2.39 | .deb | pass (menu entry and dock icon checked) |
+| Ubuntu 24.04.5 LTS | GNOME, X11 | 2.39 | .snap (strict, 2026-10-18) | pass: all interfaces auto-connected, bundled libmpv played from inside the sandbox, clean `snap remove` |
 | Ubuntu 26.04.1 LTS | GNOME, Wayland | 2.43 | .deb | pass |
 | Debian 12 | GNOME, Wayland | 2.36 | .deb | pass |
 | Debian 13 | GNOME, Wayland | 2.41 | .deb | pass |
@@ -81,11 +82,11 @@ All in `scripts/vm-test/`; VMs are headless (nothing appears on screen).
 scripts/build-linux.sh && scripts/package-linux.sh
 scripts/vm-test/download-isos.sh            # live ISOs from matrix.tsv (~60 GB)
 export JB_TEST_SERIES_ID=<series id> JB_TEST_EPISODE_ID=<episode id> JB_TEST_SEARCH=<title>
-scripts/vm-test/prepare.sh                  # stage packages + test session, start the payload server
+scripts/vm-test/prepare.sh                  # stage packages, sign in to the demo server, start the payload server
 scripts/vm-test/vm.py start ubuntu-2404 ~/.local/share/jellybridge-vmtest/iso/ubuntu-2404.iso
 scripts/vm-test/vm.py shot ubuntu-2404 /tmp/s.png   # look, then open a terminal in the guest:
 scripts/vm-test/vm.py key ubuntu-2404 ctrl-alt-t
-scripts/vm-test/run-guest.sh ubuntu-2404 [package|appimage|tar]
+scripts/vm-test/run-guest.sh ubuntu-2404 [package|appimage|tar|snap]
 scripts/vm-test/check-shots.py ~/.local/share/jellybridge-vmtest/www/results/*
 scripts/vm-test/vm.py stop ubuntu-2404
 ```

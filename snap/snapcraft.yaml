@@ -1,0 +1,66 @@
+# The Snap Store package (https://snapcraft.io/jellybridge). It wraps the
+# portable Linux bundle from scripts/build-linux.sh, so the snap carries the
+# same binary and the same LGPL libmpv as the .deb, .rpm and AppImage:
+#
+#   scripts/build-linux.sh && snapcraft pack
+#
+# Name, summary, description and version come from the AppStream metainfo
+# (parse-info below), so a release changes them in one place. The GNOME
+# extension supplies the desktop runtime (fonts, themes, portals) and Mesa
+# through the gpu-2404 content snap; everything playback needs beyond that is
+# staged from the Ubuntu archive, the way the .deb depends on it.
+name: jellybridge
+adopt-info: jellybridge
+license: GPL-3.0-or-later
+website: https://jellybridge.oddbench.co
+source-code: https://github.com/oddbench-co/jellybridge
+issues: https://github.com/oddbench-co/jellybridge/issues
+contact: https://github.com/oddbench-co/jellybridge/issues
+icon: rust/app/assets/icon.png
+
+base: core24
+confinement: strict
+grade: stable
+compression: lzo
+
+platforms:
+  amd64:
+
+apps:
+  jellybridge:
+    command: usr/bin/jellybridge
+    desktop: usr/share/applications/co.oddbench.JellyBridge.desktop
+    common-id: co.oddbench.JellyBridge
+    extensions: [gnome]
+    plugs:
+      - network
+      - audio-playback
+      # The player holds the desktop's idle inhibitor while a video plays
+      # (org.freedesktop.ScreenSaver; the portal path needs nothing extra).
+      - screen-inhibit-control
+
+parts:
+  jellybridge:
+    plugin: dump
+    source: target/linux/bundle
+    parse-info: [usr/share/metainfo/co.oddbench.JellyBridge.metainfo.xml]
+    stage-packages:
+      - libasound2t64
+      - libpulse0
+      - liblcms2-2
+      - libfribidi0
+      - libharfbuzz0b
+      - libfontconfig1
+      - libfreetype6
+      - libdrm2
+      - libxkbcommon0
+      - libxcursor1
+      - libxi6
+      - libxrandr2
+      - libwayland-client0
+      - libwayland-egl1
+      - libx11-6
+    prime:
+      - -usr/share/doc/*/changelog*
+      - -usr/share/lintian
+      - -usr/share/man

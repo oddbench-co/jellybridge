@@ -54,7 +54,10 @@ installed to play, not to build. Performance work follows
   `libmpv-2.dll` and the Vulkan loader beside the exe.
 - `scripts/build-linux.sh` then `scripts/package-linux.sh` — the portable
   Linux bundle (Ubuntu 22.04 base, LGPL libmpv + libva bundled) and the
-  .deb/.rpm/AppImage/tarball/Arch packages, all in containers.
+  .deb/.rpm/AppImage/tarball/Arch packages (and, on request, the snap), all
+  in containers. `snap/snapcraft.yaml`, `packaging/arch/`, `packaging/copr/`
+  and `scripts/{aur,copr,vendor-crates}.sh` feed the stores; see
+  `docs/PUBLISHING.md`.
 - `scripts/vm-test/` — headless QEMU VMs that install each package on a
   distro's live ISO and run a scripted scenario; see
   `docs/rust-port/platform-matrix.md`.
@@ -65,7 +68,9 @@ installed to play, not to build. Performance work follows
   signed and notarized when the Apple credentials are set (see
   `docs/rust-port/packaging.md`).
 - `.github/workflows/release.yml` — pushing a `v<version>` tag builds every
-  package and drafts a GitHub release; see `docs/RELEASING.md`.
+  package and drafts a GitHub release; see `docs/RELEASING.md`. Publishing
+  the release runs `publish.yml`, which sends it to the Snap Store, the AUR
+  and Fedora COPR (`docs/PUBLISHING.md`).
 
 ## Coding Style & Naming Conventions
 

@@ -6,8 +6,11 @@ so nothing is public until you publish it.
 
 ## Cutting a release
 
-1. Set the version in `rust/app/Cargo.toml` (and the `<release>` entry in
-   `packaging/linux/co.oddbench.JellyBridge.metainfo.xml`), commit and push.
+1. Set the version in `rust/app/Cargo.toml`, add a `<release>` entry with
+   notes to `packaging/linux/co.oddbench.JellyBridge.metainfo.xml`, and set
+   the same version in `packaging/arch/PKGBUILD`, `packaging/arch/PKGBUILD-bin`
+   and `packaging/copr/jellybridge.spec` (with a `%changelog` entry). The
+   workflow fails at once when they disagree. Commit and push.
 2. Tag that commit and push the tag:
 
    ```bash
@@ -19,7 +22,9 @@ so nothing is public until you publish it.
    builds the Linux media libraries and takes longer). It fails at once if
    the tag does not match the version in `Cargo.toml`.
 4. Open the draft on the Releases page, check the files and the generated
-   notes, and publish it.
+   notes, and publish it. Publishing starts the **Publish** workflow, which
+   sends the release to the Snap Store, the AUR and Fedora COPR; what each
+   channel needs is in [PUBLISHING.md](PUBLISHING.md).
 
 A failed build can be rerun from the Actions tab. To build again from a fixed
 commit, delete the draft release and the tag (`git push --delete origin
@@ -34,7 +39,7 @@ files are attached to the run as artifacts; no tag or release is created.
 
 | Job | Runner | Files |
 | --- | --- | --- |
-| Linux | ubuntu-24.04, in Ubuntu 22.04 and Arch containers | `.deb`, `.rpm`, `.AppImage`, `.tar.gz`, `.pkg.tar.zst` |
+| Linux | ubuntu-24.04, in Ubuntu 22.04 and Arch containers, plus snapcraft | `.deb`, `.rpm`, `.AppImage` (+ `.zsync`), `.tar.gz`, `.pkg.tar.zst`, `.snap`, `-vendor.tar.xz` (the crates, for offline distribution builds) |
 | Windows | ubuntu-24.04, cross-built in a container | `-setup.exe`, `-portable.zip` |
 | macOS arm64 | macos-14 | `-macos-arm64.dmg` (runs on macOS 14 and newer) |
 | macOS x86_64 | macos-15-intel | `-macos-x86_64.dmg` (runs on macOS 15 and newer) |
@@ -52,8 +57,8 @@ New repository secret). The workflow stops with a list of what is missing.
 
 | Secret | What it is |
 | --- | --- |
-| `MACOS_CERTIFICATE_P12_BASE64` | The "Developer ID Application" certificate with its private key, exported as .p12, base64-encoded |
-| `MACOS_CERTIFICATE_PASSWORD` | The password chosen when exporting the .p12 |
+| `MACOS_CERTIFICATE` | The "Developer ID Application" certificate with its private key, exported as .p12, base64-encoded |
+| `MACOS_CERTIFICATE_PWD` | The password chosen when exporting the .p12 |
 | `APPLE_API_KEY_P8_BASE64` | An App Store Connect API key (.p8 file), base64-encoded |
 | `APPLE_API_KEY_ID` | That key's id (10 characters) |
 | `APPLE_API_ISSUER_ID` | The issuer id shown above the keys list (a UUID) |
@@ -65,7 +70,7 @@ certificate together with its private key, export as .p12 with a strong
 password, and encode it:
 
 ```bash
-base64 -i DeveloperID.p12 | pbcopy     # paste into MACOS_CERTIFICATE_P12_BASE64
+base64 -i DeveloperID.p12 | pbcopy     # paste into MACOS_CERTIFICATE
 ```
 
 **The API key.** In App Store Connect, Users and Access → Integrations → App

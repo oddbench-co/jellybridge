@@ -1,0 +1,142 @@
+# Sends a published GitHub release to the Linux stores and repositories:
+# the Snap Store, the AUR (jellybridge and jellybridge-bin) and Fedora COPR.
+# It runs when a release is published (the draft from release.yml, once you
+# press Publish) and can be rerun by hand for a tag, for one channel or all.
+#
+# Each channel needs its own credentials in the repository secrets, described
+# in docs/PUBLISHING.md. A channel whose secrets are missing is skipped with a
+# notice, so the workflow is safe to run before every account exists.
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to publish, e.g. v0.1.0 (must be a published release)
+        required: true
+        type: string
+      channels:
+        description: Which channels to publish (comma-separated from snap,aur,copr)
+        default: snap,aur,copr
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ inputs.tag || github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
+  CHANNELS: ${{ inputs.channels || 'snap,aur,copr' }}
+
+jobs:
+  snap:
+    name: Snap Store
+    if: contains(inputs.channels || 'snap,aur,copr', 'snap')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check the store credentials
+        id: creds
+        env:
+          CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        run: |
+          if [[ -z "$CREDENTIALS" ]]; then
+            echo "::notice::Snap Store skipped: add the SNAPCRAFT_STORE_CREDENTIALS secret (docs/PUBLISHING.md)"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download the snap from the release
+        if: steps.creds.outputs.present == 'true'
+        id: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.snap' --dir snap-dist
+          file="$(ls snap-dist/*.snap)"
+          echo "snap=$file" >> "$GITHUB_OUTPUT"
+      - name: Upload to the stable channel
+        if: steps.creds.outputs.present == 'true'
+        uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: ${{ steps.download.outputs.snap }}
+          release: stable
+
+  aur:
+    name: AUR
+    if: contains(inputs.channels || 'snap,aur,copr', 'aur')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the AUR key
+        id: creds
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$KEY" ]]; then
+            echo "::notice::AUR skipped: add the AUR_SSH_PRIVATE_KEY secret (docs/PUBLISHING.md)"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Write PKGBUILDs with the release checksums and push them
+        if: steps.creds.outputs.present == 'true'
+        env:
+          KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          version="${TAG#v}"
+          mkdir -p "$RUNNER_TEMP/aur"
+          (umask 077; printf '%s\n' "$KEY" > "$RUNNER_TEMP/aur/key")
+          # makepkg refuses to run as root, so the container builds as a user.
+          docker run --rm -v "$PWD:/src:ro" -v "$RUNNER_TEMP/aur:/aur" -e VERSION="$version" \
+            docker.io/library/archlinux:latest bash -euc '
+              pacman -Syu --noconfirm --needed -q base-devel git openssh >/dev/null 2>&1
+              useradd -m builder; chown -R builder /aur
+              su builder -c "/src/scripts/aur.sh prepare $VERSION /aur/out"
+              su builder -c "AUR_SSH_KEY_FILE=/aur/key /src/scripts/aur.sh push $VERSION /aur/out"'
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/aur"
+
+  copr:
+    name: Fedora COPR
+    if: contains(inputs.channels || 'snap,aur,copr', 'copr')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the COPR credentials
+        id: creds
+        env:
+          LOGIN: ${{ secrets.COPR_LOGIN }}
+          USERNAME: ${{ secrets.COPR_USERNAME }}
+          TOKEN: ${{ secrets.COPR_TOKEN }}
+        run: |
+          if [[ -z "$LOGIN" || -z "$USERNAME" || -z "$TOKEN" ]]; then
+            echo "::notice::COPR skipped: add the COPR_LOGIN, COPR_USERNAME and COPR_TOKEN secrets (docs/PUBLISHING.md)"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the SRPM and submit it
+        if: steps.creds.outputs.present == 'true'
+        env:
+          COPR_LOGIN: ${{ secrets.COPR_LOGIN }}
+          COPR_USERNAME: ${{ secrets.COPR_USERNAME }}
+          COPR_TOKEN: ${{ secrets.COPR_TOKEN }}
+          COPR_PROJECT: ${{ vars.COPR_PROJECT || 'oddbench/jellybridge' }}
+        run: |
+          version="${TAG#v}"
+          docker run --rm -v "$PWD:/src:ro" -e VERSION="$version" \
+            -e COPR_LOGIN -e COPR_USERNAME -e COPR_TOKEN -e COPR_PROJECT \
+            registry.fedoraproject.org/fedora:latest bash -euc '
+              dnf -q -y install rpm-build rpmdevtools copr-cli >/dev/null
+              /src/scripts/copr.sh submit "$VERSION" /tmp/copr'

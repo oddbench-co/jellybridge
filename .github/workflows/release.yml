@@ -3,8 +3,10 @@
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
-# The tag must match `version` in rust/app/Cargo.toml. macOS signing and
-# notarization need repository secrets; see docs/RELEASING.md.
+# The tag must match `version` in rust/app/Cargo.toml (and the version in the
+# packaging files, checked first). macOS signing and notarization need
+# repository secrets; see docs/RELEASING.md. Publishing the release triggers
+# publish.yml, which sends the packages to the stores (docs/PUBLISHING.md).
 #
 # Run it by hand (Actions tab, or `gh workflow run release.yml -f macos=false`)
 # to build the packages of any branch as workflow artifacts, without a release.
@@ -36,13 +38,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: version
-        name: Tag matches Cargo.toml
+        name: Tag and packaging files match Cargo.toml
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' rust/app/Cargo.toml | head -1)"
           if [[ "$GITHUB_EVENT_NAME" == push && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match version ${version} in rust/app/Cargo.toml"
             exit 1
           fi
+          # Every store reads the version from its own file; they move together.
+          failed=0
+          check() { [[ "$2" == "$version" ]] || { echo "::error file=$1::$1 says ${2:-nothing}, rust/app/Cargo.toml says $version"; failed=1; }; }
+          check packaging/arch/PKGBUILD "$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD)"
+          check packaging/arch/PKGBUILD-bin "$(sed -n 's/^pkgver=//p' packaging/arch/PKGBUILD-bin)"
+          check packaging/copr/jellybridge.spec "$(sed -n 's/^Version: *//p' packaging/copr/jellybridge.spec)"
+          check packaging/linux/co.oddbench.JellyBridge.metainfo.xml \
+            "$(grep -o '<release version="[^"]*"' packaging/linux/co.oddbench.JellyBridge.metainfo.xml | head -1 | cut -d'"' -f2)"
+          [[ $failed == 0 ]]
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   linux:
@@ -64,6 +75,15 @@ jobs:
         run: scripts/build-linux.sh
       - name: Package .deb, .rpm, AppImage, tarball and Arch package
         run: scripts/package-linux.sh deb rpm appimage tar arch
+      - name: Vendor the crates (offline source for Fedora COPR and other distribution builds)
+        run: scripts/vendor-crates.sh
+      # The Snap Store package wraps the same bundle (snap/snapcraft.yaml).
+      # The publish workflow uploads it to the store once the release is public.
+      - name: Build the snap
+        id: snap
+        uses: snapcore/action-build@v1
+      - name: Add the snap to the release files
+        run: mv "${{ steps.snap.outputs.snap }}" target/linux/dist/
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -112,8 +132,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check signing secrets
         env:
-          CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
           API_KEY: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
           API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
@@ -132,8 +152,8 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal
       - name: Import the Developer ID certificate
         env:
-          CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
         run: |
           keychain="$RUNNER_TEMP/signing.keychain-db"
           keychain_password="$(openssl rand -hex 24)"

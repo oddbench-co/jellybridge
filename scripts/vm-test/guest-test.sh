@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs inside a test VM's live session. Fetched and started by typing:
-#   curl -fsS 10.0.2.2:8765/t.sh | bash -s NAME [package|appimage|tar]
+#   curl -fsS 10.0.2.2:8765/t.sh | bash -s NAME [package|appimage|tar|snap]
 # Installs JellyBridge the way a user would, runs the scripted scenario, and
 # uploads logs and screenshots to the host. Test-safe: muted, and no playback
 # reports reach the Jellyfin server.
@@ -66,16 +66,32 @@ tar)
     get "jellybridge-${VERSION}-x86_64.tar.gz" "$W/jb.tar.gz"; tar -C "$W" -xzf "$W/jb.tar.gz"
     (cd "$W/jellybridge-${VERSION}-x86_64" && ./install.sh)
     BIN="$HOME/.local/bin/jellybridge" ;;
+snap)
+    # A local snap installs as the store one does; --dangerous only skips the
+    # store signature. Its interfaces connect the way they would for users.
+    get "jellybridge_${VERSION}_amd64.snap" "$W/jb.snap"
+    $SUDO snap install --dangerous "$W/jb.snap"
+    snap connections jellybridge > "$W/out/snap-connections.txt" 2>&1; put "$W/out/snap-connections.txt" snap-connections.txt
+    # snapd makes ~/snap/jellybridge/<rev> and the "current" link on the first
+    # run; files put there before that would land in a plain directory the
+    # confined app cannot use.
+    snap run --shell jellybridge -c true
+    BIN=/snap/bin/jellybridge ;;
 esac
 [[ -x "$BIN" || "$MODE" == package && -x /usr/bin/jellybridge ]] || { status "error: install failed"; put "$W/out/guest.log" guest.log; exit 1; }
 status "installed"
 
 {
     echo "# desktop entry"
-    for d in /usr/share/applications "$HOME/.local/share/applications"; do ls -l "$d/co.oddbench.JellyBridge.desktop" 2>/dev/null; done
-    command -v desktop-file-validate >/dev/null && desktop-file-validate /usr/share/applications/co.oddbench.JellyBridge.desktop 2>&1
+    if [[ "$MODE" == snap ]]; then
+        ls -l /var/lib/snapd/desktop/applications/jellybridge_jellybridge.desktop 2>&1
+        grep -E '^(Exec|Icon)=' /var/lib/snapd/desktop/applications/jellybridge_jellybridge.desktop 2>/dev/null
+    else
+        for d in /usr/share/applications "$HOME/.local/share/applications"; do ls -l "$d/co.oddbench.JellyBridge.desktop" 2>/dev/null; done
+        command -v desktop-file-validate >/dev/null && desktop-file-validate /usr/share/applications/co.oddbench.JellyBridge.desktop 2>&1
+    fi
     echo "# icons"; ls /usr/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png "$HOME"/.local/share/icons/hicolor/*/apps/co.oddbench.JellyBridge.png 2>/dev/null
-    if [[ "$MODE" != appimage ]]; then
+    if [[ "$MODE" != appimage && "$MODE" != snap ]]; then
         real="$(readlink -f "$BIN")"
         echo "# ldd $real"; ldd "$real" | grep -E 'not found' || echo "all resolved"
         lib="$(dirname "$real")/../lib/jellybridge/lib/libmpv.so.2"
@@ -84,14 +100,20 @@ status "installed"
 } > "$W/out/install-check.txt" 2>&1
 put "$W/out/install-check.txt" install-check.txt
 
-mkdir -p "$HOME/.config/jellybridge"
-get session.json "$HOME/.config/jellybridge/session.json"
-get scenario.txt "$W/scenario.txt"
-sed -i "s#@SHOTS@#$W/shots#g" "$W/scenario.txt"
+# A strictly confined snap sees its own home and /tmp only, so its session,
+# scenario and screenshots live under ~/snap/jellybridge/current.
+CFG="$HOME/.config/jellybridge"; DATA="$W"
+if [[ "$MODE" == snap ]]; then
+    CFG="$HOME/snap/jellybridge/current/.config/jellybridge"; DATA="$HOME/snap/jellybridge/current/jbtest"
+fi
+mkdir -p "$CFG" "$DATA/shots"
+get session.json "$CFG/session.json"
+get scenario.txt "$DATA/scenario.txt"
+sed -i "s#@SHOTS@#$DATA/shots#g" "$DATA/scenario.txt"
 
 status "running"
-JELLYBRIDGE_MUTE=1 JELLYBRIDGE_NO_PLAYBACK_REPORTS=1 JELLYBRIDGE_DEVICE_ID="jellybridge-vm-$NAME" \
-JELLYBRIDGE_INPUT_SCRIPT="$W/scenario.txt" RUST_LOG=jellybridge=debug \
+JELLYBRIDGE_MUTE=1 JELLYBRIDGE_NO_PLAYBACK_REPORTS=1 JELLYBRIDGE_DEVICE_ID="jellybridge-vm-test" \
+JELLYBRIDGE_INPUT_SCRIPT="$DATA/scenario.txt" RUST_LOG=jellybridge=debug \
     "$BIN" > "$W/out/app.log" 2>&1 &
 APP=$!
 for _ in $(seq 1 75); do sleep 1; kill -0 $APP 2>/dev/null || break; done
@@ -101,7 +123,7 @@ else
     wait $APP; echo "app exited early with status $?" >> "$W/out/app.log"
 fi
 put "$W/out/app.log" app.log
-for f in "$W"/shots/*.png; do [[ -e "$f" ]] && put "$f" "$(basename "$f")"; done
+for f in "$DATA"/shots/*.png; do [[ -e "$f" ]] && put "$f" "$(basename "$f")"; done
 
 # Clean removal leaves nothing behind but the user's config and cache.
 case "$MODE" in
@@ -114,6 +136,9 @@ package)
 tar)
     (cd "$W/jellybridge-${VERSION}-x86_64" && ./uninstall.sh)
     left="$(ls -d "$HOME/.local/bin/jellybridge" "$HOME/.local/lib/jellybridge" 2>/dev/null)" ;;
+snap)
+    $SUDO snap remove --purge jellybridge >/dev/null
+    left="$(snap list jellybridge 2>/dev/null | tail -n +2; ls -d /var/snap/jellybridge "$HOME/snap/jellybridge" 2>/dev/null)" ;;
 *) left="" ;;
 esac
 echo "left after removal: ${left:-nothing}" >> "$W/out/install-check.txt"
