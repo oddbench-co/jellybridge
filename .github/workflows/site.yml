@@ -1,9 +1,10 @@
 name: Website
 
 # The website in web/ (jellybridge.oddbench.co). Tests it, runs the end-to-end and visual suite, builds
-# the image and hands it to the deploy process: the bump job rewrites the image tag in
-# web/deploy/k8s/deployment.yaml and opens a pull request; merging it is the deploy (ArgoCD syncs that
-# folder). web/deploy/k8s is excluded from the trigger, otherwise the merged bump would build again.
+# the image and deploys it: after a push to main the deploy job writes the image tag into the
+# infra repo (oddbench-co/infra, apps/jellybridge-site/values.yaml) and Argo CD rolls it out on the production server.
+# web/deploy/k8s holds the manifests of the old server; nothing is deployed from it any more,
+# and it stays out of the trigger.
 on:
   push:
     branches: [main]
@@ -116,30 +117,22 @@ jobs:
           cache-from: type=gha,scope=site
           cache-to: type=gha,mode=max,scope=site
 
-  # The deploy hand-off: bump the image in the deployment manifest and open a PR. Merging it deploys.
-  bump:
+  # Deploy: record the image just pushed in the infra repo; Argo CD rolls it out on the production server from
+  # there (github.com/oddbench-co/infra, docs/BOOTSTRAP.md). INFRA_DEPLOY_KEY is a deploy key of that repo with
+  # write access. To roll back, revert the "deploy: jellybridge-site <tag>" commit there.
+  deploy:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - name: Update deployment file
-        run: |
-          sed -i "s|image: ghcr.io/oddbench-co/jellybridge-site:[^ ]*|image: ghcr.io/oddbench-co/jellybridge-site:${GITHUB_SHA}|" \
-            deploy/k8s/deployment.yaml
-          git diff --stat
-      - name: Open pull request
-        uses: peter-evans/create-pull-request@v7
+      - name: Check out the infra repo
+        uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          branch: deploy-site/${{ github.sha }}
-          commit-message: "Deploy the website at ${{ github.sha }}"
-          title: "Deploy the website at ${{ github.sha }}"
-          body: |
-            Bumps `web/deploy/k8s/deployment.yaml` to the image built from ${{ github.sha }}.
-            Merge to deploy: ArgoCD syncs `web/deploy/k8s` onto the production cluster.
-          labels: deploy
-          delete-branch: true
+          repository: oddbench-co/infra
+          ssh-key: ${{ secrets.INFRA_DEPLOY_KEY }}
+          path: infra
+      - name: Write the image tag there
+        working-directory: infra
+        run: tools/bump-image.sh jellybridge-site "${{ github.sha }}" "${{ github.repository }}@${{ github.sha }}"
