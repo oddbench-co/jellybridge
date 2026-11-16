@@ -63,15 +63,20 @@ The HTML report is written to `e2e/report/`.
 
 ## Deploy
 
-Runs on the ip-api production cluster (k3s + Traefik + cert-manager), namespace `jellybridge`, synced by
-ArgoCD from `web/deploy/k8s`. Cloudflare proxies `jellybridge.oddbench.co`.
+Runs on the Oddbench production server (one k3s node at IONOS, 212.132.117.42), app `jellybridge-site` in
+the namespace `jellybridge`. Cloudflare proxies `jellybridge.oddbench.co`. This repository holds no
+Kubernetes files: the whole configuration (image, env, probes, resources, ingress host) lives in the private
+infra repository `oddbench-co/infra` under `apps/jellybridge-site/values.yaml`, with `docs/BOOTSTRAP.md`
+there as the reference, and Argo CD applies it by itself.
 
-- **Release:** push to `main`. The "Website" workflow (`.github/workflows/site.yml`) runs the tests and the
-  e2e suite, builds `ghcr.io/oddbench-co/jellybridge-site:<sha>` and opens a "Deploy the website" PR;
-  `deploy/k8s/release.sh` merges it, syncs and waits for the rollout.
-- **First time only:** `deploy/k8s/bootstrap.sh` (Actions PR permission, ArgoCD application, pull
-  secret, first sync). The repository is public, so both scripts take the infrastructure's addresses from
-  environment variables (`ARGOCD_URL`, `ARGOCD_PASSWORD`, `ARGOCD_DEST`) instead of naming them.
+- **Release:** push to `main` (a change under `web/`; documentation and `web/tools/` do not start a
+  build). The "Website" workflow (`.github/workflows/site.yml`) runs the tests and the e2e suite and builds
+  `ghcr.io/oddbench-co/jellybridge-site:<sha>`; its last job, `deploy`, runs
+  `tools/bump-image.sh jellybridge-site <sha>` in the infra repository, which commits
+  `deploy: jellybridge-site <sha>` there, and Argo CD rolls it out. There is no pull request to merge and
+  no sync to start. The site is stateless, so it rolls over without downtime.
+- **Rollback:** revert that `deploy: jellybridge-site <sha>` commit in the infra repository.
 - **Env:** `SITE_URL`, `PORT`/`BIND`, and the public ownership tokens `GOOGLE_SITE_VERIFICATION` /
   `AHREFS_SITE_VERIFICATION`, plus `AHREFS_ANALYTICS_KEY` (unset renders nothing; when set, an async
-  Ahrefs script is admitted by the CSP and disclosed in the footer and on the Privacy page).
+  Ahrefs script is admitted by the CSP and disclosed in the footer and on the Privacy page). Production
+  sets them in the values file.
